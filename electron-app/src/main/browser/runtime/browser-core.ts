@@ -54,6 +54,7 @@ import {
   FileStorageAdapter,
   fileStorageFor,
 } from '../storage/file-storage-adapter';
+import { shouldPersistHistory, getSessionKindForTab } from '../incognito/pure/incognito-policy';
 
 import type {
   TabState,
@@ -304,7 +305,7 @@ export class BrowserCore {
 
   private handleTabOpened(tab: TabState): void {
     // Create a WebContentsView for the new tab.
-    const sessionKind: SessionKind = tab.isIncognito ? 'incognito' : 'default';
+    const sessionKind = getSessionKindForTab(tab.isIncognito);
     const ses = this.sessionManager.forKind(sessionKind);
     this.sessionManager.configureForBrowser(ses);
 
@@ -336,8 +337,8 @@ export class BrowserCore {
           canGoBack: nav.canGoBack(),
           canGoForward: nav.canGoForward(),
         });
-        // Persist to history (incognito tabs do NOT write to history).
-        if (!tab.isIncognito) {
+        // Persist to history only if the incognito policy allows it.
+        if (shouldPersistHistory(tab)) {
           void this.historyStore.add({ url, title: tab.title });
         }
       },
@@ -355,7 +356,7 @@ export class BrowserCore {
       },
       onTitleUpdated: (title) => {
         this.tabManager.updateTab(tab.id, { title });
-        if (!tab.isIncognito && tab.url) {
+        if (shouldPersistHistory(tab) && tab.url) {
           void this.historyStore.add({ url: tab.url, title });
         }
       },

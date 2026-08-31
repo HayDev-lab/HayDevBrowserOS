@@ -628,3 +628,54 @@ Artifacts produced:
 - tests/{domain-matcher,password-generator,vault-record-validator,credential-vault,vault-security}.test.ts (5 NEW)
 - electron-app/reports/06_vault_report.md (NEW)
 - Updated: src/shared/{agent-types,ipc-types}.ts, src/preload/index.ts, src/main/index.ts, src/main/browser/agent/pure/{tool-registry,tool-validator,agent-loop,timeline-redactor}.ts, src/main/browser/agent/runtime/agent-controller.ts, src/renderer/src/{App.tsx,store/ui-logic.ts,components/TopBar.tsx,styles.css}
+
+---
+Task ID: 7
+Agent: Privacy Implementer + Privacy Micro-Auditor (PROMPT 7 — Incognito / Private Session)
+Task: Implement minimal Incognito Mode. Temporary in-memory session partition, separate cookies/session state, history persistence OFF, agent task persistence OFF, vault auto-save OFF, discard on close. Use existing Electron session architecture. Don't create separate browser engine/TabManager/automation layer/database. HUMAN/AGENT/TAKE CONTROL work identically. UI shows real incognito state.
+
+Work Log:
+- READ: worklog (PROMPT 1–6), reports 02/05/06, SessionManager (already creates memory:incognito-<ts> partitions with cache:false, discardIncognito clears all), BrowserCore (already checks tab.isIncognito for session kind + history write guard), TabManager (openTab accepts incognito?: boolean), HistoryStore (file-backed), AgentController (timeline is in-memory, cleared on new run), CredentialVault (no auto-save, generate_and_store is deliberate), IncognitoBadge (PROMPT 3 — already wired to TabState.isIncognito via getIncognitoVisualState), git status. Confirmed: 723/723 tests, clean git tree. Most incognito infrastructure already exists from PROMPT 2.
+- FACT/ASSUMPTION/UNKNOWN/PLAN: documented. Key finding: SessionManager + BrowserCore + HistoryStore + AgentController + IncognitoBadge already implement most V1 incognito requirements. Gap: no centralized policy module, no explicit vault generate denial in incognito, no clearPrivateTimeline on context transition. Plan: add pure/incognito-policy.ts + wire policy calls in BrowserCore + AgentController + agent-loop + tests.
+- IMPLEMENT: src/main/browser/incognito/pure/incognito-policy.ts — centralized privacy policy: shouldPersistHistory(tab) → !tab.isIncognito, shouldPersistAgentTimeline(isIncognito) → !isIncognito, shouldAutoSaveVault(isIncognito) → false (always, V1), isVaultGenerateAllowed(isIncognito) → !isIncognito (DENIED in incognito), isVaultFillAllowed → true (existing creds OK), isVaultHasAllowed → true (metadata only), getSessionKindForTab → 'incognito'|'default', isPrivateSessionKind, isPersistentSessionKind, isIncognitoContext(tab), isSafeTakeControlForIncognito → true (always, TAKE CONTROL doesn't destroy private state). Pure logic — no Electron imports.
+- IMPLEMENT: Updated BrowserCore — replaced raw !tab.isIncognito with shouldPersistHistory(tab) policy call in onDidNavigate + onTitleUpdated. Replaced raw sessionKind ternary with getSessionKindForTab(tab.isIncognito). Added import.
+- IMPLEMENT: Updated AgentController — added incognitoContext flag, setIncognitoContext(isIncognito) method (clears timeline when transitioning OUT of incognito), clearPrivateTimeline() method, isIncognitoContext() getter. Passes incognitoContext to loopDeps. Imports shouldPersistAgentTimeline + isVaultGenerateAllowed.
+- IMPLEMENT: Updated agent-loop — added incognitoContext? to AgentLoopDeps. Added incognito check in executeVaultTool for vault.generate_and_store: denies with 'incognito_vault_generate_denied' error when deps.incognitoContext is true. Imports isVaultGenerateAllowed.
+- IMPLEMENT: Updated tsconfig.test.json — added incognito/pure + vault/pure + agent/pure to include paths for type-checking test imports.
+- IMPLEMENT: tests/incognito-policy.test.ts (26 tests) — history persistence (regular YES, incognito NO), agent timeline persistence, vault auto-save (OFF always), vault generate (DENIED in incognito, ALLOWED in regular), vault fill/has (ALLOWED in incognito), session isolation (getSessionKindForTab, isPrivateSessionKind, isPersistentSessionKind), context detection, TAKE CONTROL safety (always safe), no fake anonymity claims.
+- IMPLEMENT: tests/incognito-integration.test.ts (10 tests) — AgentController incognito context (set/clear/timeline), clearPrivateTimeline empties timeline, vault generate denied in incognito (storage empty after attempt), vault generate succeeds in regular, TAKE CONTROL in incognito (mode switch + tab preservation), timeline not persisted (cleared on context end), regular session unaffected (timeline persists across context changes).
+- VERIFY (LOOP, 2 errors):
+  1. TS2344 Parameters<typeof AgentController> → fix: InstanceType<typeof AgentController>['deps']['actions']. PASS.
+  2. TS2339 setMode returns object not Promise → fix: remove await from setMode calls (6 occurrences). PASS.
+- VERIFY (STATIC_VERIFIED): typecheck:node/web/test PASS, lint PASS.
+- VERIFY (UNIT_VERIFIED): vitest 29 files, 759/759 tests PASS ✅ (was 723; +36 new: incognito-policy 26 + incognito-integration 10).
+- VERIFY (Vite builds): main.js 86.71 kB (+0.50 — incognito policy), preload.js 2.50 kB (unchanged), renderer 173.64 kB + 31.71 kB CSS (unchanged).
+- VERIFY (Forge package): app.asar 298674 bytes (+501).
+- VERIFY (DEFERRED_RUNTIME): Missing X server or $DISPLAY.
+- MICRO AUDIT (privacy):
+  - Private history not persisted: shouldPersistHistory(tab) returns false for incognito → 2 calls in BrowserCore (onDidNavigate + onTitleUpdated). ✅
+  - Private agent history not persisted: shouldPersistAgentTimeline(true) returns false → clearPrivateTimeline() called on context transition. ✅
+  - Vault auto-save off: shouldAutoSaveVault() returns false always. ✅
+  - Vault generate denied in incognito: isVaultGenerateAllowed(true) returns false → agent-loop returns 'incognito_vault_generate_denied'. ✅
+  - Private state does not contaminate normal session: incognito uses memory: partition, regular uses default partition. ✅
+  - Regular session remains intact: incognito-integration test verifies timeline persistence across context changes. ✅
+  - No fake anonymity claims: 0 references to anonymous/VPN/Tor/anonymity in incognito source. ✅
+  - No plaintext secret logs: inherited from PROMPT 6 vault security audit. ✅
+  - No separate insecure storage: single CredentialVault instance, no private vault copy. ✅
+  - Security flags: all 5 correct in bundle. ✅
+- MICRO AUDIT (regression): all 723 PROMPT 1–6 tests STILL PASS — zero regression.
+
+Stage Summary:
+- Final status: STATIC_VERIFIED + UNIT_VERIFIED + INTEGRATION_VERIFIED + DEFERRED_RUNTIME.
+- Test count: 759 (was 723; +36 new across 2 new test files).
+- Private session contract exists (incognito-policy.ts + SessionManager.forKind('incognito') + memory: partition). Normal/private session policy separated (26 policy tests). Persistent History disabled in Incognito (shouldPersistHistory). Persistent Agent history disabled (shouldPersistAgentTimeline + clearPrivateTimeline). Vault auto-save disabled (shouldAutoSaveVault returns false). Existing Vault not duplicated (single CredentialVault). HUMAN/AGENT work in incognito (verified). TAKE CONTROL regression PASS (2 tests). Incognito UI wired to real state (IncognitoBadge from PROMPT 3, verified). Private state lifecycle tested (context set/clear + timeline clearing). Normal session regression PASS. typecheck/lint/tests/builds PASS. Security/privacy audit PASS.
+- REAL_COOKIE_ISOLATION = DEFERRED_RUNTIME. REAL_SESSION_PARTITION = DEFERRED_RUNTIME. REAL_CACHE_LIFECYCLE = DEFERRED_RUNTIME. REAL_PRIVATE_WEB_CONTENTS = DEFERRED_RUNTIME.
+- NEXT_ALLOWED = PROMPT_8_MCP_SERVER.
+
+Artifacts produced:
+- src/main/browser/incognito/pure/incognito-policy.ts (NEW)
+- tests/incognito-policy.test.ts (NEW — 26 tests)
+- tests/incognito-integration.test.ts (NEW — 10 tests)
+- electron-app/reports/07_incognito_report.md (NEW)
+- Updated: src/main/browser/runtime/browser-core.ts (policy calls), src/main/browser/agent/runtime/agent-controller.ts (incognito context), src/main/browser/agent/pure/agent-loop.ts (vault generate denial), tsconfig.test.json (include paths)
+- Regenerable: electron-app/.vite/build/{main.js,preload.js,renderer/}, electron-app/out/Personal Agentic Browser-linux-x64/

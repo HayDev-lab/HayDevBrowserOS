@@ -22,6 +22,9 @@
     "src/shared/**/*.ts",
     "src/main/browser/pure/**/*.ts",
     "src/main/browser/storage/**/*.ts",
+    "src/main/browser/incognito/pure/**/*.ts",
+    "src/main/browser/vault/pure/**/*.ts",
+    "src/main/browser/agent/pure/**/*.ts",
     "vitest.config.ts"
   ]
 }

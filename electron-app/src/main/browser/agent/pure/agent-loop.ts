@@ -39,6 +39,7 @@ import type {
 import { AGENT_LOOP_BOUNDS } from '@shared/agent-types';
 import type { VaultPort } from '@shared/vault-types';
 import type { ActionResult, PageSnapshot } from '@shared/browser-actions-types';
+import { isVaultGenerateAllowed } from '../../incognito/pure/incognito-policy';
 import { AgentStateMachine } from './agent-state-machine';
 import {
   authorizeToolCall,
@@ -64,6 +65,8 @@ export interface AgentLoopDeps {
   actions: BrowserActionPort;
   /** Optional vault port for vault.* tool calls (PROMPT 6). */
   vault?: VaultPort;
+  /** Whether the current context is incognito (PROMPT 7). */
+  incognitoContext?: boolean;
   /** Initial control state (HUMAN or AGENT). */
   control: ControlAuthorizationState;
   /** Callback when control state changes (for the controller to sync). */
@@ -615,6 +618,15 @@ async function executeVaultTool(
         };
       }
       case 'vault.generate_and_store': {
+        // PROMPT 7: Deny vault.generate_and_store in incognito context.
+        if (deps.incognitoContext && !isVaultGenerateAllowed(true)) {
+          return {
+            tool: call.tool,
+            success: false,
+            observation: 'vault.generate_and_store denied in incognito context',
+            error: 'incognito_vault_generate_denied',
+          };
+        }
         const result = await deps.vault.generateAndStore({
           domain: String(args.domain ?? ''),
           username: String(args.username ?? ''),

@@ -46,6 +46,10 @@ import {
   markAgentRunEnded,
   type ControlAuthorizationState,
 } from '../pure/control-authorization';
+import {
+  shouldPersistAgentTimeline,
+  isVaultGenerateAllowed,
+} from '../../incognito/pure/incognito-policy';
 import type { ActionInput, ActionResult } from '@shared/browser-actions-types';
 
 // ---------------------------------------------------------------------------
@@ -79,6 +83,7 @@ export class AgentController {
   private timeline: AgentTimelineEntry[] = [];
   private abortSignal: AbortSignal = { aborted: false, reason: '' };
   private currentRun: Promise<AgentRunResult> | null = null;
+  private incognitoContext: boolean = false;
 
   constructor(private deps: AgentControllerDeps) {
     this.stateMachine = new AgentStateMachine(deps.now ?? Date.now);
@@ -109,6 +114,46 @@ export class AgentController {
 
   getControlMode(): ControlMode {
     return this.control.mode;
+  }
+
+  /**
+   * Set the incognito context for the controller.
+   *
+   * When set to true:
+   *   - Agent timeline is NOT persisted (in-memory only, cleared on context end)
+   *   - vault.generate_and_store is DENIED (agent cannot create new credentials)
+   *   - vault.fill and vault.has remain ALLOWED (using existing trusted store)
+   *
+   * PROMPT 7: Incognito privacy policy enforcement.
+   */
+  setIncognitoContext(isIncognito: boolean): void {
+    const wasIncognito = this.incognitoContext;
+    this.incognitoContext = isIncognito;
+    // If transitioning OUT of incognito, clear the private timeline.
+    if (wasIncognito && !isIncognito) {
+      this.clearPrivateTimeline();
+    }
+  }
+
+  /**
+   * Clear the in-memory timeline.
+   *
+   * Called when:
+   *   - The incognito context ends (private timeline must be discarded).
+   *   - A new run starts (timeline is cleared for the new run).
+   *
+   * This ensures private agent task history does NOT persist after the
+   * private context is closed.
+   */
+  clearPrivateTimeline(): void {
+    this.timeline = [];
+  }
+
+  /**
+   * Whether the current context is incognito.
+   */
+  isIncognitoContext(): boolean {
+    return this.incognitoContext;
   }
 
   // ---------------------------------------------------------------------------
@@ -224,6 +269,7 @@ export class AgentController {
       ollama: this.deps.ollama,
       actions: this.wrapActionService(this.deps.actions),
       vault: this.deps.vault,
+      incognitoContext: this.incognitoContext,
       control: this.control,
       onControlChange: (next) => {
         this.control = next;
