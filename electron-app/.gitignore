@@ -1,0 +1,13 @@
+# Electron app
+node_modules/
+.vite/
+out/
+dist/
+*.log
+
+# Forge
+release/
+
+# OS
+.DS_Store
+Thumbs.db
