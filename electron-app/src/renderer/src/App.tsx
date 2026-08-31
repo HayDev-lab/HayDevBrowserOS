@@ -1,18 +1,27 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useBrowserUi, useBrowserActions } from './store/browser-store';
-import { TabStrip } from './components/TabStrip';
-import { AddressBar } from './components/AddressBar';
+import { TopBar } from './components/TopBar';
+import { AgentPanel } from './components/AgentPanel';
 import { HistoryPanel } from './components/panels/HistoryPanel';
 import { BookmarksPanel } from './components/panels/BookmarksPanel';
 import { DownloadsPanel } from './components/panels/DownloadsPanel';
-
-type PanelKind = 'history' | 'bookmarks' | 'downloads' | null;
+import { pickLayoutKind, getLayoutModifier, type PanelKind } from './store/ui-logic';
 
 export function App() {
   const ui = useBrowserUi();
   const actions = useBrowserActions();
-  const [activePanel, setActivePanel] = useState<PanelKind>(null);
+  const [activePanel, setActivePanel] = useState<PanelKind | null>(null);
   const [version, setVersion] = useState<string>('—');
+  const [windowWidth, setWindowWidth] = useState(
+    typeof window !== 'undefined' ? window.innerWidth : 1280
+  );
+
+  // Track window width for responsive layout.
+  useEffect(() => {
+    const onResize = () => setWindowWidth(window.innerWidth);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
 
   // Read app version once for the chrome footer.
   useEffect(() => {
@@ -20,7 +29,7 @@ export function App() {
     window.api
       .getVersion()
       .then((v) => {
-        if (!cancelled) setVersion(`${v.electron} / chromium ${v.chrome}`);
+        if (!cancelled) setVersion(`Electron ${v.electron} · Chromium ${v.chrome}`);
       })
       .catch(() => {});
     return () => {
@@ -29,6 +38,9 @@ export function App() {
   }, []);
 
   const activeTab = ui.tabs.find((t) => t.isActive) ?? null;
+  const layoutKind = pickLayoutKind(windowWidth);
+  const layoutMod = getLayoutModifier(layoutKind);
+  const showAgentPanel = layoutKind !== 'narrow';
 
   const handleOpenTab = useCallback(async () => {
     await actions.openTab({ url: 'about:blank', activate: true });
@@ -147,67 +159,40 @@ export function App() {
     [actions, ui]
   );
 
+  const handleTogglePanel = useCallback((kind: PanelKind) => {
+    setActivePanel((prev) => (prev === kind ? null : kind));
+  }, []);
+
   return (
-    <div className="app">
-      <TabStrip
+    <div className={`app ${layoutMod}`}>
+      <TopBar
         tabs={ui.tabs}
         activeTabId={ui.activeTabId}
+        activeTab={activeTab}
+        activePanel={activePanel ?? 'history'}
+        historyCount={ui.history.length}
+        bookmarksCount={ui.bookmarks.length}
+        downloadsCount={ui.downloads.length}
         onOpenTab={handleOpenTab}
         onCloseTab={handleCloseTab}
         onActivateTab={handleActivateTab}
+        onNavigate={handleNavigate}
+        onBack={handleBack}
+        onForward={handleForward}
+        onReload={handleReload}
+        onStop={handleStop}
+        onAddBookmark={handleAddBookmark}
+        onTogglePanel={handleTogglePanel}
       />
-      <div className="toolbar">
-        <AddressBar
-          tab={activeTab}
-          onNavigate={handleNavigate}
-          onBack={handleBack}
-          onForward={handleForward}
-          onReload={handleReload}
-          onStop={handleStop}
-        />
-        <div className="toolbar__actions">
-          <button
-            className="toolbar__btn"
-            onClick={handleAddBookmark}
-            disabled={!activeTab?.url}
-            title="Bookmark this page"
-          >
-            ★
-          </button>
-          <button
-            className={`toolbar__btn ${activePanel === 'history' ? 'toolbar__btn--active' : ''}`}
-            onClick={() =>
-              setActivePanel(activePanel === 'history' ? null : 'history')
-            }
-            title="History"
-          >
-            History
-          </button>
-          <button
-            className={`toolbar__btn ${activePanel === 'bookmarks' ? 'toolbar__btn--active' : ''}`}
-            onClick={() =>
-              setActivePanel(activePanel === 'bookmarks' ? null : 'bookmarks')
-            }
-            title="Bookmarks"
-          >
-            Bookmarks
-          </button>
-          <button
-            className={`toolbar__btn ${activePanel === 'downloads' ? 'toolbar__btn--active' : ''}`}
-            onClick={() =>
-              setActivePanel(activePanel === 'downloads' ? null : 'downloads')
-            }
-            title="Downloads"
-          >
-            Downloads
-          </button>
-        </div>
-      </div>
+
+      {showAgentPanel && <AgentPanel />}
+
       {ui.error && (
         <div className="app__error" role="alert">
           {ui.error}
         </div>
       )}
+
       <HistoryPanel
         open={activePanel === 'history'}
         history={ui.history}
@@ -230,10 +215,14 @@ export function App() {
         onCancel={handleCancelDownload}
         onRemove={handleRemoveDownload}
       />
-      <div className="app__footer">
-        <span>Personal Agentic Browser · {version}</span>
-        <span>{ui.tabs.length} tab{ui.tabs.length === 1 ? '' : 's'}</span>
-      </div>
+
+      <footer className="app__footer" role="contentinfo">
+        <span className="app__footer-brand">PERSONAL AGENTIC BROWSER</span>
+        <span className="app__footer-version">{version}</span>
+        <span className="app__footer-tabs">
+          {ui.tabs.length} {ui.tabs.length === 1 ? 'tab' : 'tabs'}
+        </span>
+      </footer>
     </div>
   );
 }

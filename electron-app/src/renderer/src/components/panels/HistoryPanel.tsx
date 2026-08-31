@@ -1,4 +1,5 @@
 import type { HistoryEntry } from '@shared/browser-types';
+import { formatRelativeTime } from '../../store/ui-logic';
 
 interface HistoryPanelProps {
   open: boolean;
@@ -19,36 +20,57 @@ export function HistoryPanel({
 }: HistoryPanelProps) {
   if (!open) return null;
   return (
-    <div className="panel">
-      <div className="panel__header">
-        <h2>History</h2>
-        <div className="panel__actions">
-          <button onClick={onClear} title="Clear all history">Clear all</button>
-          <button onClick={onClose} aria-label="Close history panel">×</button>
+    <section className="panel panel--history" aria-label="History panel">
+      <header className="panel__header">
+        <div className="panel__title">
+          <span className="panel__title-mark" aria-hidden />
+          <h2>HISTORY</h2>
+          <span className="panel__count">{history.length}</span>
         </div>
-      </div>
+        <div className="panel__actions">
+          <button
+            type="button"
+            className="panel__action"
+            onClick={onClear}
+            disabled={history.length === 0}
+            title="Clear all history"
+          >
+            Clear
+          </button>
+          <button
+            type="button"
+            className="panel__close"
+            onClick={onClose}
+            aria-label="Close history panel"
+          >
+            ×
+          </button>
+        </div>
+      </header>
       <div className="panel__body">
         {history.length === 0 ? (
-          <p className="panel__empty">No history yet.</p>
+          <p className="panel__empty">No history entries.</p>
         ) : (
           <ul className="panel__list">
             {history.map((entry) => (
-              <li key={entry.id} className="history-item">
+              <li key={entry.id} className="list-item list-item--history">
                 <button
-                  className="history-item__main"
+                  type="button"
+                  className="list-item__main"
                   onClick={() => onOpenUrl(entry.url)}
                   title={entry.url}
                 >
-                  <span className="history-item__title">{entry.title}</span>
-                  <span className="history-item__url">{entry.url}</span>
+                  <span className="list-item__title">{entry.title}</span>
+                  <span className="list-item__url">{entry.url}</span>
+                  <span className="list-item__meta">
+                    {formatRelativeTime(entry.visitedAt)} · ×{entry.visitCount}
+                  </span>
                 </button>
-                <span className="history-item__count" title="Visit count">
-                  ×{entry.visitCount}
-                </span>
                 <button
-                  className="history-item__delete"
+                  type="button"
+                  className="list-item__delete"
                   onClick={() => onDelete(entry.id)}
-                  aria-label="Delete entry"
+                  aria-label={`Delete history entry: ${entry.title}`}
                   title="Delete entry"
                 >
                   ×
@@ -58,6 +80,6 @@ export function HistoryPanel({
           </ul>
         )}
       </div>
-    </div>
+    </section>
   );
 }

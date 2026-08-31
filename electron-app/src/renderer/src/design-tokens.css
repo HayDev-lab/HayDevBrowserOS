@@ -1,0 +1,175 @@
+/* ============================================================================
+   NEURAL COCKPIT — DESIGN TOKENS
+   ============================================================================
+   Centralized CSS variables for the Personal Agentic Browser renderer.
+   All visual surfaces MUST consume these tokens; hardcoded magic values
+   are forbidden in component CSS.
+
+   Token groups:
+     - colors: background, surface, border, text, accent, status
+     - typography: font families, sizes, weights, letter-spacing, line-height
+     - spacing: 2 / 4 / 6 / 8 / 10 / 12 / 14 / 16 / 20 / 24 / 32
+     - radius: 2 / 4 / 6 / 8 / 10 / 14 / pill
+     - motion: duration + easing
+     - shadow / glow: 4 controlled intensities
+     - layout: chrome heights, panel widths
+   ========================================================================== */
+
+:root {
+  /* ---------- COLORS: foundation ----------------------------------------- */
+  --nc-bg: #04060c;
+  --nc-bg-deep: #02030a;
+  --nc-surface: #0a0e18;
+  --nc-surface-elevated: #111726;
+  --nc-surface-raised: #18202f;
+
+  /* ---------- COLORS: borders -------------------------------------------- */
+  --nc-border: #1c2536;
+  --nc-border-subtle: #131a28;
+  --nc-border-active: #2dd4bf;
+  --nc-border-strong: #2a3548;
+
+  /* ---------- COLORS: text ----------------------------------------------- */
+  --nc-text-primary: #e6edf7;
+  --nc-text-secondary: #8a96a8;
+  --nc-text-muted: #5b6675;
+  --nc-text-inverse: #04060c;
+
+  /* ---------- COLORS: accent (system / HUMAN) ---------------------------- */
+  --nc-accent: #00e5c4;
+  --nc-accent-soft: #2dd4bf;
+  --nc-accent-dim: rgba(0, 229, 196, 0.18);
+  --nc-accent-faint: rgba(0, 229, 196, 0.06);
+
+  /* ---------- COLORS: agent (amber for AGENT mode) ----------------------- */
+  --nc-agent: #f59e0b;
+  --nc-agent-soft: #fbbf24;
+  --nc-agent-dim: rgba(245, 158, 11, 0.18);
+  --nc-agent-faint: rgba(245, 158, 11, 0.06);
+
+  /* ---------- COLORS: status --------------------------------------------- */
+  --nc-danger: #ff5a6e;
+  --nc-danger-dim: rgba(255, 90, 110, 0.16);
+  --nc-success: #10b981;
+  --nc-success-dim: rgba(16, 185, 129, 0.16);
+  --nc-warning: #f59e0b;
+  --nc-warning-dim: rgba(245, 158, 11, 0.16);
+  --nc-info: #60a5fa;
+  --nc-info-dim: rgba(96, 165, 250, 0.16);
+
+  /* ---------- COLORS: incognito (purple-tinted, distinct) ---------------- */
+  --nc-incognito: #a78bfa;
+  --nc-incognito-dim: rgba(167, 139, 250, 0.18);
+  --nc-incognito-faint: rgba(167, 139, 250, 0.06);
+
+  /* ---------- TYPOGRAPHY ------------------------------------------------- */
+  --nc-font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    "Segoe UI Variable", "Inter", sans-serif;
+  --nc-font-mono: ui-monospace, "Cascadia Mono", "JetBrains Mono",
+    "SF Mono", Menlo, monospace;
+
+  --nc-fs-10: 10px;
+  --nc-fs-11: 11px;
+  --nc-fs-12: 12px;
+  --nc-fs-13: 13px;
+  --nc-fs-14: 14px;
+  --nc-fs-16: 16px;
+  --nc-fs-18: 18px;
+  --nc-fs-22: 22px;
+
+  --nc-fw-regular: 400;
+  --nc-fw-medium: 500;
+  --nc-fw-semibold: 600;
+  --nc-fw-bold: 700;
+
+  --nc-ls-tight: -0.01em;
+  --nc-ls-normal: 0;
+  --nc-ls-wide: 0.04em;
+  --nc-ls-upper: 0.08em;
+
+  --nc-lh-tight: 1.2;
+  --nc-lh-normal: 1.4;
+  --nc-lh-relaxed: 1.6;
+
+  /* ---------- SPACING (px) ----------------------------------------------- */
+  --nc-sp-1: 2px;
+  --nc-sp-2: 4px;
+  --nc-sp-3: 6px;
+  --nc-sp-4: 8px;
+  --nc-sp-5: 10px;
+  --nc-sp-6: 12px;
+  --nc-sp-7: 14px;
+  --nc-sp-8: 16px;
+  --nc-sp-10: 20px;
+  --nc-sp-12: 24px;
+  --nc-sp-16: 32px;
+
+  /* ---------- RADIUS ----------------------------------------------------- */
+  --nc-radius-xs: 2px;
+  --nc-radius-sm: 4px;
+  --nc-radius-md: 6px;
+  --nc-radius-lg: 8px;
+  --nc-radius-xl: 10px;
+  --nc-radius-2xl: 14px;
+  --nc-radius-pill: 999px;
+
+  /* ---------- MOTION ----------------------------------------------------- */
+  --nc-dur-instant: 80ms;
+  --nc-dur-fast: 120ms;
+  --nc-dur-normal: 200ms;
+  --nc-dur-slow: 300ms;
+  --nc-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --nc-ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+  --nc-ease-linear: linear;
+
+  /* ---------- SHADOW / GLOW (controlled, not heavy) --------------------- */
+  --nc-shadow-subtle: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --nc-shadow-normal: 0 2px 8px rgba(0, 0, 0, 0.45);
+  --nc-shadow-strong: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --nc-glow-accent: 0 0 0 1px var(--nc-accent-dim),
+    0 0 12px rgba(0, 229, 196, 0.22);
+  --nc-glow-agent: 0 0 0 1px var(--nc-agent-dim),
+    0 0 12px rgba(245, 158, 11, 0.25);
+  --nc-glow-danger: 0 0 0 1px var(--nc-danger-dim),
+    0 0 14px rgba(255, 90, 110, 0.3);
+
+  /* ---------- LAYOUT ----------------------------------------------------- */
+  --nc-chrome-tabstrip-height: 36px;
+  --nc-chrome-toolbar-height: 44px;
+  --nc-chrome-footer-height: 22px;
+  --nc-chrome-total: calc(
+    var(--nc-chrome-tabstrip-height) + var(--nc-chrome-toolbar-height) +
+      var(--nc-chrome-footer-height)
+  );
+  --nc-panel-width: 340px;
+  --nc-agent-panel-width: 320px;
+
+  /* ---------- Z-INDEX ----------------------------------------------------- */
+  --nc-z-base: 1;
+  --nc-z-panel: 50;
+  --nc-z-overlay: 100;
+  --nc-z-takecontrol: 200;
+
+  /* ---------- FOCUS RING -------------------------------------------------- */
+  --nc-focus-ring: 0 0 0 2px var(--nc-bg), 0 0 0 4px var(--nc-accent);
+  --nc-focus-ring-agent: 0 0 0 2px var(--nc-bg), 0 0 0 4px var(--nc-agent);
+}
+
+/* Reduced motion: collapse all transitions/animations to instant.
+   The presence of this block is a baseline accessibility requirement. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --nc-dur-instant: 0ms;
+    --nc-dur-fast: 0ms;
+    --nc-dur-normal: 0ms;
+    --nc-dur-slow: 0ms;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
