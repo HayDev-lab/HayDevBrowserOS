@@ -101,6 +101,17 @@ export function buildSafeSummary(
     case 'agent.stop': {
       return `stop → ${truncate(String(args.reason ?? ''), 100)}`;
     }
+    case 'vault.has': {
+      return `vault.has → ${truncate(String(args.domain ?? ''), 80)}`;
+    }
+    case 'vault.fill': {
+      // NEVER include the password — the fill result only has success flags.
+      return `vault.fill → ${truncate(String(args.domain ?? ''), 80)} (${REDACTED})`;
+    }
+    case 'vault.generate_and_store': {
+      // NEVER include the generated password.
+      return `vault.generate → ${truncate(String(args.domain ?? ''), 80)} (${REDACTED})`;
+    }
     default:
       return 'unknown_tool';
   }

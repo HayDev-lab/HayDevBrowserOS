@@ -11,9 +11,11 @@
  *   - All types are pure data (no Electron/Node objects).
  *   - Timeline entries NEVER carry password/credential values.
  *   - OllamaClientConfig never serializes the API key across IPC.
+ *   - VaultPort does NOT include getPassword/decrypt (PROMPT 6).
  *
  * Pure data — no Electron imports.
  */
+import type { VaultPort } from './vault-types';
 
 // ---------------------------------------------------------------------------
 // Control mode (runtime, NOT the renderer's local-deterministic visual state)
@@ -64,7 +66,10 @@ export type ToolName =
   | 'page.click'
   | 'page.type'
   | 'page.scroll'
-  | 'agent.stop';
+  | 'agent.stop'
+  | 'vault.has'
+  | 'vault.fill'
+  | 'vault.generate_and_store';
 
 /**
  * A tool call from the model. The `args` shape depends on `tool` — see

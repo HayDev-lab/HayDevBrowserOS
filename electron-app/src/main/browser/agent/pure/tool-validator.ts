@@ -83,6 +83,13 @@ export function validateToolCall(
     return { valid: false, errors };
   }
 
+  // Vault tools do NOT construct ActionInputs — they go through VaultPort
+  // (not BrowserActionService). Validate args only; the agent-loop routes
+  // vault.* tools to the vault port.
+  if (call.tool.startsWith('vault.')) {
+    return { valid: true, actionInput: undefined, errors: [] };
+  }
+
   // 3. Construct the ActionInput.
   const actionInput = buildActionInput(call, activeTabId);
   if (!actionInput) {

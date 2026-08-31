@@ -30,10 +30,24 @@ import type {
   ControlMode,
   ControlModeUpdate,
 } from './agent-types';
+import type {
+  CredentialMetadata,
+  VaultSaveInput,
+  VaultGenerateInput,
+  VaultFillInput,
+  VaultHasInput,
+  VaultSaveResult,
+  VaultGenerateResult,
+  VaultFillResult,
+  VaultHasResult,
+  VaultListResult,
+  VaultDeleteResult,
+} from './vault-types';
 
-// Re-export all browser + agent types for convenience.
+// Re-export all browser + agent + vault types for convenience.
 export * from './browser-types';
 export * from './agent-types';
+export * from './vault-types';
 
 // ---------------------------------------------------------------------------
 // Foundation channels (PROMPT 1)
@@ -92,7 +106,7 @@ export type BrowserChannel =
 // ---------------------------------------------------------------------------
 // Combined channel set
 // ---------------------------------------------------------------------------
-export type ChannelName = FoundationChannel | BrowserChannel | AgentChannel;
+export type ChannelName = FoundationChannel | BrowserChannel | AgentChannel | VaultChannel;
 
 // ---------------------------------------------------------------------------
 // Agent Runtime channels (PROMPT 5)
@@ -107,6 +121,17 @@ export type AgentChannel =
   | 'control:setMode'
   | 'control:takeControl'
   | 'control:getMode';
+
+// ---------------------------------------------------------------------------
+// Vault channels (PROMPT 6)
+// ---------------------------------------------------------------------------
+export type VaultChannel =
+  | 'vault:save'
+  | 'vault:has'
+  | 'vault:list'
+  | 'vault:generateAndStore'
+  | 'vault:fill'
+  | 'vault:delete';
 
 // Push-event channels (main → renderer via webContents.send).
 export type AgentPushChannel =
@@ -174,6 +199,24 @@ export interface ControlApi {
   getMode(): Promise<ControlMode>;
 }
 
+// ---------------------------------------------------------------------------
+// Vault API (PROMPT 6) — UI-facing credential vault
+// ---------------------------------------------------------------------------
+export interface VaultApi {
+  /** Save a credential (user-initiated with plaintext password). */
+  save(input: VaultSaveInput): Promise<VaultSaveResult>;
+  /** Check if a credential exists for a domain. */
+  has(input: VaultHasInput): Promise<VaultHasResult>;
+  /** List all saved credentials (metadata only — no passwords). */
+  list(): Promise<VaultListResult>;
+  /** Generate a secure password and store it. */
+  generateAndStore(input: VaultGenerateInput): Promise<VaultGenerateResult>;
+  /** Fill the login form on a tab with stored credentials. */
+  fill(input: VaultFillInput): Promise<VaultFillResult>;
+  /** Delete a credential by id. */
+  delete(id: string): Promise<VaultDeleteResult>;
+}
+
 /**
  * The renderer-side API surface exposed via contextBridge.
  * MUST stay serialisable (no functions carrying closures over Node objects).
@@ -191,6 +234,9 @@ export interface ExposedApi {
 
   // Control mode (PROMPT 5)
   control: ControlApi;
+
+  // Vault (PROMPT 6)
+  vault: VaultApi;
 
   // Event subscription (whitelisted channels only)
   on(channel: string, listener: (data: unknown) => void): () => void;

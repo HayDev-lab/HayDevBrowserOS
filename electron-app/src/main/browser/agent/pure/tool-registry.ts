@@ -109,6 +109,32 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
       { name: 'reason', type: 'string', required: false, description: 'Why you are stopping.' },
     ],
   },
+  {
+    name: 'vault.has',
+    description:
+      'Check if a credential is stored for the given domain. Returns metadata (id, domain, username) — NEVER the password.',
+    parameters: [
+      { name: 'domain', type: 'string', required: true, description: 'The domain to check (e.g. "example.com").' },
+    ],
+  },
+  {
+    name: 'vault.fill',
+    description:
+      'Fill the login form on the current page with stored credentials for the given domain. SECURITY: the password is decrypted and filled in the main process — it is NEVER returned to you.',
+    parameters: [
+      { name: 'tabId', type: 'string', required: false, description: 'Tab to fill in. Defaults to the active tab.' },
+      { name: 'domain', type: 'string', required: true, description: 'The domain whose credential to fill.' },
+    ],
+  },
+  {
+    name: 'vault.generate_and_store',
+    description:
+      'Generate a cryptographically-secure password and store it for the given domain + username. SECURITY: the generated password is NEVER returned — only metadata (id, domain, username, created).',
+    parameters: [
+      { name: 'domain', type: 'string', required: true, description: 'The domain to store the credential for.' },
+      { name: 'username', type: 'string', required: true, description: 'The username/email for the credential.' },
+    ],
+  },
 ] as const;
 
 const TOOL_NAMES: ReadonlySet<ToolName> = new Set(

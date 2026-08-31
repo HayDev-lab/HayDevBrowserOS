@@ -17,6 +17,7 @@ import type {
   BrowserApi,
   AgentApi,
   ControlApi,
+  VaultApi,
   AppVersionInfo,
   FoundationPingPayload,
   FoundationPingResult,
@@ -35,6 +36,16 @@ import type {
   AgentStatusSnapshot,
   AgentTimelineEntry,
   ControlMode,
+  VaultSaveInput,
+  VaultGenerateInput,
+  VaultFillInput,
+  VaultHasInput,
+  VaultSaveResult,
+  VaultGenerateResult,
+  VaultFillResult,
+  VaultHasResult,
+  VaultListResult,
+  VaultDeleteResult,
 } from '@shared/ipc-types';
 
 // Whitelist of channels the renderer may invoke through the bridge.
@@ -76,6 +87,13 @@ const ALLOWED_INVOKE_CHANNELS = new Set<string>([
   'control:setMode',
   'control:takeControl',
   'control:getMode',
+  // Vault (PROMPT 6)
+  'vault:save',
+  'vault:has',
+  'vault:list',
+  'vault:generateAndStore',
+  'vault:fill',
+  'vault:delete',
 ]);
 
 // Forward-only channels the renderer may subscribe to (push events from main).
@@ -169,6 +187,23 @@ const controlApi: ControlApi = {
   getMode: () => invoke<ControlMode>('control:getMode'),
 };
 
+// ---------------------------------------------------------------------------
+// Vault API (PROMPT 6) — Credential vault (UI-facing)
+// ---------------------------------------------------------------------------
+const vaultApi: VaultApi = {
+  save: (input: VaultSaveInput) =>
+    invoke<VaultSaveResult>('vault:save', input),
+  has: (input: VaultHasInput) =>
+    invoke<VaultHasResult>('vault:has', input),
+  list: () => invoke<VaultListResult>('vault:list'),
+  generateAndStore: (input: VaultGenerateInput) =>
+    invoke<VaultGenerateResult>('vault:generateAndStore', input),
+  fill: (input: VaultFillInput) =>
+    invoke<VaultFillResult>('vault:fill', input),
+  delete: (id: string) =>
+    invoke<VaultDeleteResult>('vault:delete', id),
+};
+
 const api: ExposedApi = {
   async getVersion(): Promise<AppVersionInfo> {
     return invoke<AppVersionInfo>('app:version');
@@ -183,6 +218,7 @@ const api: ExposedApi = {
   browser: browserApi,
   agent: agentApi,
   control: controlApi,
+  vault: vaultApi,
 
   on(channel: string, listener: (data: unknown) => void): () => void {
     if (!ALLOWED_LISTEN_CHANNELS.has(channel)) {

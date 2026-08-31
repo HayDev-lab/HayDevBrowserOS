@@ -34,6 +34,7 @@ import type {
   ControlModeUpdate,
   OllamaClientPort,
 } from '@shared/agent-types';
+import type { VaultPort } from '@shared/vault-types';
 import type { BrowserActionService } from '../../actions/runtime/browser-action-service';
 import { AgentStateMachine } from '../pure/agent-state-machine';
 import { runAgentLoop, type AbortSignal, type AgentLoopDeps } from '../pure/agent-loop';
@@ -65,6 +66,8 @@ export interface AgentControllerCallbacks {
 export interface AgentControllerDeps {
   ollama: OllamaClientPort;
   actions: BrowserActionService;
+  /** Optional vault port for vault.* agent tools (PROMPT 6). */
+  vault?: VaultPort;
   callbacks?: AgentControllerCallbacks;
   /** Override Date.now for tests. */
   now?: () => number;
@@ -220,6 +223,7 @@ export class AgentController {
     const loopDeps: AgentLoopDeps = {
       ollama: this.deps.ollama,
       actions: this.wrapActionService(this.deps.actions),
+      vault: this.deps.vault,
       control: this.control,
       onControlChange: (next) => {
         this.control = next;

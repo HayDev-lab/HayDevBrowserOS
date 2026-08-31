@@ -37,6 +37,7 @@ import type {
   ToolName,
 } from '@shared/agent-types';
 import { AGENT_LOOP_BOUNDS } from '@shared/agent-types';
+import type { VaultPort } from '@shared/vault-types';
 import type { ActionResult, PageSnapshot } from '@shared/browser-actions-types';
 import { AgentStateMachine } from './agent-state-machine';
 import {
@@ -61,6 +62,8 @@ import {
 export interface AgentLoopDeps {
   ollama: OllamaClientPort;
   actions: BrowserActionPort;
+  /** Optional vault port for vault.* tool calls (PROMPT 6). */
+  vault?: VaultPort;
   /** Initial control state (HUMAN or AGENT). */
   control: ControlAuthorizationState;
   /** Callback when control state changes (for the controller to sync). */
@@ -322,14 +325,20 @@ export async function runAgentLoop(
       continue;
     }
 
-    // EXECUTE — dispatch through BrowserActionPort.
+    // EXECUTE — dispatch through BrowserActionPort or VaultPort.
     pushTimeline(deps, () =>
       createToolTimelineEntry(stepCount, call, null, now, 'running')
     );
-    const actionResult = await deps.actions.dispatch(validation.actionInput!);
 
-    // VERIFY — build the observation.
-    const toolResult = buildToolResult(tool, actionResult);
+    let toolResult: ToolResult;
+    if (tool.startsWith('vault.')) {
+      // Vault tools go through the VaultPort (not BrowserActionService).
+      toolResult = await executeVaultTool(deps, call);
+    } else {
+      // Browser tools go through the BrowserActionPort.
+      const actionResult = await deps.actions.dispatch(validation.actionInput!);
+      toolResult = buildToolResult(tool, actionResult);
+    }
     lastToolResult = toolResult;
 
     // Update the timeline entry with the result state + summary.
@@ -414,6 +423,9 @@ function listToolsForRequest(): ToolName[] {
     'page.type',
     'page.scroll',
     'agent.stop',
+    'vault.has',
+    'vault.fill',
+    'vault.generate_and_store',
   ];
 }
 
@@ -554,6 +566,84 @@ function sanitizeArgsForHistory(call: ToolCall): Record<string, unknown> {
     return { ...rest, text: '<redacted>' };
   }
   return call.args;
+}
+
+// ---------------------------------------------------------------------------
+// Vault tool execution — routes vault.* tools to VaultPort
+// ---------------------------------------------------------------------------
+
+async function executeVaultTool(
+  deps: AgentLoopDeps,
+  call: ToolCall
+): Promise<ToolResult> {
+  if (!deps.vault) {
+    return {
+      tool: call.tool,
+      success: false,
+      observation: 'vault_not_configured',
+      error: 'vault_not_configured',
+    };
+  }
+
+  const args = call.args;
+  try {
+    switch (call.tool) {
+      case 'vault.has': {
+        const result = await deps.vault.has({ domain: String(args.domain ?? '') });
+        return {
+          tool: call.tool,
+          success: true,
+          observation: result.has
+            ? `credential found for ${args.domain} (username: ${result.credential?.username ?? 'unknown'})`
+            : `no credential found for ${args.domain}`,
+          data: result,
+        };
+      }
+      case 'vault.fill': {
+        const tabId = String(args.tabId ?? '');
+        const result = await deps.vault.fill({
+          tabId,
+          domain: String(args.domain ?? ''),
+        });
+        return {
+          tool: call.tool,
+          success: result.success,
+          observation: result.success
+            ? `filled credentials for ${result.matchedDomain ?? args.domain} (user:${result.usernameFilled ? '✓' : '✗'}, pass:${result.passwordFilled ? '✓' : '✗'})`
+            : `fill failed: ${result.error ?? 'unknown'}`,
+          data: result,
+        };
+      }
+      case 'vault.generate_and_store': {
+        const result = await deps.vault.generateAndStore({
+          domain: String(args.domain ?? ''),
+          username: String(args.username ?? ''),
+        });
+        return {
+          tool: call.tool,
+          success: result.success,
+          observation: result.success
+            ? `credential ${result.created ? 'created' : 'updated'} for ${args.domain} (username: ${result.credential?.username ?? 'unknown'})`
+            : `generate failed: ${result.error ?? 'unknown'}`,
+          data: result,
+        };
+      }
+      default:
+        return {
+          tool: call.tool,
+          success: false,
+          observation: `unknown_vault_tool:${call.tool}`,
+          error: 'unknown_vault_tool',
+        };
+    }
+  } catch (err) {
+    return {
+      tool: call.tool,
+      success: false,
+      observation: `vault_error:${safeErr(err)}`,
+      error: 'vault_error',
+    };
+  }
 }
 
 // ---------------------------------------------------------------------------

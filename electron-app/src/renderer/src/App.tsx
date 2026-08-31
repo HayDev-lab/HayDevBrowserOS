@@ -6,6 +6,7 @@ import { AgentPanel } from './components/AgentPanel';
 import { HistoryPanel } from './components/panels/HistoryPanel';
 import { BookmarksPanel } from './components/panels/BookmarksPanel';
 import { DownloadsPanel } from './components/panels/DownloadsPanel';
+import { VaultPanel } from './components/panels/VaultPanel';
 import { pickLayoutKind, getLayoutModifier, type PanelKind } from './store/ui-logic';
 
 export function App() {
@@ -255,6 +256,11 @@ export function App() {
         onClose={() => setActivePanel(null)}
         onCancel={handleCancelDownload}
         onRemove={handleRemoveDownload}
+      />
+      <VaultPanel
+        open={activePanel === 'vault'}
+        onClose={() => setActivePanel(null)}
+        activeTabId={ui.activeTabId}
       />
 
       <footer className="app__footer" role="contentinfo">

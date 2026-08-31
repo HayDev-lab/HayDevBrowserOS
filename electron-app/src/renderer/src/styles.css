@@ -1579,3 +1579,84 @@ input {
     color: var(--nc-bg);
   }
 }
+
+/* ---------------------------------------------------------------------------
+   Vault panel (PROMPT 6)
+   --------------------------------------------------------------------------- */
+.panel--vault .panel__title {
+  color: var(--nc-incognito);
+}
+
+.vault-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nc-sp-2);
+  padding: var(--nc-sp-3) var(--nc-sp-2);
+  border-bottom: 1px solid var(--nc-border-subtle);
+}
+
+.vault-form__input {
+  height: 28px;
+  padding: 0 var(--nc-sp-3);
+  background: var(--nc-bg-deep);
+  border: 1px solid var(--nc-border);
+  border-radius: var(--nc-radius-md);
+  color: var(--nc-text-primary);
+  font-size: var(--nc-fs-12);
+  outline: none;
+  transition: border-color var(--nc-dur-fast);
+}
+
+.vault-form__input:focus {
+  border-color: var(--nc-incognito);
+}
+
+.vault-form__input::placeholder {
+  color: var(--nc-text-muted);
+}
+
+.vault-form__actions {
+  display: flex;
+  gap: var(--nc-sp-2);
+}
+
+.vault-form__btn {
+  flex: 1;
+  height: 28px;
+  border: 0;
+  background: var(--nc-incognito-faint);
+  color: var(--nc-incognito);
+  border: 1px solid var(--nc-incognito-dim);
+  border-radius: var(--nc-radius-md);
+  font-size: var(--nc-fs-11);
+  font-weight: var(--nc-fw-semibold);
+  letter-spacing: var(--nc-ls-wide);
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background var(--nc-dur-fast), color var(--nc-dur-fast);
+}
+
+.vault-form__btn:hover:not(:disabled) {
+  background: var(--nc-incognito-dim);
+  color: var(--nc-text-primary);
+}
+
+.vault-form__btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.vault-form__status {
+  padding: var(--nc-sp-2) var(--nc-sp-3);
+  font-size: var(--nc-fs-11);
+  color: var(--nc-text-secondary);
+  text-align: center;
+}
+
+.list-item--vault .list-item__main {
+  cursor: pointer;
+}
+
+.list-item--vault:hover .list-item__main {
+  color: var(--nc-incognito);
+}

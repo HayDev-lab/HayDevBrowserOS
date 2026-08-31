@@ -103,6 +103,13 @@ export function TopBar(props: TopBarProps) {
             onClick={() => props.onTogglePanel('downloads')}
             title="Downloads"
           />
+          <ActionToggle
+            glyph=" 🔒 "
+            label="Vault"
+            active={props.activePanel === 'vault'}
+            onClick={() => props.onTogglePanel('vault')}
+            title="Credential Vault"
+          />
         </div>
         <ControlModule
           mode={props.controlMode}

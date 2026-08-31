@@ -559,3 +559,72 @@ Artifacts produced:
 - NEW: tests/webcontents-resolver.test.ts (31 tests)
 - Updated: electron-app/reports/05_agent_runtime_report.md (+ Repair 5R section)
 - Regenerable: electron-app/.vite/build/{main.js,preload.js,renderer/}, electron-app/out/Personal Agentic Browser-linux-x64/
+
+---
+Task ID: 6
+Agent: Security-Aware Implementer + Security Micro-Auditor (PROMPT 6 — Credential Vault + Safe Autofill)
+Task: Implement minimal local Credential Vault with save/has/list/generateAndStore/fill/delete. Agent gets vault.fill(domain) NOT vault.getPassword(). safeStorage encryption boundary. Domain-bound matching. Password redaction in timeline/logs/results. Agent tool integration (vault.has/fill/generate_and_store). Minimal VaultPanel UI. No cloud sync, no multi-user.
+
+Work Log:
+- READ: worklog (PROMPT 1–5R), reports 04/05, BrowserActionService, WebContentsActionAdapter, AgentController, tool-registry, tool-validator, timeline-redactor, IPC/preload, Electron security config, git status. Confirmed: 618/618 tests, clean git tree, BrowserCore.resolveWebContents available (PROMPT 5R), AgentController accepts vault?: VaultPort.
+- FACT/ASSUMPTION/UNKNOWN/PLAN: documented. Key decisions: safeStorage for encryption (DEFERRED_RUNTIME for real DPAPI), crypto.randomBytes for password generation, domain-bound matching with anti-evil-suffix, agent gets vault.has/fill/generate_and_store only (NO getPassword/decrypt), vault.save is UI-only.
+- IMPLEMENT: src/shared/vault-types.ts — CredentialRecord (id/domain/username/encryptedPassword/createdAt/updatedAt/metadata), CredentialMetadata (safe — no password), VaultInput/Result types, VaultPort interface (has/fill/generateAndStore only — NO getPassword/decrypt), EncryptionAdapter + VaultStorageAdapter interfaces, VAULT_BOUNDS.
+- IMPLEMENT: pure/domain-matcher.ts — canonicalizeDomain (lowercases, strips ports, rejects IP/localhost/non-http protocols), matchDomain (exact + subdomain match, anti-evil-suffix via .stored prefix check, anti-malicious-parent via reverse-subdomain rejection), findMatchingDomain. 26 tests.
+- IMPLEMENT: pure/password-generator.ts — generatePassword using crypto.randomBytes with rejection sampling (no modulo bias), Fisher-Yates shuffle, guarantees ≥1 lowercase/uppercase/digit/symbol, default 20 chars, clamp 8-128. 7 tests.
+- IMPLEMENT: pure/vault-record-validator.ts — validateSaveInput (domain canonicalization, username bounds, password policy), validateGenerateInput, validateRecord (after loading from storage), toMetadata (strips encryptedPassword), toMetadataList, sanitizeMetadata (limits keys + truncates values). 21 tests.
+- IMPLEMENT: pure/vault-result-mapper.ts — buildSaveResult/GenerateResult/FillResult/HasResult/ListResult/DeleteResult (all safe — no password), buildVaultTimelineSummary (all vault tools include <redacted> marker), isResultSafe (defense-in-depth — detects password fields in result objects). 
+- IMPLEMENT: runtime/encryption-adapter.ts — SafeStorageEncryptionAdapter: encryptString/decryptString/isEncryptionAvailable using electron.safeStorage. DEFERRED_RUNTIME (Electron-bound).
+- IMPLEMENT: runtime/vault-storage-adapter.ts — FileVaultStorageAdapter: file-backed store in userData, atomic write (temp-file-rename), corrupt-JSON recovery (filter invalid records). fileVaultStorageFor factory.
+- IMPLEMENT: runtime/credential-vault.ts — orchestrator: save (encrypt + store, update existing), has (domain match, metadata only), list (metadata only), generateAndStore (generate + encrypt + discard plaintext + store), fill (domain match + decrypt + fill adapter + return safe result), delete. Implements VaultPort (agent-facing subset). Encryption errors caught gracefully. 30 tests.
+- IMPLEMENT: runtime/vault-fill-adapter.ts — VaultFillAdapter: resolves WebContents, decrypts password, executes static fill script (JSON.stringify for username + password, NOT code interpolation), finds first visible password input + nearest text/email input before it, sets values + dispatches input/change events, returns {usernameFilled, passwordFilled}. Plaintext discarded after fill.
+- IMPLEMENT: Agent integration: tool-registry +3 vault tools (vault.has/fill/generate_and_store with descriptions), tool-validator (vault tools skip ActionInput construction — routed to VaultPort), agent-loop (+VaultPort in deps, +executeVaultTool routing function, vault tools in listToolsForRequest), agent-controller (+vault?: VaultPort in deps, passed to loopDeps), timeline-redactor (+vault.has/fill/generate_and_store summaries with <redacted> marker).
+- IMPLEMENT: IPC: VaultChannel (vault:save/has/list/generateAndStore/fill/delete), VaultApi interface, ExposedApi.vault. Preload: 6 vault invoke channels, vaultApi object. Main: vault-ipc-handlers.ts, CredentialVault construction (SafeStorageEncryptionAdapter + fileVaultStorageFor + resolveWebContents from BrowserCore), registerVaultIpcHandlers.
+- IMPLEMENT: Renderer: vault-store.ts (useVaultStore hook — save/has/list/generateAndStore/fill/delete via IPC, password cleared from state after save), VaultPanel.tsx (minimal UI: save form with domain/username/password inputs, generate button, credential list with delete + fill, password input cleared after operation), App.tsx + TopBar (Vault toggle button + VaultPanel render), styles.css (vault panel + vault form styles).
+- IMPLEMENT: tests/_fake-vault.ts — FakeEncryptionAdapter (XOR + base64, tracks encrypt/decrypt calls, verifies encrypted value doesn't contain plaintext), FakeUnavailableEncryptionAdapter (throws SAFE_STORAGE_UNAVAILABLE), MemoryVaultStorageAdapter (in-memory, tracks reads/writes, containsPlaintext helper).
+- VERIFY (LOOP, 7 errors):
+  1. generateAndStore test compared encryptCalls[0] (plaintext input) with encryptedPassword (encrypted output) → fixed test to verify they differ.
+  2. save() didn't catch encryption throw → added try/catch in save() + generateAndStore() with safeErr.
+  3. Math.random regex matched comment in password-generator.ts → strip comments before regex check.
+  4. TOOL_DEFINITIONS.length expected 10, now 13 (10 browser + 3 vault) → updated 2 test files.
+  5. vault.fill timeline summary didn't include <redacted> → added marker.
+  6. getPassword regex matched comment in vault-types.ts → strip comments before regex.
+  7. TS2352 Record<string, unknown> cast from typed interface → double-cast through unknown.
+- VERIFY (STATIC_VERIFIED): typecheck:node/web/test PASS, lint PASS.
+- VERIFY (UNIT_VERIFIED): vitest 27 files, 723/723 tests PASS ✅ (was 618; +105 new: domain-matcher 26 + password-generator 7 + vault-record-validator 21 + credential-vault 30 + vault-security 21).
+- VERIFY (Vite builds): main.js 86.21 kB (+13.84 — vault runtime + IPC), preload.js 2.50 kB (+0.29 — vault channels), renderer 173.64 kB JS (+4.53 — vault-store + VaultPanel) + 31.71 kB CSS (+1.42 — vault styles).
+- VERIFY (Forge package): app.asar 298173 bytes (+20112).
+- VERIFY (DEFERRED_RUNTIME): Missing X server or $DISPLAY.
+- MICRO AUDIT (security):
+  - 0 security anti-patterns in source (nodeIntegration/contextIsolation/sandbox/webSecurity)
+  - 0 vault.getPassword/vault.decrypt in source
+  - safeStorage used in production (8 references in encryption-adapter.ts)
+  - 0 Math.random in bundle (password generator uses crypto.randomBytes)
+  - All 5 bundled security flags correct
+  - Plaintext never in storage (verified by test: storage.containsPlaintext returns false)
+  - Plaintext never in IPC results (VaultSaveResult/VaultFillResult/VaultGenerateResult have no password field)
+  - Plaintext never in timeline (vault.* summaries include <redacted>)
+  - VaultPort interface has no getPassword/decrypt methods (verified by test + source grep)
+  - Agent tools limited to vault.has/fill/generate_and_store (no getPassword/decrypt/listWithPasswords in tool-registry)
+  - Domain validation before fill (matchDomain check)
+  - Renderer has no safeStorage access (0 references)
+  - BrowserActionService remains execution boundary (vault tools go through VaultPort, not BrowserActionService)
+- MICRO AUDIT (regression): all 618 PROMPT 1–5R tests STILL PASS — zero regression.
+
+Stage Summary:
+- Final status: STATIC_VERIFIED + UNIT_VERIFIED + INTEGRATION_VERIFIED + DEFERRED_RUNTIME.
+- Test count: 723 (was 618; +105 new across 5 new test files).
+- CredentialVault exists with save/has/list/generateAndStore/fill/delete. Production encryption uses safeStorage. No persistent plaintext. generateAndStore returns metadata only (no password). fill returns success flags only (no password). Domain validation present (26 domain-matcher tests). Agent cannot request plaintext (no getPassword/decrypt in VaultPort). Registration foundation works (generateAndStore → fill → safe completion, password never in model history). Vault UI minimally integrated (VaultPanel). Password/log/timeline redaction proven (21 vault-security tests). typecheck/lint/tests/builds PASS. Previous regressions PASS. Security audit PASS.
+- SAFE_STORAGE_REAL_WINDOWS = DEFERRED_RUNTIME (sandbox has no GUI).
+- NEXT_ALLOWED = PROMPT_7_INCOGNITO.
+
+Artifacts produced:
+- src/shared/vault-types.ts (NEW)
+- src/main/browser/vault/pure/{domain-matcher,password-generator,vault-record-validator,vault-result-mapper}.ts (4 NEW)
+- src/main/browser/vault/runtime/{encryption-adapter,vault-storage-adapter,credential-vault,vault-fill-adapter}.ts (4 NEW)
+- src/main/vault-ipc-handlers.ts (NEW)
+- src/renderer/src/store/vault-store.ts (NEW)
+- src/renderer/src/components/panels/VaultPanel.tsx (NEW)
+- tests/_fake-vault.ts (NEW)
+- tests/{domain-matcher,password-generator,vault-record-validator,credential-vault,vault-security}.test.ts (5 NEW)
+- electron-app/reports/06_vault_report.md (NEW)
+- Updated: src/shared/{agent-types,ipc-types}.ts, src/preload/index.ts, src/main/index.ts, src/main/browser/agent/pure/{tool-registry,tool-validator,agent-loop,timeline-redactor}.ts, src/main/browser/agent/runtime/agent-controller.ts, src/renderer/src/{App.tsx,store/ui-logic.ts,components/TopBar.tsx,styles.css}

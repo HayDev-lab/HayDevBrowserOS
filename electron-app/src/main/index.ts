@@ -30,6 +30,10 @@ import {
   registerAgentIpcHandlers,
   makeControllerCallbacks,
 } from './agent-ipc-handlers';
+import { SafeStorageEncryptionAdapter } from './browser/vault/runtime/encryption-adapter';
+import { fileVaultStorageFor } from './browser/vault/runtime/vault-storage-adapter';
+import { CredentialVault } from './browser/vault/runtime/credential-vault';
+import { registerVaultIpcHandlers } from './vault-ipc-handlers';
 
 // ---------------------------------------------------------------------------
 // Error handling (minimal, no log files yet — PROMPT 1 keeps surface small)
@@ -73,6 +77,7 @@ function acquireSingleInstanceLock(): boolean {
 let browserCore: BrowserCore | null = null;
 let browserActionService: BrowserActionService | null = null;
 let agentController: AgentController | null = null;
+let credentialVault: CredentialVault | null = null;
 
 function createMainWindow(): BrowserWindow {
   const win = new BrowserWindow({
@@ -157,9 +162,20 @@ function createMainWindow(): BrowserWindow {
   });
 
   // Construct the AgentController over the OllamaClient + BrowserActionService.
+  // The vault is passed as a VaultPort so the agent can use vault.has/fill/
+  // generate_and_store. The agent NEVER gets vault.getPassword or vault.decrypt
+  // — those methods don't exist in the VaultPort interface.
+  const encryption = new SafeStorageEncryptionAdapter();
+  credentialVault = new CredentialVault({
+    encryption,
+    storage: fileVaultStorageFor(app.getPath('userData')),
+    resolveWebContents: (tabId) => browserCore!.resolveWebContents(tabId),
+  });
+
   agentController = new AgentController({
     ollama,
     actions: browserActionService,
+    vault: credentialVault,
     callbacks: makeControllerCallbacks(),
   });
 
@@ -193,10 +209,13 @@ function bootstrap(): void {
     // for the browser-channel handlers; foundation handlers can also be
     // registered at the same time. Registering ONCE avoids "duplicate
     // handler" errors from Electron.
-    createMainWindow(); // constructs BrowserCore + BrowserActionService + AgentController
+    createMainWindow(); // constructs BrowserCore + BrowserActionService + AgentController + CredentialVault
     registerIpcHandlers(browserCore ?? undefined);
     if (agentController) {
       registerAgentIpcHandlers(agentController);
+    }
+    if (credentialVault) {
+      registerVaultIpcHandlers(credentialVault);
     }
   });
 
@@ -215,6 +234,9 @@ function bootstrap(): void {
     }
     if (browserActionService) {
       browserActionService.dispose();
+    }
+    if (credentialVault) {
+      credentialVault.dispose();
     }
     if (browserCore) {
       void browserCore.dispose();

@@ -420,7 +420,7 @@ export function getLayoutModifier(kind: LayoutKind): string {
 // ---------------------------------------------------------------------------
 // Side panels (history / bookmarks / downloads)
 // ---------------------------------------------------------------------------
-export type PanelKind = 'history' | 'bookmarks' | 'downloads';
+export type PanelKind = 'history' | 'bookmarks' | 'downloads' | 'vault';
 
 /**
  * Returns true if the given panel kind matches the active panel.
