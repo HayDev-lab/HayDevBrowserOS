@@ -289,3 +289,119 @@ Artifacts produced:
 - Updated: `electron-app/src/renderer/src/{App.tsx,main.tsx,styles.css}`, `electron-app/src/renderer/src/components/TabStrip.tsx`, `electron-app/src/renderer/src/components/panels/{History,Bookmarks,Downloads}Panel.tsx`
 - Removed: `electron-app/src/renderer/src/components/AddressBar.tsx` (renamed to CommandBar.tsx)
 - Regenerable: `electron-app/.vite/build/{main.js,preload.js,renderer/}`, `electron-app/out/Personal Agentic Browser-linux-x64/`
+
+---
+Task ID: 4
+Agent: Core Automation Implementer + Micro-Auditor (PROMPT 4 — Browser Action Service)
+Task: Implement a single BrowserActionService execution layer over the existing Browser Core. V1 actions: navigate, readPage, listTabs, openTab, activateTab, closeTab, click, type, scroll, stop. PageSnapshot with password redaction. Cancellation/stop mechanism. Pure/runtime separation. No new dependencies, no Ollama/MCP/Vault — those are later prompts.
+
+Work Log:
+- READ: worklog.md (PROMPT 1–3 stages), 01–03 reports, src/main/browser/pure/* (6 files), src/main/browser/runtime/* (4 files), src/main/ipc-handlers.ts, src/shared/browser-types.ts, src/shared/ipc-types.ts, renderer/store for context, git status. Confirmed: 239/239 tests PASS, clean git tree, BrowserCore API is the stable surface, sandbox has no X server (DEFERRED_RUNTIME for GUI).
+- FACT/ASSUMPTION/UNKNOWN: documented (BrowserCore's per-tab NavigationController+WebContents are private; action layer needs a new ActionRuntimeAdapter for DOM interactions BrowserCore doesn't expose; executeJavaScript is the V1 API; pure/runtime separation extended; BrowserActionService is NOT wired into main process — PROMPT 5 will do that).
+- PLAN: New src/main/browser/actions/ subtree with pure/ (action-validator, snapshot-normalizer, execution-context, action-router) + runtime/ (webcontents-action-adapter, browser-action-service). New src/shared/browser-actions-types.ts for typed contracts. 5 new test files + 2 fake fixtures. ZERO changes to BrowserCore/preload/IPC/main/renderer.
+- IMPLEMENT: `src/shared/browser-actions-types.ts` — typed contracts: ActionResult<T> (success/data?/error?/evidence?/executionId/completedAt), ActionInput (10-kind discriminated union), per-kind result data types, PageSnapshot (id/tabId/takenAt/url/title/visibleText/textTruncated/interactiveElements/forms/filteredCount), InteractiveElement (id/role/accessibleName/disabled/hidden/tagName/href?/inputType?/placeholder?/valueState?/checked?/name?), FormSnapshot, ElementRole, ExecutionContextSnapshot, ExecutionContextManager interface, ActionRuntimeAdapter interface, RawPageData. Pure data — no Electron imports.
+- IMPLEMENT: `src/main/browser/actions/pure/action-validator.ts` — validates every ActionInput against explicit rules. Bounds: MAX_TEXT_LENGTH=10_000, HARD_MAX_TEXT_LENGTH=50_000, MAX_ELEMENTS=200, HARD_MAX_ELEMENTS=1000, MAX_SCROLL_AMOUNT=10_000, MAX_TYPE_LENGTH=10_000. Patterns: ELEMENT_ID `^el_\d+$`, FORM_ID `^form_\d+$`, EXECUTION_ID `^exec_\d+$`. URL validation reuses url-utils (rejects javascript:/data:/vbscript:/blob: from action layer). Rejects LLM-supplied CSS selectors and XPath.
+- IMPLEMENT: `src/main/browser/actions/pure/snapshot-normalizer.ts` — converts RawPageData → PageSnapshot. Assigns stable IDs (el_<index>, form_<index>) in DOM order. Redacts password values → '<redacted>', file inputs → '<file>'. Truncates visible text (default 10_000), accessibleName (200), href (500), placeholder (200), valueState (500). Filters hidden elements (configurable via includeHidden). Respects maxElements cap.
+- IMPLEMENT: `src/main/browser/actions/pure/execution-context.ts` — ExecutionContextManagerImpl + stopContext helper. State machine: idle → running → aborted. start() creates new context, becomes current. recordAction() transitions idle→running, increments count, refuses on aborted/unknown. stop() transitions to aborted with reason+timestamp, first-reason-wins. isAborted() true for aborted OR unknown contexts (safe default). canDispatch() helper. reset() clears all. list() for diagnostics.
+- IMPLEMENT: `src/main/browser/actions/pure/action-router.ts` — dispatchAction(deps, input). Pipeline: validate → check execution context (refuses if no context or aborted, except for stop action) → recordAction (race-condition guard) → route to adapter/tab-management method → map result to ActionResult<T>. TabManagementPort interface (minimal BrowserCore surface: listTabs/openTab/activateTab/closeTab/hasTab). ActionError class with code+detail. classifyError maps adapter throws to short codes (tab_not_found/element_not_found/element_disabled/not_editable/navigate_failed/timeout/aborted/adapter_error/unknown_error). safeEvidence truncates to 200 chars, strips newlines, never includes typed text.
+- IMPLEMENT: `src/main/browser/actions/runtime/webcontents-action-adapter.ts` — Electron-bound ActionRuntimeAdapter. Uses webContents.executeJavaScript() ONLY with internally-generated static script templates: buildReadPageScript (numeric bounds), buildClickScript (numeric index), buildTypeScript (numeric index + JSON.stringify(text) + boolean clearFirst — the ONLY caller-supplied string that reaches the page, escaped as JSON string literal not code), buildScrollScript (numeric amount + JSON.stringify(direction)). NO eval, NO new Function, NO caller-supplied JS. Stable ID resolution via DOM-order iteration matching snapshot normalizer. 4 executeJavaScript call sites total.
+- IMPLEMENT: `src/main/browser/actions/runtime/browser-action-service.ts` — orchestrator. Owns ExecutionContextManager + ActionRuntimeAdapter (constructs WebContentsActionAdapter if not injected, or accepts a fake for tests) + TabManagementPort (passed by caller). Public API: startExecutionContext/currentExecutionContextId/snapshotExecutionContext/stopExecutionContext/dispose for PROMPT 5 wiring; dispatch(input) generic entry point; typed convenience wrappers (navigate/readPage/listTabs/openTab/activateTab/closeTab/click/type/scroll/stop) all delegate to dispatch.
+- IMPLEMENT: `tests/_fake-adapter.ts` — FakeActionAdapter implementing ActionRuntimeAdapter. Records all calls. Per-tab config (url, rawPage, clickResults, typeResults, scrollSucceeds, navigateFails). defaultRawPage() fixture with 4 elements (link, text input, password input with value 'supersecret', submit button) + 1 form with 3 elements. makeRawElement/makeRawForm helpers.
+- IMPLEMENT: `tests/_fake-tab-management.ts` — FakeTabManagement implementing TabManagementPort. In-memory tab map. listTabs/openTab/activateTab/closeTab/hasTab. addTab/getTab test helpers. makeFakeTab factory.
+- IMPLEMENT: `tests/action-validator.test.ts` — 61 tests across all 10 action kinds. Valid/invalid inputs, malformed args (non-string text, non-boolean flags, NaN amounts), blocked protocols (javascript:/data:/vbscript:/blob:), bounds enforcement (maxTextLength hard cap, maxElements hard cap, scroll amount cap, type length cap), pattern matching (el_/form_/exec_), exhaustive kind coverage, LLM CSS selector / XPath rejection.
+- IMPLEMENT: `tests/snapshot-normalizer.test.ts` — 24 tests. Stable IDs (el_/form_ in DOM order), hidden element filtering (default + includeHidden), maxElements cap, password redaction (5 scenarios: single, multiple, empty value, non-sensitive passthrough, default fixture), file input redaction, disabled elements, role mapping (8 tag→role + ARIA override), text truncation (maxTextLength, default, raw already truncated), form mapping (with hidden element skip), default fixture, field truncation (accessibleName/href), generateSnapshotId uniqueness, empty page.
+- IMPLEMENT: `tests/execution-context.test.ts` — 31 tests. start lifecycle (unique ids, createdAt), recordAction (idle→running, count increment, unknown refusal, aborted refusal), stop (state transition, reason+timestamp, default-to-current, already-aborted refusal, no-context handling, first-reason-wins), isAborted (unknown=true safe default), canDispatch (null/false/true/false), snapshot (null/shape), reset, list, stopContext helper (4 scenarios), TAKE CONTROL semantics (new context after stop works, recordAction on new context works, browser state NOT destroyed by stop — documented via API surface check).
+- IMPLEMENT: `tests/action-router.test.ts` — 32 tests. Validation failures (invalid input, malformed elementId, no execution context), aborted context rejection, action count recording, navigate (success/failure/adapter-throw), readPage (normalized snapshot + password redaction), listTabs, openTab, activateTab (success/not-found), closeTab (success/not-found), click (dispatched/not-found/disabled), type (success/password-flag-reporting/non-editable), scroll (default-amount/explicit-amount/failure), stop (current/explicit-id/no-context), result shape (executionId + completedAt).
+- IMPLEMENT: `tests/browser-action-service.test.ts` — 25 integration tests. Execution context management (start/snapshot/stop/no-context), all convenience wrappers (navigate/readPage/listTabs/openTab/activateTab/closeTab/click/type/scroll), password field flag reporting, TAKE CONTROL flow (reject after stop, new context works, tab state preserved, stop returns execution id), dispose, generic dispatch.
+- VERIFY (LOOP, one error at a time):
+  - Error 1 (TS2307): `Cannot find module '../url-utils'` in action-validator.ts → action-validator lives in actions/pure/ but url-utils lives in browser/pure/. Fix: change import to `../../pure/url-utils`. Verify: typecheck:node PASS.
+  - Error 2 (TS2339, 28 occurrences): `Property 'exec' does not exist on type` in action-router.test.ts → test setup returned deps with shape `{ adapter, tabManagement, executionContext, now }` but test bodies used `deps.exec.start()`. Probe fix (failed): added `(deps as any).exec = exec` — TS still saw typed shape. Final fix: sed replace `deps.exec.` → `deps.executionContext.` (38 occurrences); remove the `as any` hack. Verify: typecheck:test PASS.
+- VERIFY (STATIC_VERIFIED consolidated run):
+  - `tsc --noEmit -p tsconfig.node.json` → exit=0 ✅
+  - `tsc --noEmit -p tsconfig.web.json` → exit=0 ✅
+  - `tsc --noEmit -p tsconfig.test.json` → exit=0 ✅
+  - `eslint "src/**/*.{ts,tsx}"` → exit=0 ✅
+- VERIFY (UNIT_VERIFIED):
+  - `vitest run --config vitest.config.ts` → 13 files, 412/412 tests PASS ✅
+    - action-validator.test.ts: 61 tests (NEW)
+    - snapshot-normalizer.test.ts: 24 tests (NEW)
+    - execution-context.test.ts: 31 tests (NEW)
+    - action-router.test.ts: 32 tests (NEW)
+    - browser-action-service.test.ts: 25 tests (NEW)
+    - ui-logic.test.ts: 89 tests (unchanged from PROMPT 3)
+    - static-a11y.test.ts: 27 tests (unchanged)
+    - url-utils.test.ts: 29 tests (unchanged)
+    - tab-manager.test.ts: 24 tests (unchanged)
+    - download-state-machine.test.ts: 22 tests (unchanged)
+    - history-store.test.ts: 18 tests (unchanged)
+    - bookmarks-store.test.ts: 15 tests (unchanged)
+    - navigation-stack.test.ts: 15 tests (unchanged)
+- VERIFY (INTEGRATION_VERIFIED): browser-action-service.test.ts (25 tests) exercises real BrowserActionService with injected FakeActionAdapter + FakeTabManagement — verifies TAKE CONTROL flow end-to-end, password field flag, tab state preservation, generic dispatch.
+- VERIFY (Vite production builds):
+  - `vite build --config vite.main.config.ts` → main.js 23.98 kB (UNCHANGED — main entry untouched, BrowserActionService not yet wired into main process) ✅
+  - `vite build --config vite.preload.config.ts` → preload.js 1.77 kB (UNCHANGED) ✅
+  - `vite build --config vite.renderer.config.ts` → renderer/assets/index-*.js 168.62 kB + index-*.css 30.29 kB (UNCHANGED) ✅
+- VERIFY (Electron Forge package):
+  - `electron-forge package --platform=linux` → ELF binary PersonalAgenticBrowser + app.asar 228691 bytes (UNCHANGED) ✅
+- VERIFY (DEFERRED_RUNTIME evidence):
+  - Tried launching packaged binary → `ERROR:ozone_platform_x11.cc(245)] Missing X server or $DISPLAY` / `ERROR:env.cc(258)] The platform failed to initialize. Exiting.`
+- MICRO AUDIT (security regression, source-level grep — all 0 matches):
+  - `nodeIntegration:\s*true` → 0 ✅
+  - `contextIsolation:\s*false` → 0 ✅
+  - `sandbox:\s*false` → 0 ✅
+  - `webSecurity:\s*false` → 0 ✅
+  - `require(` in src/renderer/ → 0 ✅
+  - `ipcRenderer` in src/renderer/ → 0 ✅
+  - `from 'electron'` in src/main/browser/pure/ → 0 ✅
+  - `from 'electron'` in src/main/browser/actions/pure/ → 0 ✅ (pure layer stays pure)
+  - `from 'node:*'` in src/main/browser/actions/pure/ → 0 ✅
+  - `\beval\(` in src/main/browser/actions/ → 0 ✅
+  - `new Function` in src/main/browser/actions/ → 0 ✅ (only in a comment documenting the prohibition)
+- MICRO AUDIT (security, bundled-output level): grep'd main.js literal → all 5 security flags present with correct boolean values ✅; renderer bundle has 0 imports of electron/node ✅.
+- MICRO AUDIT (executeJavaScript audit): 4 call sites in webcontents-action-adapter.ts (readPageRaw, click, type, scroll) — all use static script templates built by build*Script() helpers. Only caller-supplied data that reaches the page is the `text` payload in type, escaped via JSON.stringify (JSON string literal, not code). All other interpolations are numeric (Math.floor applied) or boolean.
+- MICRO AUDIT (password/secret handling):
+  - SnapshotNormalizer redacts inputType==='password' → valueState='<redacted>'. Verified by 5 test scenarios (single, multiple, empty value, non-sensitive passthrough, default fixture).
+  - SnapshotNormalizer redacts inputType==='file' → valueState='<file>'. File paths never leak.
+  - WebContentsActionAdapter.type() returns wasPasswordField: boolean so caller (future Agent) knows NOT to log the typed text. Router propagates this in TypeResultData.
+  - ActionError evidence strings truncated to 200 chars, stripped of newlines, never contain typed text payload.
+- MICRO AUDIT (Browser Core + Neural Cockpit regression):
+  - All 8 PROMPT 1–3 test files (239 tests) STILL PASS — zero regression.
+  - Browser Core source files (`src/main/browser/pure/*`, `src/main/browser/runtime/*`, `src/main/ipc-handlers.ts`, `src/main/index.ts`, `src/preload/index.ts`, `src/shared/{browser-types,ipc-types}.ts`) are BYTE-IDENTICAL to PROMPT 3 end-state — zero functional changes.
+  - Neural Cockpit source files (`src/renderer/*`) are byte-identical to PROMPT 3.
+  - main.js bundle is byte-identical (23.98 kB).
+  - preload.js bundle is byte-identical (1.77 kB).
+  - Renderer bundle is byte-identical (168.62 kB JS + 30.29 kB CSS).
+  - app.asar is byte-identical (228691 bytes).
+
+Stage Summary:
+- Final status: `STATIC_VERIFIED + UNIT_VERIFIED + INTEGRATION_VERIFIED + DEFERRED_RUNTIME` (honest, per PROMPT 4 EXIT CRITERIA).
+- All static checks PASS: typecheck (node + web + test), lint, vitest (412/412), vite build (3 targets), electron-forge package (Linux target).
+- Test count grew from 239 → 412 (+173 new tests: 61 action-validator + 24 snapshot-normalizer + 31 execution-context + 32 action-router + 25 browser-action-service). All 239 PROMPT 1–3 tests still PASS.
+- Browser Core + Neural Cockpit source files are byte-identical to PROMPT 3 end-state — zero functional regression. main.js, preload.js, renderer bundle, app.asar all byte-identical.
+- Security baseline preserved at BOTH source level (11 grep checks, 0 anti-patterns) AND bundled-output level (5 security flags correct in main.js; 0 electron/node imports in renderer bundle).
+- Single BrowserActionService exists; orchestrates existing BrowserCore via TabManagementPort (no duplication). 10 V1 actions with typed contracts (discriminated union). PageSnapshot implemented with stable IDs + password/file redaction. Cancellation/stop implemented via ExecutionContextManager (idle→running→aborted; subsequent actions rejected; browser state NOT destroyed).
+- Pure/runtime boundary preserved: 5 pure modules (action-validator, snapshot-normalizer, execution-context, action-router) + 2 runtime modules (webcontents-action-adapter, browser-action-service). Zero electron imports in pure/.
+- executeJavaScript uses ONLY static templates with JSON.stringify for the sole caller-supplied text payload. No eval, no new Function, no caller-supplied JS.
+- BrowserActionService is NOT yet wired into the main process — PROMPT 5 will instantiate it and connect to useControlState() (renderer). The orchestrator's API (startExecutionContext/stopExecutionContext/dispatch) is the integration point.
+- Architecture decision worth highlighting for future agents: the ActionRuntimeAdapter interface is stable. PROMPT 5/8 can add new actions (hover, select_option, wait_for_navigation) by extending the interface + pure validator + router without breaking existing consumers. The ActionInput discriminated union + per-kind result data types + ActionResult<T> universal contract form a stable foundation.
+- The `cancelledCount` field in StopResultData is always 0 in V1 — PROMPT 5's AgentController can populate it from its own task queue (the execution context manager doesn't track in-flight async actions across the event loop).
+- Known limitations documented in the report: L1 (stable IDs may not resolve after page changes — return element_not_found), L2 (shadow DOM not captured), L3 (cross-origin iframes not captured), L4 (document.execCommand('insertText') variance), L5 (no screenshot/OCR — LIMITATION_CONFIRMED for V1), L6 (cancelledCount always 0 in V1), L7 (not wired to main yet — PROMPT 5 scope), L8 (no per-action timeout yet).
+
+Artifacts produced:
+- `/home/z/my-project/electron-app/src/shared/browser-actions-types.ts` (NEW — typed contracts)
+- `/home/z/my-project/electron-app/src/main/browser/actions/pure/action-validator.ts` (NEW)
+- `/home/z/my-project/electron-app/src/main/browser/actions/pure/snapshot-normalizer.ts` (NEW)
+- `/home/z/my-project/electron-app/src/main/browser/actions/pure/execution-context.ts` (NEW)
+- `/home/z/my-project/electron-app/src/main/browser/actions/pure/action-router.ts` (NEW)
+- `/home/z/my-project/electron-app/src/main/browser/actions/runtime/webcontents-action-adapter.ts` (NEW)
+- `/home/z/my-project/electron-app/src/main/browser/actions/runtime/browser-action-service.ts` (NEW)
+- `/home/z/my-project/electron-app/tests/_fake-adapter.ts` (NEW — FakeActionAdapter + defaultRawPage fixture)
+- `/home/z/my-project/electron-app/tests/_fake-tab-management.ts` (NEW — FakeTabManagement + makeFakeTab)
+- `/home/z/my-project/electron-app/tests/action-validator.test.ts` (NEW — 61 tests)
+- `/home/z/my-project/electron-app/tests/snapshot-normalizer.test.ts` (NEW — 24 tests)
+- `/home/z/my-project/electron-app/tests/execution-context.test.ts` (NEW — 31 tests)
+- `/home/z/my-project/electron-app/tests/action-router.test.ts` (NEW — 32 tests)
+- `/home/z/my-project/electron-app/tests/browser-action-service.test.ts` (NEW — 25 tests)
+- `/home/z/my-project/electron-app/reports/04_browser_actions_report.md` (NEW)
+- NO modifications to existing files — PROMPT 4 is purely additive.
+- Regenerable: `electron-app/.vite/build/{main.js,preload.js,renderer/}` (byte-identical to PROMPT 3), `electron-app/out/Personal Agentic Browser-linux-x64/` (byte-identical to PROMPT 3).
