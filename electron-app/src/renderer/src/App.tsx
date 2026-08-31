@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useBrowserUi, useBrowserActions } from './store/browser-store';
+import { useAgentStore } from './store/agent-store';
 import { TopBar } from './components/TopBar';
 import { AgentPanel } from './components/AgentPanel';
 import { HistoryPanel } from './components/panels/HistoryPanel';
@@ -10,6 +11,7 @@ import { pickLayoutKind, getLayoutModifier, type PanelKind } from './store/ui-lo
 export function App() {
   const ui = useBrowserUi();
   const actions = useBrowserActions();
+  const agent = useAgentStore();
   const [activePanel, setActivePanel] = useState<PanelKind | null>(null);
   const [version, setVersion] = useState<string>('—');
   const [windowWidth, setWindowWidth] = useState(
@@ -163,6 +165,31 @@ export function App() {
     setActivePanel((prev) => (prev === kind ? null : kind));
   }, []);
 
+  const handleSetControlMode = useCallback(
+    (mode: 'HUMAN' | 'AGENT') => {
+      void agent.setMode(mode);
+    },
+    [agent]
+  );
+
+  const handleTakeControl = useCallback(() => {
+    void agent.takeControl('user_request');
+  }, [agent]);
+
+  const handleAgentRun = useCallback(
+    (command: string) => {
+      void agent.run(command);
+    },
+    [agent]
+  );
+
+  const handleAgentStop = useCallback(() => {
+    void agent.stop('user_request');
+  }, [agent]);
+
+  const agentRunning =
+    agent.status?.state === 'RUNNING' || agent.status?.state === 'STOPPING';
+
   return (
     <div className={`app ${layoutMod}`}>
       <TopBar
@@ -173,6 +200,8 @@ export function App() {
         historyCount={ui.history.length}
         bookmarksCount={ui.bookmarks.length}
         downloadsCount={ui.downloads.length}
+        controlMode={agent.controlMode}
+        agentRunning={agentRunning}
         onOpenTab={handleOpenTab}
         onCloseTab={handleCloseTab}
         onActivateTab={handleActivateTab}
@@ -183,9 +212,21 @@ export function App() {
         onStop={handleStop}
         onAddBookmark={handleAddBookmark}
         onTogglePanel={handleTogglePanel}
+        onSetControlMode={handleSetControlMode}
+        onTakeControl={handleTakeControl}
       />
 
-      {showAgentPanel && <AgentPanel />}
+      {showAgentPanel && (
+        <AgentPanel
+          mode={agent.controlMode}
+          agentRunning={agentRunning}
+          agentStatus={agent.status}
+          timeline={agent.timeline}
+          onRun={handleAgentRun}
+          onStop={handleAgentStop}
+          onTakeControl={handleTakeControl}
+        />
+      )}
 
       {ui.error && (
         <div className="app__error" role="alert">

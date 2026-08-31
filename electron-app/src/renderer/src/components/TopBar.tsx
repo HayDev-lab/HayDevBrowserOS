@@ -15,7 +15,7 @@
  *     and the actions row hides labels, keeping TAKE CONTROL accessible.
  */
 import type { TabState } from '@shared/browser-types';
-import type { PanelKind } from '../store/ui-logic';
+import type { PanelKind, ControlMode } from '../store/ui-logic';
 import { TabStrip } from './TabStrip';
 import { CommandBar } from './CommandBar';
 import { ControlModule } from './ControlModule';
@@ -30,6 +30,8 @@ interface TopBarProps {
   historyCount: number;
   bookmarksCount: number;
   downloadsCount: number;
+  controlMode: ControlMode;
+  agentRunning: boolean;
   onOpenTab: () => void;
   onCloseTab: (tabId: string) => void;
   onActivateTab: (tabId: string) => void;
@@ -40,7 +42,8 @@ interface TopBarProps {
   onStop: (tabId: string) => void;
   onAddBookmark: () => void;
   onTogglePanel: (kind: PanelKind) => void;
-  onTakeControl?: () => void;
+  onSetControlMode: (mode: ControlMode) => void;
+  onTakeControl: () => void;
 }
 
 export function TopBar(props: TopBarProps) {
@@ -101,7 +104,12 @@ export function TopBar(props: TopBarProps) {
             title="Downloads"
           />
         </div>
-        <ControlModule onTakeControl={props.onTakeControl} />
+        <ControlModule
+          mode={props.controlMode}
+          agentRunning={props.agentRunning}
+          onSetMode={props.onSetControlMode}
+          onTakeControl={props.onTakeControl}
+        />
       </div>
     </div>
   );

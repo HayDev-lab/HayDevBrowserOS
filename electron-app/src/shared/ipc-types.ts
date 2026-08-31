@@ -22,9 +22,18 @@ import type {
   HistoryAddRequest,
   BookmarkAddRequest,
 } from './browser-types';
+import type {
+  AgentRunRequest,
+  AgentRunResult,
+  AgentStatusSnapshot,
+  AgentTimelineEntry,
+  ControlMode,
+  ControlModeUpdate,
+} from './agent-types';
 
-// Re-export all browser types for convenience.
+// Re-export all browser + agent types for convenience.
 export * from './browser-types';
+export * from './agent-types';
 
 // ---------------------------------------------------------------------------
 // Foundation channels (PROMPT 1)
@@ -83,7 +92,27 @@ export type BrowserChannel =
 // ---------------------------------------------------------------------------
 // Combined channel set
 // ---------------------------------------------------------------------------
-export type ChannelName = FoundationChannel | BrowserChannel;
+export type ChannelName = FoundationChannel | BrowserChannel | AgentChannel;
+
+// ---------------------------------------------------------------------------
+// Agent Runtime channels (PROMPT 5)
+// ---------------------------------------------------------------------------
+export type AgentChannel =
+  // Agent run lifecycle
+  | 'agent:run'
+  | 'agent:stop'
+  | 'agent:status'
+  | 'agent:timeline:list'
+  // Control mode
+  | 'control:setMode'
+  | 'control:takeControl'
+  | 'control:getMode';
+
+// Push-event channels (main → renderer via webContents.send).
+export type AgentPushChannel =
+  | 'agent:state:update'
+  | 'agent:timeline:update'
+  | 'control:mode:update';
 
 // ---------------------------------------------------------------------------
 // Renderer-facing typed API surface
@@ -119,6 +148,32 @@ export interface BrowserApi {
   removeDownload(id: string): Promise<boolean>;
 }
 
+// ---------------------------------------------------------------------------
+// Agent Runtime API (PROMPT 5)
+// ---------------------------------------------------------------------------
+export interface AgentApi {
+  /** Start an agent run with a natural-language command. */
+  run(request: AgentRunRequest): Promise<AgentRunResult>;
+  /** Stop the current agent run (graceful). */
+  stop(reason?: string): Promise<{ accepted: boolean }>;
+  /** Get the current agent status snapshot. */
+  status(): Promise<AgentStatusSnapshot>;
+  /** Get the current timeline. */
+  listTimeline(): Promise<AgentTimelineEntry[]>;
+}
+
+// ---------------------------------------------------------------------------
+// Control API (PROMPT 5) — HUMAN ↔ AGENT + TAKE CONTROL
+// ---------------------------------------------------------------------------
+export interface ControlApi {
+  /** Switch to AGENT or HUMAN mode. */
+  setMode(mode: ControlMode): Promise<{ accepted: boolean; reason?: string }>;
+  /** TAKE CONTROL — abort the current agent run and switch to HUMAN. */
+  takeControl(reason?: string): Promise<{ accepted: boolean }>;
+  /** Get the current control mode. */
+  getMode(): Promise<ControlMode>;
+}
+
 /**
  * The renderer-side API surface exposed via contextBridge.
  * MUST stay serialisable (no functions carrying closures over Node objects).
@@ -130,6 +185,12 @@ export interface ExposedApi {
 
   // Browser Core
   browser: BrowserApi;
+
+  // Agent Runtime (PROMPT 5)
+  agent: AgentApi;
+
+  // Control mode (PROMPT 5)
+  control: ControlApi;
 
   // Event subscription (whitelisted channels only)
   on(channel: string, listener: (data: unknown) => void): () => void;

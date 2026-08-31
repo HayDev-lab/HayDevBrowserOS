@@ -15,6 +15,8 @@ import { contextBridge, ipcRenderer } from 'electron';
 import type {
   ExposedApi,
   BrowserApi,
+  AgentApi,
+  ControlApi,
   AppVersionInfo,
   FoundationPingPayload,
   FoundationPingResult,
@@ -28,6 +30,11 @@ import type {
   HistoryEntry,
   Bookmark,
   DownloadItemState,
+  AgentRunRequest,
+  AgentRunResult,
+  AgentStatusSnapshot,
+  AgentTimelineEntry,
+  ControlMode,
 } from '@shared/ipc-types';
 
 // Whitelist of channels the renderer may invoke through the bridge.
@@ -60,11 +67,22 @@ const ALLOWED_INVOKE_CHANNELS = new Set<string>([
   'browser:downloads:list',
   'browser:downloads:cancel',
   'browser:downloads:remove',
+  // Agent Runtime (PROMPT 5)
+  'agent:run',
+  'agent:stop',
+  'agent:status',
+  'agent:timeline:list',
+  // Control mode (PROMPT 5)
+  'control:setMode',
+  'control:takeControl',
+  'control:getMode',
 ]);
 
-// Forward-only channels the renderer may subscribe to.
+// Forward-only channels the renderer may subscribe to (push events from main).
 const ALLOWED_LISTEN_CHANNELS = new Set<string>([
-  // Reserved — push-based updates come in PROMPT 3+ when UI needs live refresh.
+  'agent:state:update',
+  'agent:timeline:update',
+  'control:mode:update',
 ]);
 
 // Type-safe invoke helper. The cast through `unknown` is necessary because
@@ -128,6 +146,29 @@ const browserApi: BrowserApi = {
   removeDownload: (id: string) => invoke<boolean>('browser:downloads:remove', { id }),
 };
 
+// ---------------------------------------------------------------------------
+// Agent Runtime API (PROMPT 5)
+// ---------------------------------------------------------------------------
+const agentApi: AgentApi = {
+  run: (request: AgentRunRequest) =>
+    invoke<AgentRunResult>('agent:run', request),
+  stop: (reason?: string) =>
+    invoke<{ accepted: boolean }>('agent:stop', reason),
+  status: () => invoke<AgentStatusSnapshot>('agent:status'),
+  listTimeline: () => invoke<AgentTimelineEntry[]>('agent:timeline:list'),
+};
+
+// ---------------------------------------------------------------------------
+// Control API (PROMPT 5) — HUMAN ↔ AGENT + TAKE CONTROL
+// ---------------------------------------------------------------------------
+const controlApi: ControlApi = {
+  setMode: (mode: ControlMode) =>
+    invoke<{ accepted: boolean; reason?: string }>('control:setMode', mode),
+  takeControl: (reason?: string) =>
+    invoke<{ accepted: boolean }>('control:takeControl', reason),
+  getMode: () => invoke<ControlMode>('control:getMode'),
+};
+
 const api: ExposedApi = {
   async getVersion(): Promise<AppVersionInfo> {
     return invoke<AppVersionInfo>('app:version');
@@ -140,6 +181,8 @@ const api: ExposedApi = {
   },
 
   browser: browserApi,
+  agent: agentApi,
+  control: controlApi,
 
   on(channel: string, listener: (data: unknown) => void): () => void {
     if (!ALLOWED_LISTEN_CHANNELS.has(channel)) {

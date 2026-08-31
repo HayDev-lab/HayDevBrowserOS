@@ -1,106 +1,55 @@
 /**
  * AgentPanel — Neural Cockpit agent control shell.
  *
- * Scope (PROMPT 3):
- *   - Task input field (placeholder only; no real command parser yet)
- *   - Status indicator (idle / running / takeover)
- *   - Action timeline placeholder (deterministic, no real agent)
- *   - STOP button (calls onTakeControl)
- *   - TAKE CONTROL button (calls onTakeControl)
+ * PROMPT 5: now wired to the real runtime. The panel receives:
+ *   - mode + agentRunning (from useAgentStore → control mode)
+ *   - timeline (from useAgentStore → push events)
+ *   - onRun / onStop / onTakeControl (callbacks to useAgentStore)
  *
- * NON-GOALS for PROMPT 3:
- *   - Real Ollama call (PROMPT 5)
- *   - Real tool-call execution (PROMPT 5)
- *   - Real action timeline (PROMPT 5)
- *
- * The shell consumes the local `useControlState` hook to render its visual
- * state deterministically. The host app passes `onSubmitTask` which will
- * (in PROMPT 5) invoke the AgentController; here it just latches the
- * `agentRunning` flag and pushes a placeholder timeline entry.
+ * The local `useControlState` is no longer used — all state comes from props.
  */
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
-import { useControlState } from '../store/control-store';
-import type { ControlMode } from '../store/ui-logic';
-
-export interface AgentTimelineEntry {
-  id: string;
-  label: string;
-  state: 'pending' | 'running' | 'completed' | 'failed' | 'aborted';
-  timestamp: number;
-}
+import { useState, useRef, type KeyboardEvent } from 'react';
+import type {
+  AgentTimelineEntry,
+  ControlMode,
+  AgentStatusSnapshot,
+} from '@shared/ipc-types';
 
 export interface AgentPanelProps {
-  /** Called when the user submits a task. The shell itself controls the local state. */
-  onSubmitTask?: (task: string) => void;
-  /** Called when STOP or TAKE CONTROL is pressed. */
-  onTakeControl?: () => void;
-  /** External control state hook. If omitted, the panel uses its own. */
-  controlState?: ReturnType<typeof useControlState>;
-  /** Optional external timeline (e.g. fed by the real AgentController in PROMPT 5). */
-  timeline?: AgentTimelineEntry[];
+  mode: ControlMode;
+  agentRunning: boolean;
+  agentStatus: AgentStatusSnapshot | null;
+  timeline: AgentTimelineEntry[];
+  onRun: (command: string) => void;
+  onStop: () => void;
+  onTakeControl: () => void;
 }
 
 export function AgentPanel({
-  onSubmitTask,
+  mode,
+  agentRunning,
+  agentStatus,
+  timeline,
+  onRun,
+  onStop,
   onTakeControl,
-  controlState,
-  timeline: externalTimeline,
 }: AgentPanelProps) {
-  const ownControl = useControlState();
-  const ctrl = controlState ?? ownControl;
   const [task, setTask] = useState('');
-  const [localTimeline, setLocalTimeline] = useState<AgentTimelineEntry[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
-  // Stable id counter — survives across renders. Used only to disambiguate
-  // rapid successive task submissions within the same millisecond.
-  const entryIdRef = useRef(0);
 
   // Auto-focus the task input when entering AGENT mode.
-  useEffect(() => {
-    if (ctrl.mode === 'AGENT' && !ctrl.agentRunning) {
-      inputRef.current?.focus();
-    }
-  }, [ctrl.mode, ctrl.agentRunning]);
+  if (mode === 'AGENT' && !agentRunning && document.activeElement !== inputRef.current) {
+    // Defer focus to next tick to avoid React setState warnings during render.
+    setTimeout(() => inputRef.current?.focus(), 0);
+  }
 
   const handleSubmit = () => {
     const trimmed = task.trim();
     if (trimmed.length === 0) return;
-    if (ctrl.mode !== 'AGENT') return;
-    if (ctrl.agentRunning) return;
-
-    ctrl.setAgentRunning(true);
-    onSubmitTask?.(trimmed);
-
-    // Local placeholder timeline entry. In PROMPT 5 this will be replaced
-    // by real observations emitted by the AgentController.
-    const entry: AgentTimelineEntry = {
-      id: `agent_${Date.now()}_${entryIdRef.current++}`,
-      label: trimmed,
-      state: 'running',
-      timestamp: Date.now(),
-    };
-    setLocalTimeline((prev) => [...prev, entry]);
+    if (mode !== 'AGENT') return;
+    if (agentRunning) return;
+    onRun(trimmed);
     setTask('');
-  };
-
-  const handleStop = () => {
-    ctrl.setAgentRunning(false);
-    setLocalTimeline((prev) =>
-      prev.map((e) => (e.state === 'running' ? { ...e, state: 'aborted' } : e))
-    );
-    onTakeControl?.();
-  };
-
-  const handleTakeControl = () => {
-    ctrl.takeControl();
-    setLocalTimeline((prev) =>
-      prev.map((e) =>
-        e.state === 'running' || e.state === 'pending'
-          ? { ...e, state: 'aborted' }
-          : e
-      )
-    );
-    onTakeControl?.();
   };
 
   const handleKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
@@ -114,13 +63,13 @@ export function AgentPanel({
     }
   };
 
-  const timeline = externalTimeline ?? localTimeline;
+  const statusBadge = getStatusBadge(mode, agentRunning, agentStatus);
 
   return (
     <aside
-      className={`agent-panel agent-panel--${ctrl.mode.toLowerCase()} ${
-        ctrl.agentRunning ? 'agent-panel--running' : ''
-      } ${ctrl.takeoverLatched ? 'agent-panel--takeover' : ''}`}
+      className={`agent-panel agent-panel--${mode.toLowerCase()} ${
+        agentRunning ? 'agent-panel--running' : ''
+      }`}
       aria-label="Agent panel"
     >
       <header className="agent-panel__header">
@@ -129,7 +78,12 @@ export function AgentPanel({
           <span>AGENT</span>
         </div>
         <div className="agent-panel__status" aria-live="polite">
-          <StatusBadge mode={ctrl.mode} running={ctrl.agentRunning} latched={ctrl.takeoverLatched} />
+          <span
+            className={`agent-panel__status-badge agent-panel__status-badge--${statusBadge.state}`}
+            aria-label={`Agent status: ${statusBadge.label}`}
+          >
+            {statusBadge.label}
+          </span>
         </div>
       </header>
 
@@ -139,10 +93,10 @@ export function AgentPanel({
           type="text"
           className="agent-panel__input"
           value={task}
-          placeholder={getTaskPlaceholder(ctrl.mode, ctrl.agentRunning)}
+          placeholder={getTaskPlaceholder(mode, agentRunning, agentStatus)}
           onChange={(e) => setTask(e.target.value)}
           onKeyDown={handleKeyDown}
-          disabled={ctrl.mode !== 'AGENT' || ctrl.agentRunning}
+          disabled={mode !== 'AGENT' || agentRunning}
           spellCheck={false}
           autoComplete="off"
           aria-label="Agent task input"
@@ -151,7 +105,7 @@ export function AgentPanel({
           type="button"
           className="agent-panel__submit"
           onClick={handleSubmit}
-          disabled={ctrl.mode !== 'AGENT' || ctrl.agentRunning || task.trim().length === 0}
+          disabled={mode !== 'AGENT' || agentRunning || task.trim().length === 0}
           aria-label="Submit task to agent"
           title="Submit task (Enter)"
         >
@@ -166,7 +120,7 @@ export function AgentPanel({
         </div>
         {timeline.length === 0 ? (
           <p className="agent-panel__timeline-empty">
-            {ctrl.mode === 'AGENT'
+            {mode === 'AGENT'
               ? 'No task submitted yet. Enter a task above.'
               : 'Agent is idle. Switch to AGENT mode to start a task.'}
           </p>
@@ -182,7 +136,11 @@ export function AgentPanel({
                   aria-hidden
                   data-state={entry.state}
                 />
-                <span className="agent-panel__timeline-label">{entry.label}</span>
+                <span className="agent-panel__timeline-label">
+                  <span className="agent-panel__timeline-step">#{entry.step}</span>
+                  {' '}
+                  {entry.summary}
+                </span>
                 <span className="agent-panel__timeline-state">{entry.state}</span>
               </li>
             ))}
@@ -194,8 +152,8 @@ export function AgentPanel({
         <button
           type="button"
           className="agent-panel__stop"
-          onClick={handleStop}
-          disabled={!ctrl.agentRunning}
+          onClick={onStop}
+          disabled={!agentRunning}
           aria-label="Stop the current agent task"
           title="Stop agent task"
         >
@@ -203,8 +161,8 @@ export function AgentPanel({
         </button>
         <button
           type="button"
-          className={`takecontrol takecontrol--${ctrl.takeControlVisibility} takecontrol--panel`}
-          onClick={handleTakeControl}
+          className="takecontrol takecontrol--critical takecontrol--panel"
+          onClick={onTakeControl}
           aria-label="Take control — abort agent and switch to HUMAN mode"
           title="TAKE CONTROL"
         >
@@ -218,41 +176,31 @@ export function AgentPanel({
   );
 }
 
-function StatusBadge({
-  mode,
-  running,
-  latched,
-}: {
-  mode: ControlMode;
-  running: boolean;
-  latched: boolean;
-}) {
-  let label = 'IDLE';
-  let state: 'idle' | 'running' | 'takeover' | 'human' = 'idle';
-  if (latched) {
-    label = 'TAKEOVER';
-    state = 'takeover';
-  } else if (mode === 'AGENT' && running) {
-    label = 'RUNNING';
-    state = 'running';
-  } else if (mode === 'AGENT') {
-    label = 'READY';
-    state = 'idle';
-  } else {
-    label = 'HUMAN';
-    state = 'human';
+function getStatusBadge(
+  mode: ControlMode,
+  running: boolean,
+  status: AgentStatusSnapshot | null
+): { label: string; state: 'idle' | 'running' | 'takeover' | 'human' | 'failed' } {
+  if (status?.state === 'FAILED') {
+    return { label: 'FAILED', state: 'failed' };
   }
-  return (
-    <span
-      className={`agent-panel__status-badge agent-panel__status-badge--${state}`}
-      aria-label={`Agent status: ${label}`}
-    >
-      {label}
-    </span>
-  );
+  if (mode === 'HUMAN') {
+    return { label: 'HUMAN', state: 'human' };
+  }
+  if (running) {
+    return { label: 'RUNNING', state: 'running' };
+  }
+  return { label: 'READY', state: 'idle' };
 }
 
-function getTaskPlaceholder(mode: ControlMode, running: boolean): string {
+function getTaskPlaceholder(
+  mode: ControlMode,
+  running: boolean,
+  status: AgentStatusSnapshot | null
+): string {
+  if (status && !status.providerConfigured) {
+    return 'AI_PROVIDER_NOT_CONFIGURED — set OLLAMA_API_KEY';
+  }
   if (mode === 'HUMAN') return 'Switch to AGENT mode to enter a task…';
   if (running) return 'Agent is running… press STOP to abort.';
   return 'Describe a task for the agent…';

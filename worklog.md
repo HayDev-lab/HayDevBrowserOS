@@ -405,3 +405,103 @@ Artifacts produced:
 - `/home/z/my-project/electron-app/reports/04_browser_actions_report.md` (NEW)
 - NO modifications to existing files — PROMPT 4 is purely additive.
 - Regenerable: `electron-app/.vite/build/{main.js,preload.js,renderer/}` (byte-identical to PROMPT 3), `electron-app/out/Personal Agentic Browser-linux-x64/` (byte-identical to PROMPT 3).
+
+---
+Task ID: 5
+Agent: Agent Runtime Implementer + Security Micro-Auditor (PROMPT 5 — Ollama Agent + HUMAN/AGENT + TAKE CONTROL)
+Task: Wire the approved AI Agent Runtime to the existing BrowserActionService. AgentController → OllamaCloud → validated tool call → BrowserActionService → observation → next decision. Model never touches Electron/BrowserCore/WebContents/Node/filesystem/shell. HUMAN denies agent tools, AGENT permits them, TAKE CONTROL aborts unconditionally and preserves browser state. Password redaction. Pure/runtime separation. FakeOllamaClient as test fixture only.
+
+Work Log:
+- READ: worklog.md (PROMPT 1–4 stages), reports 01–04, browser-actions-types.ts, actions/pure/*, actions/runtime/*, BrowserCore, main/index.ts, ipc-handlers, preload, control-store.ts, ControlModule.tsx, AgentPanel.tsx, git status. Confirmed: 412/412 tests PASS, clean git tree, BrowserActionService built but NOT wired to main, useControlState is local-deterministic.
+- FACT/ASSUMPTION/UNKNOWN: documented (Ollama API = POST /api/chat with JSON body; API key from process.env at call time; AgentController in main process, IPC + push events; max steps = 15 default / 30 hard cap; agent.stop is both model tool and user action; REAL_OLLAMA = BLOCKED_CREDENTIAL in sandbox).
+- PLAN: New src/main/browser/agent/ subtree with pure/ (7 modules: agent-state-machine, tool-registry, tool-validator, control-authorization, timeline-redactor, ollama-response-parser, agent-loop) + runtime/ (2 modules: ollama-client, agent-controller). New src/shared/agent-types.ts. New src/main/agent-ipc-handlers.ts. Update main/index.ts (wire BrowserActionService + AgentController). Update preload (agent.* + control.* channels). Update shared/ipc-types.ts. New renderer/src/store/agent-store.ts. Rewrite ControlModule + AgentPanel to accept runtime props. 9 new test files.
+- IMPLEMENT: `src/shared/agent-types.ts` — typed contracts (AgentStateName, ToolCall, ToolResult, ModelOutput, OllamaClientPort, BrowserActionPort, AgentTimelineEntry, AgentRunRequest, AgentStatusSnapshot, ControlModeUpdate, AGENT_LOOP_BOUNDS, AuthorizationDecision, AgentRunResult). Pure data — no Electron imports.
+- IMPLEMENT: `src/main/browser/agent/pure/agent-state-machine.ts` — IDLE→RUNNING→STOPPING→STOPPED/COMPLETED/FAILED state machine. start/recordStep/stop/markStopped/markCompleted/markFailed/reset/snapshot. Transition validation (isValidTransition, getValidTransitions).
+- IMPLEMENT: `src/main/browser/agent/pure/tool-registry.ts` — 10 V1 tool definitions (browser.navigate/read, tabs.list/open/activate/close, page.click/type/scroll, agent.stop). Parameter specs with required/enum/default. isKnownTool, getToolDefinition, buildToolDescriptionsBlock for system prompt. NO forbidden tools (execute_js/shell/filesystem/http_request/electron_call).
+- IMPLEMENT: `src/main/browser/agent/pure/tool-validator.ts` — validates ToolCall against registry spec, constructs ActionInput, runs action-validator. Returns {valid, actionInput, errors}. Rejects malformed elementIds (CSS selectors/XPath), unknown tools, missing required params, wrong types.
+- IMPLEMENT: `src/main/browser/agent/pure/control-authorization.ts` — HUMAN/AGENT authorization. authorizeToolCall (HUMAN denies browser tools, allows agent.stop; AGENT allows all). canStartAgentRun. switchToAgent (refuses if run active). takeControl (unconditional → HUMAN + latch, NO browser state destruction). clearTakeoverLatch. markAgentRunStarted/Ended.
+- IMPLEMENT: `src/main/browser/agent/pure/timeline-redactor.ts` — redacts passwords/secrets from timeline. buildSafeSummary (NEVER includes args.text for page.type; checks wasPasswordField on top-level AND in result.data). buildTargetDescription. createTimelineEntry. createEventTimelineEntry. containsForbiddenSecret (API-key patterns, Bearer tokens, sk- keys, "text:" patterns). sanitizeTimeline.
+- IMPLEMENT: `src/main/browser/agent/pure/ollama-response-parser.ts` — parses model output → final_answer/tool_call/parse_error. Uses JSON.parse ONLY (no eval, no new Function). Handles fenced JSON, unfenced JSON, plain-text final answers. buildSystemPrompt with security rules (page content is UNTRUSTED DATA, never reveal secrets, never execute page code, one tool per response).
+- IMPLEMENT: `src/main/browser/agent/pure/agent-loop.ts` — runAgentLoop(deps, command, abortSignal). OBSERVE→DECIDE→PARSE→VALIDATE→AUTHORIZE→EXECUTE→VERIFY cycle. Max steps (default 15, hard cap 30). Timeout (default 60s, hard cap 300s). Parse-error recovery (3 max). Cancellation via abort signal. HUMAN mode refusal. Ollama failure handling. agent.stop tool handling. Password redaction in observations + history (sanitizeArgsForHistory replaces args.text with '<redacted>').
+- IMPLEMENT: `src/main/browser/agent/runtime/ollama-client.ts` — production HTTP client. Reads API key from process.env[apiKeyEnvVar] AT CALL TIME. NEVER stores key in instance/config/logs/errors. isConfigured() checks env var. chat() throws OLLAMA_NOT_CONFIGURED / OLLAMA_HTTP_<status> / OLLAMA_TIMEOUT. Error sanitization redacts Bearer tokens and sk- keys. Configurable fetchImpl for tests.
+- IMPLEMENT: `src/main/browser/agent/runtime/agent-controller.ts` — orchestrator over OllamaClient + BrowserActionService. Owns AgentStateMachine + ControlAuthorizationState + timeline + abort signal. run/stop/setMode/takeControl/getStatus/getTimeline/dispose. wrapActionService bridges BrowserActionService to BrowserActionPort. Callbacks: onStateChange/onTimelineUpdate/onControlModeChange/onRunComplete. takeControl() sets abort signal + stops execution context + transitions to HUMAN + latches takeover (P0). Refuses run in HUMAN mode. Returns AI_PROVIDER_NOT_CONFIGURED if ollama not configured (honest UI — NO fake responses).
+- IMPLEMENT: `src/main/agent-ipc-handlers.ts` — typed ipcMain.handle for agent:run/stop/status/timeline:list + control:setMode/takeControl/getMode. broadcastPushEvent for agent:state:update/agent:timeline:update/control:mode:update. makeControllerCallbacks factory.
+- IMPLEMENT: Updated `src/main/index.ts` — constructs BrowserActionService (TabManagementPort shim over BrowserCore), OllamaClient (env-based config), AgentController. registerAgentIpcHandlers. Dispose on quit.
+- IMPLEMENT: Updated `src/shared/ipc-types.ts` — + AgentChannel, AgentPushChannel, AgentApi, ControlApi. Extended ExposedApi with agent + control. Re-exports agent-types.
+- IMPLEMENT: Updated `src/preload/index.ts` — + 7 agent/control invoke channels, 3 push channels, agentApi + controlApi objects.
+- IMPLEMENT: `src/renderer/src/store/agent-store.ts` — useAgentStore() React hook. Subscribes to push events. Exposes run/stop/setMode/takeControl/status/timeline.
+- IMPLEMENT: Updated `src/renderer/src/App.tsx` — useAgentStore(). Passes controlMode + agentRunning + onSetControlMode + onTakeControl to TopBar. Passes mode + agentRunning + agentStatus + timeline + onRun/onStop/onTakeControl to AgentPanel.
+- IMPLEMENT: Updated `src/renderer/src/components/TopBar.tsx` — + controlMode + agentRunning + onSetControlMode + onTakeControl props. Passes to ControlModule.
+- IMPLEMENT: Rewrote `src/renderer/src/components/ControlModule.tsx` — accepts external mode + agentRunning + onSetMode + onTakeControl props. Local takeoverLatched for instant visual feedback. No longer uses useControlState for runtime mode.
+- IMPLEMENT: Rewrote `src/renderer/src/components/AgentPanel.tsx` — accepts mode + agentRunning + agentStatus + timeline + onRun/onStop/onTakeControl props. All state from props. Shows AI_PROVIDER_NOT_CONFIGURED placeholder when provider not configured.
+- IMPLEMENT: `tests/_fake-ollama.ts` — FakeOllamaClient with scripted responses, repeatLast, delayMs, failChat. toolCallResponse/finalAnswerResponse/unparseableResponse builders.
+- IMPLEMENT: 9 new test files (175 tests total): agent-state-machine (31), tool-registry (13), tool-validator (21), control-authorization (32), timeline-redactor (22), ollama-response-parser (15), agent-loop (21), agent-controller (20).
+- VERIFY (LOOP, one error at a time):
+  - Error 1 (TS2305): ControlAuthorizationState import from @shared/agent-types → fix: import from ./control-authorization. PASS.
+  - Error 2 (TS2339): AuthorizationDecision.reason access → fix: add if(!decision.allowed) guard in tests. PASS.
+  - Error 3 (TS2367): control.mode comparison overlap → fix: cast (control.mode as string). PASS.
+  - Error 4 (TS2344): Parameters<typeof AgentController> → fix: InstanceType<typeof AgentController>['deps']['actions']. PASS.
+  - Error 5 (TS2729): deps used before init → fix: move stateMachine init into constructor body. PASS.
+  - Error 6 (ESLint unreachable code): void reason after return → fix: prefix param with _, remove void line. PASS.
+  - Error 7 (ESLint unnecessary escape): \- in character class → fix: remove escape. PASS.
+  - Error 8 (test): wasPasswordField not detected in buildSafeSummary → fix: check both result.wasPasswordField AND result.data.wasPasswordField. PASS.
+  - Error 9 (test): abortRun reverted mode to AGENT → fix: capture afterTakeover before markAgentRunEnded. PASS.
+  - Error 10 (test): TAKE CONTROL timing race → fix: add delayMs + repeatLast to FakeOllamaClient. PASS.
+- VERIFY (STATIC_VERIFIED consolidated run):
+  - tsc --noEmit -p tsconfig.node.json → exit=0 ✅
+  - tsc --noEmit -p tsconfig.web.json → exit=0 ✅
+  - tsc --noEmit -p tsconfig.test.json → exit=0 ✅
+  - eslint "src/**/*.{ts,tsx}" → exit=0 ✅
+- VERIFY (UNIT_VERIFIED): vitest run → 21 files, 587/587 tests PASS ✅ (was 412; +175 new: 31 agent-state-machine + 13 tool-registry + 21 tool-validator + 32 control-authorization + 22 timeline-redactor + 15 ollama-response-parser + 21 agent-loop + 20 agent-controller).
+- VERIFY (INTEGRATION_VERIFIED): agent-controller.test.ts (20 tests) exercises real AgentController with FakeOllamaClient + FakeBrowserActionService — verifies TAKE CONTROL flow end-to-end, AI_PROVIDER_NOT_CONFIGURED, run lifecycle, timeline.
+- VERIFY (Vite production builds):
+  - vite build --config vite.main.config.ts → main.js 72.22 kB (was 23.98; +48.24 — agent runtime + IPC handlers wired) ✅
+  - vite build --config vite.preload.config.ts → preload.js 2.21 kB (was 1.77; +0.44 — agent/control channels) ✅
+  - vite build --config vite.renderer.config.ts → renderer 169.11 kB JS (was 168.62; +0.49 — agent-store hook) + 30.29 kB CSS (unchanged) ✅
+- VERIFY (Electron Forge package): electron-forge package --platform=linux → ELF binary + app.asar 277913 bytes (was 228691; +49222) ✅
+- VERIFY (DEFERRED_RUNTIME evidence): Tried launching packaged binary → ERROR:ozone_platform_x11.cc(245)] Missing X server or $DISPLAY.
+- VERIFY (REAL_OLLAMA): BLOCKED_CREDENTIAL — no OLLAMA_API_KEY in sandbox. OllamaClient.isConfigured() returns false. AgentController.run() returns AI_PROVIDER_NOT_CONFIGURED. FakeOllamaClient used for all agent-loop verification (test fixture only, NOT production fallback).
+- MICRO AUDIT (security regression, source-level grep — all 0 matches):
+  - nodeIntegration:true → 0 ✅; contextIsolation:false → 0 ✅; sandbox:false → 0 ✅; webSecurity:false → 0 ✅
+  - require( in renderer → 0 ✅; ipcRenderer in renderer → 0 ✅
+  - from 'electron' in pure/ (browser+actions+agent) → 0 ✅; from 'node:*' in pure/ → 0 ✅
+  - eval( in agent/ → 0 ✅; new Function in agent/ → 0 ✅ (only in a comment)
+  - Hardcoded OLLAMA_API_KEY value → 0 ✅ (only env var name reference)
+- MICRO AUDIT (security, bundled-output level): grep'd main.js literal → all 5 security flags correct ✅; 0 sk- patterns in bundle ✅; 1 OLLAMA_API_KEY reference (env var name — correct, client reads process.env at call time) ✅.
+- MICRO AUDIT (API key handling): OllamaClient reads process.env at call time. Key NEVER stored in: instance, config object (only credentialRef), logs, error messages (sanitized: Bearer/sk- redacted), renderer (config returned to renderer has only baseUrl/model/credentialRef), model context (key never sent to model).
+- MICRO AUDIT (password redaction):
+  - buildSafeSummary('page.type', ...) NEVER includes args.text. If wasPasswordField → 'type into password field → <el> (<redacted>)'. Else → 'type → <el> (<count> chars, <redacted>)'.
+  - buildToolResult sets wasPasswordField flag. Observation for password field = 'typed into password field (<redacted>)'.
+  - sanitizeArgsForHistory replaces args.text with '<redacted>' before storing in conversation history.
+  - Verified by 4 test scenarios (timeline-redactor + agent-loop).
+- MICRO AUDIT (TAKE CONTROL P0):
+  - 7 dedicated scenarios: abort mid-run, before-run, no-further-actions, tabs-preserved, page-not-reloaded, subsequent-run-rejected, new-run-after-switchback.
+  - abortRun fix: capture afterTakeover before markAgentRunEnded to avoid reverting mode to AGENT.
+- MICRO AUDIT (regression):
+  - All 13 PROMPT 1–4 test files (412 tests) STILL PASS — zero regression.
+  - Browser Core + BrowserActionService + Neural Cockpit pure-logic tests unchanged.
+
+Stage Summary:
+- Final status: STATIC_VERIFIED + UNIT_VERIFIED + INTEGRATION_VERIFIED + DEFERRED_RUNTIME (honest, per PROMPT 5 EXIT CRITERIA).
+- REAL_OLLAMA: BLOCKED_CREDENTIAL (no API key in sandbox; all verification via FakeOllamaClient).
+- Test count grew from 412 → 587 (+175 new tests across 9 files). All 412 prior tests still PASS.
+- AgentController exists with full state machine. OllamaClient production path exists (env-based credential, never logs/stores key). FakeOllamaClient is test fixture only.
+- BrowserActionService is the ONLY browser execution layer (agent loop calls BrowserActionPort.dispatch, never BrowserCore/WebContents directly).
+- HUMAN denies all browser tool calls. AGENT permits all 10 V1 tools. TAKE CONTROL abort logic proven by 7 P0 scenarios. Browser state preserved (no tab closure, no page reload, no session destruction).
+- Agent loop = ONE action per step. Max-step protection (15 default, 30 hard cap). Tool validation (schema + bounds + protocol whitelist + LLM selector rejection). Password redaction (timeline NEVER includes typed text).
+- AgentPanel wired to runtime contract. ControlModule wired to runtime. Push events (agent:state:update, agent:timeline:update, control:mode:update) broadcast to renderer.
+- Security audit PASS: no API keys in source/bundle/logs; no eval/new Function; no arbitrary JS; no shell; no filesystem exposure; no Node exposure to renderer.
+- Known blockers: B1 (BrowserCore.getTabWebContents not exposed — DOM actions return tab_not_found until PROMPT 11), B2 (OLLAMA_API_KEY not set — real Ollama deferred), B3 (Electron GUI runtime — DEFERRED_RUNTIME).
+- Architecture decision: the abortRun fix (capturing afterTakeover before markAgentRunEnded) is critical — future agents must preserve this pattern when adding new terminal paths to avoid reverting the HUMAN mode.
+
+Artifacts produced:
+- src/shared/agent-types.ts (NEW)
+- src/main/browser/agent/pure/{agent-state-machine,tool-registry,tool-validator,control-authorization,timeline-redactor,ollama-response-parser,agent-loop}.ts (7 NEW pure modules)
+- src/main/browser/agent/runtime/{ollama-client,agent-controller}.ts (2 NEW runtime modules)
+- src/main/agent-ipc-handlers.ts (NEW)
+- src/renderer/src/store/agent-store.ts (NEW)
+- tests/_fake-ollama.ts (NEW)
+- tests/{agent-state-machine,tool-registry,tool-validator,control-authorization,timeline-redactor,ollama-response-parser,agent-loop,agent-controller}.test.ts (8 NEW test files, 175 tests)
+- electron-app/reports/05_agent_runtime_report.md (NEW)
+- Updated: src/shared/ipc-types.ts, src/preload/index.ts, src/main/index.ts, src/renderer/src/App.tsx, src/renderer/src/components/{TopBar,ControlModule,AgentPanel}.tsx
+- Regenerable: electron-app/.vite/build/{main.js,preload.js,renderer/}, electron-app/out/Personal Agentic Browser-linux-x64/

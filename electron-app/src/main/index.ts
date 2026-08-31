@@ -23,6 +23,13 @@ import { app, BrowserWindow, shell } from 'electron';
 import path from 'node:path';
 import { registerIpcHandlers } from './ipc-handlers';
 import { BrowserCore } from './browser/runtime/browser-core';
+import { BrowserActionService } from './browser/actions/runtime/browser-action-service';
+import { OllamaClient } from './browser/agent/runtime/ollama-client';
+import { AgentController } from './browser/agent/runtime/agent-controller';
+import {
+  registerAgentIpcHandlers,
+  makeControllerCallbacks,
+} from './agent-ipc-handlers';
 
 // ---------------------------------------------------------------------------
 // Error handling (minimal, no log files yet — PROMPT 1 keeps surface small)
@@ -64,6 +71,8 @@ function acquireSingleInstanceLock(): boolean {
 // BrowserWindow factory — SECURITY BASELINE for remote web content.
 // ---------------------------------------------------------------------------
 let browserCore: BrowserCore | null = null;
+let browserActionService: BrowserActionService | null = null;
+let agentController: AgentController | null = null;
 
 function createMainWindow(): BrowserWindow {
   const win = new BrowserWindow({
@@ -117,6 +126,54 @@ function createMainWindow(): BrowserWindow {
   });
   browserCore.attachToWindow(win);
 
+  // Construct the BrowserActionService over the existing BrowserCore.
+  // The service is the ONLY browser execution layer for the agent.
+  browserActionService = new BrowserActionService({
+    tabManagement: {
+      listTabs: () => browserCore!.listTabs(),
+      openTab: (opts) => browserCore!.openTab(opts),
+      activateTab: (tabId) => browserCore!.activateTab(tabId),
+      closeTab: (tabId) => browserCore!.closeTab(tabId),
+      hasTab: (tabId) => browserCore!.listTabs().some((t) => t.id === tabId),
+    },
+    // Resolve a tab id to its WebContents — BrowserCore owns the per-tab
+    // WebContentsView; we need a way to access the underlying webContents.
+    // For V1, we expose a method on BrowserCore (added in PROMPT 2 but
+    // accessed via a thin shim here). If BrowserCore doesn't expose it,
+    // we return null and DOM-level actions will fail with tab_not_found
+    // (which is the safe default).
+    resolveWebContents: (tabId) => {
+      // BrowserCore doesn't expose webContents directly in V1 — this is a
+      // known limitation. The BrowserActionService falls back to
+      // navigate/listTabs/openTab/activateTab/closeTab which don't need
+      // WebContents. DOM actions (click/type/scroll/readPage) require
+      // WebContents and will be DEFERRED_RUNTIME until BrowserCore exposes
+      // a resolveWebContents method.
+      // TODO(PROMPT 11): add BrowserCore.getTabWebContents(tabId).
+      void tabId;
+      return null;
+    },
+  });
+
+  // Construct the OllamaClient from environment configuration.
+  // The API key is read at call time from process.env.OLLAMA_API_KEY.
+  // If absent, isConfigured() returns false and agent.run() returns
+  // AI_PROVIDER_NOT_CONFIGURED (honest UI — no fake responses).
+  const ollamaBaseUrl = process.env.OLLAMA_BASE_URL ?? 'http://localhost:11434';
+  const ollamaModel = process.env.OLLAMA_MODEL ?? 'llama3.1';
+  const ollama = new OllamaClient({
+    baseUrl: ollamaBaseUrl,
+    model: ollamaModel,
+    apiKeyEnvVar: 'OLLAMA_API_KEY',
+  });
+
+  // Construct the AgentController over the OllamaClient + BrowserActionService.
+  agentController = new AgentController({
+    ollama,
+    actions: browserActionService,
+    callbacks: makeControllerCallbacks(),
+  });
+
   return win;
 }
 
@@ -147,8 +204,11 @@ function bootstrap(): void {
     // for the browser-channel handlers; foundation handlers can also be
     // registered at the same time. Registering ONCE avoids "duplicate
     // handler" errors from Electron.
-    createMainWindow(); // constructs BrowserCore
+    createMainWindow(); // constructs BrowserCore + BrowserActionService + AgentController
     registerIpcHandlers(browserCore ?? undefined);
+    if (agentController) {
+      registerAgentIpcHandlers(agentController);
+    }
   });
 
   app.on('render-process-gone', (_evt, _wc, details) => {
@@ -159,8 +219,14 @@ function bootstrap(): void {
     console.error('[main] child-process-gone:', details);
   });
 
-  // On quit, ensure incognito partitions are cleared.
+  // On quit, ensure incognito partitions are cleared + agent is disposed.
   app.on('before-quit', () => {
+    if (agentController) {
+      agentController.dispose();
+    }
+    if (browserActionService) {
+      browserActionService.dispose();
+    }
     if (browserCore) {
       void browserCore.dispose();
     }

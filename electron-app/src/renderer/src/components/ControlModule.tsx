@@ -1,6 +1,11 @@
 /**
  * ControlModule — HUMAN ↔ AGENT visual control surface.
  *
+ * PROMPT 5: now wired to the real runtime via props (mode, agentRunning,
+ * onSetMode, onTakeControl). The local `useControlState` hook from PROMPT 3
+ * is still used for instant visual feedback (takeover latch), but the
+ * actual mode transitions go through IPC to the AgentController.
+ *
  * Visual language:
  *   HUMAN  — calm teal accent, stable outline button, no motion.
  *   AGENT  — amber accent, subtle ambient motion on the mode pill.
@@ -10,49 +15,73 @@
  *   - subtle   (HUMAN, agent shutting down)
  *   - elevated (AGENT, idle)
  *   - critical (AGENT, running — strong glow + pulse; or takeover latched)
- *
- * NO IPC. NO Agent Runtime. State is local-deterministic via useControlState().
- * PROMPT 5 will wire the actual AgentController; this UI shell is the
- * foundation.
  */
-import { useControlState } from '../store/control-store';
-import { getControlModeLabel, getControlModeAccent } from '../store/ui-logic';
-import type { ControlMode, TakeControlVisibility } from '../store/ui-logic';
+import { useState, useCallback } from 'react';
+import {
+  getControlModeLabel,
+  getControlModeAccent,
+  getTakeControlVisibility,
+  type ControlMode,
+  type ControlState,
+  type TakeControlVisibility,
+} from '../store/ui-logic';
 
 interface ControlModuleProps {
-  /** Optional callback when TAKE CONTROL is pressed (in addition to the local state update). */
-  onTakeControl?: () => void;
-  /** Optional callback when mode is switched (e.g. to focus the AgentPanel). */
-  onModeChange?: (mode: ControlMode) => void;
-  /** Compact mode for narrow windows. */
+  mode: ControlMode;
+  agentRunning: boolean;
+  onSetMode: (mode: ControlMode) => void;
+  onTakeControl: () => void;
+  /** Optional compact mode for narrow windows. */
   compact?: boolean;
 }
 
 export function ControlModule({
+  mode,
+  agentRunning,
+  onSetMode,
   onTakeControl,
-  onModeChange,
   compact = false,
 }: ControlModuleProps) {
-  const ctrl = useControlState();
-  const visibility = ctrl.takeControlVisibility;
+  // Local takeover latch — set immediately on TAKE CONTROL for instant
+  // visual feedback; cleared when the mode flips back to AGENT (user
+  // explicitly switches back). The runtime AgentController also tracks
+  // this, but the local latch ensures the UI reacts instantly.
+  const [takeoverLatched, setTakeoverLatched] = useState(false);
 
-  const handleSwitchMode = (mode: ControlMode) => {
-    if (mode === 'AGENT') {
-      ctrl.activateAgent();
-    } else {
-      ctrl.takeControl();
-    }
-    onModeChange?.(mode);
+  // Build a ControlState for the visibility helper.
+  const controlState: ControlState = {
+    mode,
+    agentRunning,
+    takeoverLatched,
   };
+  const visibility = getTakeControlVisibility(controlState);
 
-  const handleTakeControl = () => {
-    ctrl.takeControl();
-    onTakeControl?.();
-  };
+  const handleSwitchMode = useCallback(
+    (nextMode: ControlMode) => {
+      if (nextMode === mode) return;
+      if (nextMode === 'AGENT') {
+        // Clear the latch when switching to AGENT.
+        setTakeoverLatched(false);
+      }
+      onSetMode(nextMode);
+    },
+    [mode, onSetMode]
+  );
+
+  const handleTakeControl = useCallback(() => {
+    setTakeoverLatched(true);
+    onTakeControl();
+  }, [onTakeControl]);
+
+  // Clear the latch when the mode flips back to AGENT (the user
+  // explicitly switched back, acknowledging the takeover).
+  if (takeoverLatched && mode === 'AGENT') {
+    setTakeoverLatched(false);
+  }
 
   return (
     <div
-      className={`control-module control-module--${ctrl.mode.toLowerCase()} ${
+      className={`control-module control-module--${mode.toLowerCase()} ${
         compact ? 'control-module--compact' : ''
       }`}
       role="group"
@@ -60,16 +89,16 @@ export function ControlModule({
     >
       <div className="control-module__mode-pill" aria-live="polite">
         <span
-          className={`control-module__mode-dot control-module__mode-dot--${ctrl.mode.toLowerCase()}`}
+          className={`control-module__mode-dot control-module__mode-dot--${mode.toLowerCase()}`}
           aria-hidden
         />
         <span
           className="control-module__mode-label"
-          style={{ ['--nc-mode-accent' as string]: `var(${getControlModeAccent(ctrl.mode)})` }}
+          style={{ ['--nc-mode-accent' as string]: `var(${getControlModeAccent(mode)})` }}
         >
-          {getControlModeLabel(ctrl.mode)}
+          {getControlModeLabel(mode)}
         </span>
-        {ctrl.agentRunning && (
+        {agentRunning && (
           <span
             className="control-module__agent-status"
             aria-label="Agent task running"
@@ -83,14 +112,14 @@ export function ControlModule({
         <div className="control-module__mode-switch" role="radiogroup" aria-label="Control mode selector">
           <ModeSwitchButton
             mode="HUMAN"
-            active={ctrl.mode === 'HUMAN'}
-            disabled={!ctrl.canTransitionTo('HUMAN') && ctrl.mode !== 'HUMAN'}
+            active={mode === 'HUMAN'}
+            disabled={mode === 'HUMAN'}
             onClick={() => handleSwitchMode('HUMAN')}
           />
           <ModeSwitchButton
             mode="AGENT"
-            active={ctrl.mode === 'AGENT'}
-            disabled={!ctrl.canTransitionTo('AGENT') && ctrl.mode !== 'AGENT'}
+            active={mode === 'AGENT'}
+            disabled={mode === 'AGENT' && !agentRunning ? false : agentRunning}
             onClick={() => handleSwitchMode('AGENT')}
           />
         </div>
