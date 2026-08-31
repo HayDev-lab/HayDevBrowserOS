@@ -1,5 +1,5 @@
 /**
- * PRELOAD script — Personal Agentic Browser (Foundation v0.1).
+ * PRELOAD script — Personal Agentic Browser (Foundation + Browser Core).
  *
  * SECURITY:
  *  Runs with `sandbox: true` (set in BrowserWindow webPreferences). Therefore
@@ -14,36 +14,132 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type {
   ExposedApi,
+  BrowserApi,
+  AppVersionInfo,
   FoundationPingPayload,
   FoundationPingResult,
-  AppVersionInfo,
+  OpenTabRequest,
+  NavigateRequest,
+  TabIdRequest,
+  HistoryQuery,
+  HistoryAddRequest,
+  BookmarkAddRequest,
+  TabState,
+  HistoryEntry,
+  Bookmark,
+  DownloadItemState,
 } from '@shared/ipc-types';
 
 // Whitelist of channels the renderer may invoke through the bridge.
 // Anything NOT in this set is silently rejected at the preload boundary.
 const ALLOWED_INVOKE_CHANNELS = new Set<string>([
+  // Foundation
   'app:version',
   'foundation:ping',
+  // Browser Core — tabs
+  'browser:tabs:list',
+  'browser:tabs:open',
+  'browser:tabs:close',
+  'browser:tabs:activate',
+  // Browser Core — navigation
+  'browser:navigate',
+  'browser:back',
+  'browser:forward',
+  'browser:reload',
+  'browser:stop',
+  // Browser Core — history
+  'browser:history:query',
+  'browser:history:delete',
+  'browser:history:clear',
+  'browser:history:add',
+  // Browser Core — bookmarks
+  'browser:bookmarks:list',
+  'browser:bookmarks:add',
+  'browser:bookmarks:delete',
+  // Browser Core — downloads
+  'browser:downloads:list',
+  'browser:downloads:cancel',
+  'browser:downloads:remove',
 ]);
 
 // Forward-only channels the renderer may subscribe to.
 const ALLOWED_LISTEN_CHANNELS = new Set<string>([
-  // Reserved — no broadcasts in foundation stage.
+  // Reserved — push-based updates come in PROMPT 3+ when UI needs live refresh.
 ]);
+
+// Type-safe invoke helper. The cast through `unknown` is necessary because
+// ipcRenderer.invoke returns `Promise<unknown>`; we assert the channel
+// contract on the TypeScript side instead.
+function invoke<T>(channel: string, ...args: unknown[]): Promise<T> {
+  if (!ALLOWED_INVOKE_CHANNELS.has(channel)) {
+    return Promise.reject(
+      new Error(`preload: channel not allowed: ${channel}`)
+    );
+  }
+  return ipcRenderer.invoke(channel, ...args) as Promise<T>;
+}
+
+const browserApi: BrowserApi = {
+  // Tabs
+  listTabs: () => invoke<TabState[]>('browser:tabs:list'),
+  openTab: (request: OpenTabRequest) => invoke<string>('browser:tabs:open', request),
+  closeTab: (tabId: string) => {
+    const req: TabIdRequest = { tabId };
+    return invoke<boolean>('browser:tabs:close', req);
+  },
+  activateTab: (tabId: string) => {
+    const req: TabIdRequest = { tabId };
+    return invoke<boolean>('browser:tabs:activate', req);
+  },
+
+  // Navigation
+  navigate: (request: NavigateRequest) => invoke<boolean>('browser:navigate', request),
+  back: (tabId: string) => {
+    const req: TabIdRequest = { tabId };
+    return invoke<boolean>('browser:back', req);
+  },
+  forward: (tabId: string) => {
+    const req: TabIdRequest = { tabId };
+    return invoke<boolean>('browser:forward', req);
+  },
+  reload: (tabId: string) => {
+    const req: TabIdRequest = { tabId };
+    return invoke<boolean>('browser:reload', req);
+  },
+  stop: (tabId: string) => {
+    const req: TabIdRequest = { tabId };
+    return invoke<boolean>('browser:stop', req);
+  },
+
+  // History
+  queryHistory: (query: HistoryQuery) => invoke<HistoryEntry[]>('browser:history:query', query),
+  deleteHistory: (id: string) => invoke<boolean>('browser:history:delete', { id }),
+  clearHistory: () => invoke<void>('browser:history:clear'),
+  addHistory: (request: HistoryAddRequest) => invoke<HistoryEntry>('browser:history:add', request),
+
+  // Bookmarks
+  listBookmarks: () => invoke<Bookmark[]>('browser:bookmarks:list'),
+  addBookmark: (request: BookmarkAddRequest) => invoke<Bookmark>('browser:bookmarks:add', request),
+  deleteBookmark: (id: string) => invoke<boolean>('browser:bookmarks:delete', { id }),
+
+  // Downloads
+  listDownloads: () => invoke<DownloadItemState[]>('browser:downloads:list'),
+  cancelDownload: (id: string) => invoke<boolean>('browser:downloads:cancel', { id }),
+  removeDownload: (id: string) => invoke<boolean>('browser:downloads:remove', { id }),
+};
 
 const api: ExposedApi = {
   async getVersion(): Promise<AppVersionInfo> {
-    return ipcRenderer.invoke('app:version') as Promise<AppVersionInfo>;
+    return invoke<AppVersionInfo>('app:version');
   },
 
   async ping(
     payload: FoundationPingPayload
   ): Promise<FoundationPingResult> {
-    return ipcRenderer.invoke(
-      'foundation:ping',
-      payload
-    ) as Promise<FoundationPingResult>;
+    return invoke<FoundationPingResult>('foundation:ping', payload);
   },
+
+  browser: browserApi,
 
   on(channel: string, listener: (data: unknown) => void): () => void {
     if (!ALLOWED_LISTEN_CHANNELS.has(channel)) {
@@ -58,33 +154,4 @@ const api: ExposedApi = {
   },
 };
 
-// `invoke` calls are also gated by the main process handler whitelist
-// (only registered handlers exist), but we additionally guard the surface
-// here so a compromised renderer cannot probe arbitrary channels.
-const proxiedApi = new Proxy(api, {
-  get(target, prop, receiver) {
-    const value = Reflect.get(target, prop, receiver);
-    if (typeof value === 'function') {
-      return (...args: unknown[]) => {
-        // Validate that any first-arg string channel is whitelisted (defensive).
-        if (
-          args.length > 0 &&
-          typeof args[0] === 'string' &&
-          prop === 'on'
-        ) {
-          if (!ALLOWED_LISTEN_CHANNELS.has(args[0] as string)) {
-            return () => {};
-          }
-        }
-        if (prop === 'getVersion' || prop === 'ping') {
-          // These are direct methods; main-side handler whitelist enforces them.
-          return (value as (...a: unknown[]) => unknown).apply(target, args);
-        }
-        return (value as (...a: unknown[]) => unknown).apply(target, args);
-      };
-    }
-    return value;
-  },
-});
-
-contextBridge.exposeInMainWorld('api', proxiedApi);
+contextBridge.exposeInMainWorld('api', api);

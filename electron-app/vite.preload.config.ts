@@ -12,10 +12,12 @@ export default defineConfig({
         entryFileNames: '[name].js',
         chunkFileNames: '[name].js',
         assetFileNames: '[name].[ext]',
+        format: 'cjs',
       },
     },
     outDir: '.vite/build',
     emptyOutDir: false,
+    target: 'node18',
   },
   resolve: {
     alias: {

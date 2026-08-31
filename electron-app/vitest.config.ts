@@ -1,0 +1,28 @@
+import { defineConfig } from 'vitest/config';
+
+// Vitest config — covers PURE LOGIC only.
+//
+// Scope:
+//   - URL utilities, navigation stack, tab state machine, history store,
+//     bookmarks store, download state machine.
+//
+// Out of scope (DEFERRED_RUNTIME):
+//   - Anything that imports `electron` (BrowserWindow, WebContentsView,
+//     session, app). Those modules live in `src/main/browser/runtime/`
+//     and are NOT imported by tests.
+export default defineConfig({
+  test: {
+    include: ['tests/**/*.test.ts'],
+    environment: 'node',
+    globals: false,
+    reporters: ['default'],
+    pool: 'forks',
+    isolate: true,
+    coverage: { enabled: false },
+  },
+  resolve: {
+    alias: {
+      '@shared': '/src/shared',
+    },
+  },
+});

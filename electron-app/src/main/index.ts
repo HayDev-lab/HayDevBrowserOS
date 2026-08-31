@@ -1,21 +1,28 @@
 /**
- * Electron MAIN process — Personal Agentic Browser (Foundation v0.1).
+ * Electron MAIN process — Personal Agentic Browser (Foundation + Browser Core).
  *
- * Scope of this file (PROMPT 1):
+ * Scope of this file:
  *  - app lifecycle (single-instance lock, ready, window-creation, quit)
- *  - BrowserWindow with the mandated security baseline for REMOTE web content
+ *  - BrowserWindow (BaseWindow-style) with the mandated security baseline
+ *  - construction of `BrowserCore` and attachment to the window
  *  - registration of the typed IPC handlers
  *  - minimal error handling (uncaughtException, unhandledRejection,
  *    render-process-gone, child-process-gone)
  *
+ * PROMPT 2 changes:
+ *  - The renderer chrome is now hosted in a WebContentsView (added by
+ *    BrowserCore), not loaded into the BrowserWindow's own webContents.
+ *  - BrowserCore owns tab WebContentsView instances.
+ *  - Window-open policy is delegated to BrowserCore (which uses setWindowOpenHandler
+ *    on each tab view to keep external navigations in the user's default browser).
+ *
  * NON-GOALS for this stage:
- *  - tabs / multi-window browser core
- *  - preload that exposes anything beyond the foundation bridge
- *  - AI / Ollama / MCP / Vault / Incognito / Deep Research
+ *  - AI / Ollama / MCP / Vault / Incognito UI / Deep Research
  */
 import { app, BrowserWindow, shell } from 'electron';
 import path from 'node:path';
 import { registerIpcHandlers } from './ipc-handlers';
+import { BrowserCore } from './browser/runtime/browser-core';
 
 // ---------------------------------------------------------------------------
 // Error handling (minimal, no log files yet — PROMPT 1 keeps surface small)
@@ -56,9 +63,9 @@ function acquireSingleInstanceLock(): boolean {
 // ---------------------------------------------------------------------------
 // BrowserWindow factory — SECURITY BASELINE for remote web content.
 // ---------------------------------------------------------------------------
-function createMainWindow(): BrowserWindow {
-  const preloadPath = path.join(__dirname, 'preload.js');
+let browserCore: BrowserCore | null = null;
 
+function createMainWindow(): BrowserWindow {
   const win = new BrowserWindow({
     width: 1440,
     height: 900,
@@ -69,19 +76,14 @@ function createMainWindow(): BrowserWindow {
     title: 'Personal Agentic Browser',
     autoHideMenuBar: true,
     webPreferences: {
-      // ──────────────────────────────────────────────────────────────
-      // SECURITY BASELINE (NON-NEGOTIABLE per Shared Project Context)
-      // ──────────────────────────────────────────────────────────────
+      // The BrowserWindow's own webContents is NOT used for browsing —
+      // BrowserCore installs a WebContentsView for the renderer chrome.
+      // We still apply the security baseline for defence in depth.
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: true,
       webSecurity: true,
       allowRunningInsecureContent: false,
-      // No remote module — removed since Electron 14; not re-enabled.
-      // Load the preload bridge that exposes the typed `window.api`.
-      preload: preloadPath,
-      // Disable bypass of CSP via webSecurity toggles at runtime.
-      javascript: true,
     },
   });
 
@@ -89,8 +91,9 @@ function createMainWindow(): BrowserWindow {
     win.show();
   });
 
-  // Open external links in the user's default browser, not inside the app window.
-  // (Will be revisited in PROMPT 2 for in-app navigation policy.)
+  // Default external-link policy for the BrowserWindow's own webContents
+  // (which renders the React chrome). Tab web contents views get their
+  // own per-tab policy in NavigationController / BrowserCore.
   win.webContents.setWindowOpenHandler(({ url }) => {
     setImmediate(() => {
       void shell.openExternal(url);
@@ -98,19 +101,21 @@ function createMainWindow(): BrowserWindow {
     return { action: 'deny' };
   });
 
-  // Load the renderer bundle produced by @electron-forge/plugin-vite.
-  // MAIN_VITE_ENTRY is injected by the Vite plugin at dev/build time.
-  const devUrl = typeof MAIN_VITE_ENTRY === 'string' ? MAIN_VITE_ENTRY : undefined;
-  if (devUrl) {
-    void win.loadURL(devUrl);
-  } else {
-    // Production-style load from disk (also used by `electron-vite build` smoke test).
-    const prodPath =
-      typeof RENDERER_VITE_ENTRY === 'string'
-        ? RENDERER_VITE_ENTRY
-        : path.join(__dirname, '../renderer/index.html');
-    void win.loadFile(prodPath);
-  }
+  // Construct BrowserCore and attach to the window.
+  const userDataDir = app.getPath('userData');
+  const rendererHtmlPath =
+    typeof RENDERER_VITE_ENTRY === 'string'
+      ? RENDERER_VITE_ENTRY
+      : path.join(__dirname, '../renderer/index.html');
+  const rendererDevUrl =
+    typeof MAIN_VITE_ENTRY === 'string' ? MAIN_VITE_ENTRY : undefined;
+
+  browserCore = new BrowserCore({
+    userDataDir,
+    rendererHtmlPath,
+    rendererDevUrl,
+  });
+  browserCore.attachToWindow(win);
 
   return win;
 }
@@ -138,8 +143,12 @@ function bootstrap(): void {
   });
 
   app.whenReady().then(() => {
-    registerIpcHandlers();
-    createMainWindow();
+    // Construct the window + BrowserCore first. BrowserCore is required
+    // for the browser-channel handlers; foundation handlers can also be
+    // registered at the same time. Registering ONCE avoids "duplicate
+    // handler" errors from Electron.
+    createMainWindow(); // constructs BrowserCore
+    registerIpcHandlers(browserCore ?? undefined);
   });
 
   app.on('render-process-gone', (_evt, _wc, details) => {
@@ -148,6 +157,13 @@ function bootstrap(): void {
 
   app.on('child-process-gone', (_evt, details) => {
     console.error('[main] child-process-gone:', details);
+  });
+
+  // On quit, ensure incognito partitions are cleared.
+  app.on('before-quit', () => {
+    if (browserCore) {
+      void browserCore.dispose();
+    }
   });
 }
 
