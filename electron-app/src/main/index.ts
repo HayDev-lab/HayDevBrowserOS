@@ -136,23 +136,12 @@ function createMainWindow(): BrowserWindow {
       closeTab: (tabId) => browserCore!.closeTab(tabId),
       hasTab: (tabId) => browserCore!.listTabs().some((t) => t.id === tabId),
     },
-    // Resolve a tab id to its WebContents — BrowserCore owns the per-tab
-    // WebContentsView; we need a way to access the underlying webContents.
-    // For V1, we expose a method on BrowserCore (added in PROMPT 2 but
-    // accessed via a thin shim here). If BrowserCore doesn't expose it,
-    // we return null and DOM-level actions will fail with tab_not_found
-    // (which is the safe default).
-    resolveWebContents: (tabId) => {
-      // BrowserCore doesn't expose webContents directly in V1 — this is a
-      // known limitation. The BrowserActionService falls back to
-      // navigate/listTabs/openTab/activateTab/closeTab which don't need
-      // WebContents. DOM actions (click/type/scroll/readPage) require
-      // WebContents and will be DEFERRED_RUNTIME until BrowserCore exposes
-      // a resolveWebContents method.
-      // TODO(PROMPT 11): add BrowserCore.getTabWebContents(tabId).
-      void tabId;
-      return null;
-    },
+    // Resolve a tab id to its underlying WebContents via BrowserCore's
+    // internal accessor. The returned WebContents is a LIVE Electron object
+    // that NEVER crosses the IPC boundary — it is consumed only by
+    // WebContentsActionAdapter (trusted main-process code) which uses
+    // executeJavaScript with internally-generated static script templates.
+    resolveWebContents: (tabId) => browserCore!.resolveWebContents(tabId),
   });
 
   // Construct the OllamaClient from environment configuration.

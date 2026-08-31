@@ -505,3 +505,57 @@ Artifacts produced:
 - electron-app/reports/05_agent_runtime_report.md (NEW)
 - Updated: src/shared/ipc-types.ts, src/preload/index.ts, src/main/index.ts, src/renderer/src/App.tsx, src/renderer/src/components/{TopBar,ControlModule,AgentPanel}.tsx
 - Regenerable: electron-app/.vite/build/{main.js,preload.js,renderer/}, electron-app/out/Personal Agentic Browser-linux-x64/
+
+---
+Task ID: 5R
+Agent: Minimal Repair Agent (PROMPT 5R — Real WebContents Resolution Repair)
+Task: Fix the single confirmed gap: BrowserActionService cannot resolve tabId → WebContents because BrowserCore stores TabRuntime privately. Add minimal safe resolver (runtime-only, not exposed via IPC/renderer). Don't add new features. Don't start Credential Vault.
+
+Work Log:
+- READ: 05_agent_runtime_report.md, 04_browser_actions_report.md, BrowserCore (tabRuntimes private Map<string, TabRuntime>), BrowserActionService (resolveWebContents in deps), WebContentsActionAdapter (resolveWebContents in WebContentsAdapterDeps), main/index.ts (null-stub with TODO(PROMPT 11)), relevant tests.
+- FACT: BrowserCore.tabRuntimes is private. main/index.ts uses null-stub for resolveWebContents. DOM actions (click/type/scroll/readPage) always fail with tab_not_found. The entire chain (BrowserActionService → WebContentsActionAdapter → resolveWebContents) is ready — only the stub is the gap.
+- ROOT CAUSE: BrowserCore doesn't expose tabId → WebContents accessor. TabRuntime map is private.
+- MINIMAL FIX: Add BrowserCore.resolveWebContents(tabId): WebContents | null — returns runtime.view.webContents if tab exists and not destroyed; null otherwise. Runtime-only internal accessor (NOT serializable, NOT via IPC, NOT in preload, NOT in renderer, NOT returned by AgentController). Update main/index.ts to use real resolver instead of null-stub. Add tests for resolver + security boundary.
+- EXPECTED EFFECT: Production dependency graph now leads to real WebContents, not a stub. DOM actions will work on real Electron GUI (DEFERRED_RUNTIME for actual executeJavaScript test, but wiring is correct).
+- IMPLEMENT: Added `import { WebContents }` to BrowserCore. Added `resolveWebContents(tabId: string): WebContents | null` method after `stop()`. Returns `runtime.view.webContents` if tab exists and `!wc.isDestroyed()`; else `null`. Extensive JSDoc documenting security boundary (NOT serializable, NOT via IPC, NOT in preload/renderer, ONLY caller is BrowserActionServiceDeps.resolveWebContents).
+- IMPLEMENT: Updated main/index.ts — replaced null-stub with `resolveWebContents: (tabId) => browserCore!.resolveWebContents(tabId)`. Removed TODO(PROMPT 11) comment and `void tabId; return null;` stub.
+- IMPLEMENT: Created tests/webcontents-resolver.test.ts (31 tests):
+  - Resolver behavior: existing tab → WebContents, unknown → null, closed → null, destroyed → null, repeated calls return same object, no cross-contamination between tabs, read-only (no state change), resolver doesn't add/remove tabs.
+  - Production wiring: BrowserActionService accepts resolver function, main/index.ts uses real resolver (not stub), resolver consumed ONLY by trusted main-process code (adapter + service + main wiring, NOT preload).
+  - Security boundary: WebContents absent from ExposedApi, browser-actions-types, agent-types, browser-types, preload, renderer (12 files), AgentController public methods, tool-registry (no execute_js/shell/filesystem/http_request/electron_call), BrowserActionService (no executeJs/eval/runScript).
+  - BrowserCore source audit: method signature correct, defensive null check, isDestroyed check, uses tabRuntimes (not duplicate registry), tabRuntimes stays private readonly.
+  - Production dependency graph: all 5 links verified (BrowserCore → resolveWebContents → main wiring → BrowserActionService → WebContentsActionAdapter → executeJavaScript → AgentController). No stub/TODO remains.
+- VERIFY (LOOP, one error at a time):
+  - Error 1 (test failure): browser-actions-types.ts and browser-types.ts contain "WebContents" in JSDoc comments → tests expected 0 matches but found comment references. Fix: refined regex to check import statements and type annotations only (not comments). PASS.
+- VERIFY (STATIC_VERIFIED): typecheck:node PASS, typecheck:web PASS, typecheck:test PASS, lint PASS.
+- VERIFY (UNIT_VERIFIED): vitest run → 22 files, 618/618 tests PASS ✅ (was 587; +31 new: webcontents-resolver test file).
+- VERIFY (Vite builds): main.js 72.37 kB (was 72.22; +0.15 — resolveWebContents method), preload.js 2.21 kB (unchanged), renderer 169.11 kB JS + 30.29 kB CSS (unchanged).
+- VERIFY (Electron Forge package): app.asar 278061 bytes (was 277913; +148 bytes — resolveWebContents method).
+- VERIFY (DEFERRED_RUNTIME): Tried launching packaged binary → ERROR:ozone_platform_x11.cc(245)] Missing X server or $DISPLAY.
+- MICRO AUDIT (security regression, source-level grep — all 0 matches):
+  - nodeIntegration:true → 0; contextIsolation:false → 0; sandbox:false → 0; webSecurity:false → 0
+  - require( in renderer → 0; ipcRenderer in renderer → 0
+  - from 'electron' in pure/ → 0; eval in agent/ → 0
+  - WebContents in shared/ (only in comments, not in imports/types) → 0
+  - WebContents in preload → 0; WebContents in renderer → 0
+- MICRO AUDIT (WebContents boundary, bundle-level): grep'd main.js → all 5 security flags correct; resolveWebContents appears 3 times in main.js, 0 in preload.js, 0 in renderer — confirms accessor stays in main process only.
+- MICRO AUDIT (regression): all 587 PROMPT 1–5 tests STILL PASS — zero regression.
+
+Stage Summary:
+- Final status: PROMPT_5R = PASS.
+- PROMPT_5 = STATIC_VERIFIED + UNIT_VERIFIED + INTEGRATION_VERIFIED + DEFERRED_RUNTIME.
+- NEXT_ALLOWED = PROMPT_6_CREDENTIAL_VAULT.
+- Test count: 618 (was 587; +31 new resolver tests).
+- BrowserCore.resolveWebContents(tabId) exists — returns existing WebContents for known tabs, null for unknown/closed/destroyed.
+- main/index.ts wires real resolver (not stub) — production dependency graph leads to real WebContents.
+- WebContents NEVER leaves main process (0 references in preload/renderer/ExposedApi/shared-types).
+- No duplicate browser state (resolver uses existing tabRuntimes, not a new registry).
+- No arbitrary JS API (no executeJs/eval/runScript; tool registry doesn't contain execute_js).
+- REAL_EXECUTE_JAVASCRIPT = DEFERRED_RUNTIME (GUI), but wiring is statically proven correct.
+
+Artifacts produced:
+- Updated: src/main/browser/runtime/browser-core.ts (+ resolveWebContents method)
+- Updated: src/main/index.ts (replaced null-stub with real resolver)
+- NEW: tests/webcontents-resolver.test.ts (31 tests)
+- Updated: electron-app/reports/05_agent_runtime_report.md (+ Repair 5R section)
+- Regenerable: electron-app/.vite/build/{main.js,preload.js,renderer/}, electron-app/out/Personal Agentic Browser-linux-x64/

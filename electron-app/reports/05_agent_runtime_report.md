@@ -652,3 +652,126 @@ Per the prompt's EXIT CRITERIA, PROMPT 5 may close as `STATIC_VERIFIED + UNIT_VE
 ---
 
 _Report generated on Linux sandbox (no Windows runtime available, no OLLAMA_API_KEY). All STATIC_VERIFIED, UNIT_VERIFIED, and INTEGRATION_VERIFIED claims are backed by actual command outputs shown above. No runtime claim is fabricated._
+
+---
+
+## Repair 5R — WebContents Resolution
+
+### Root Cause
+
+`BrowserCore` хранил `tabRuntimes` (Map<string, TabRuntime>) приватно. `main/index.ts` использовал null-stub для `resolveWebContents`, поэтому `WebContentsActionAdapter` не мог найти реальный `WebContents` для tab — DOM-level actions (`click`, `type`, `scroll`, `readPage`) всегда возвращали `tab_not_found`.
+
+Закомментирован `TODO(PROMPT 11)` — перенос на более поздний этап.
+
+### Changed Files
+
+| Path | Change |
+|---|---|
+| `src/main/browser/runtime/browser-core.ts` | + `import { WebContents }` + `resolveWebContents(tabId: string): WebContents \| null` method. Returns `runtime.view.webContents` если tab существует и `webContents.isDestroyed() === false`; иначе `null`. Runtime-only accessor — НЕ сериализуется, НЕ идёт через IPC, НЕ экспортируется в preload/renderer. |
+| `src/main/index.ts` | Заменил null-stub на `resolveWebContents: (tabId) => browserCore!.resolveWebContents(tabId)`. Убрал `TODO(PROMPT 11)` и `void tabId; return null;`. |
+| `tests/webcontents-resolver.test.ts` | NEW — 31 test: resolver behavior (existing/unknown/closed/destroyed tabs, read-only), production wiring evidence (dependency graph, no stub), security boundary (WebContents absent from ExposedApi/preload/renderer/tool-registry/agent-types). |
+
+### Production Wiring Evidence
+
+Production dependency graph теперь реально ведёт к существующему WebContents:
+
+```
+BrowserCore
+    │
+    ├── tabs/navigation (existing — openTab/closeTab/activateTab/listTabs/navigateTab/back/forward/reload/stop)
+    │
+    └── resolveWebContents(tabId)  ← NEW internal accessor
+                    │
+                    ▼
+          WebContentsActionAdapter  (existing — uses executeJavaScript with static templates ONLY)
+                    │
+                    ▼
+          BrowserActionService     (existing — the ONLY browser execution layer)
+                    │
+                    ▼
+             AgentController       (existing — orchestrates agent loop)
+```
+
+Статически доказано (test: `production dependency graph`):
+- Link 1: BrowserCore exposes `resolveWebContents(tabId)` ✓
+- Link 2: `main/index.ts` wires `browserCore!.resolveWebContents` into BrowserActionService ✓
+- Link 3: BrowserActionService constructs WebContentsActionAdapter with the resolver ✓
+- Link 4: WebContentsActionAdapter uses `resolveWebContents` + `executeJavaScript` ✓
+- Link 5: AgentController wraps BrowserActionService via `wrapActionService` ✓
+
+No stub or TODO remains in production wiring:
+- `TODO(PROMPT 11)` removed ✓
+- `void tabId; return null;` removed ✓
+
+### Tests
+
+| Test file | Tests | Covers |
+|---|---|---|
+| `tests/webcontents-resolver.test.ts` | 31 | Resolver behavior (existing tab → WebContents, unknown → null, closed → null, destroyed → null, read-only/no-state-change), production wiring (BrowserActionService accepts resolver function, main/index.ts uses real resolver not stub, resolver consumed ONLY by trusted main-process code), security boundary (WebContents absent from ExposedApi/browser-actions-types/agent-types/browser-types/preload/renderer/AgentController-public-methods/tool-registry), no arbitrary JS API (executeJs/eval/runScript absent), BrowserCore source audit (method signature, defensive null checks, isDestroyed, uses tabRuntimes not duplicate registry, tabRuntimes stays private), full dependency graph verification. |
+
+### Security Boundary
+
+**PASS.** Статически доказано что WebContents accessor НЕ покидает main process:
+
+| Check | Result |
+|---|---|
+| `ExposedApi` (ipc-types.ts) не содержит WebContents | ✅ 0 matches |
+| `browser-actions-types.ts` не импортирует WebContents как тип | ✅ 0 import/annotation matches |
+| `agent-types.ts` не импортирует WebContents | ✅ 0 matches |
+| `browser-types.ts` не импортирует WebContents как тип | ✅ 0 import/annotation matches |
+| `preload/index.ts` не содержит resolveWebContents / WebContents | ✅ 0 matches |
+| preload ALLOWED_INVOKE_CHANNELS не содержит webcontents/execute_js channels | ✅ 0 matches |
+| renderer source (12 files) не импортирует WebContents / resolveWebContents | ✅ 0 matches |
+| AgentController public methods не возвращают WebContents | ✅ 0 matches |
+| tool registry не содержит execute_js/shell/filesystem/http_request/electron_call | ✅ |
+| tool validator rejects arbitrary JS execution | ✅ |
+| BrowserActionService не имеет executeJs/eval/runScript method | ✅ |
+| `tabRuntimes` остаётся private readonly (не exposed as public field/getter) | ✅ |
+| Bundle: `resolveWebContents` встречается 3 раза в main.js, 0 в preload.js, 0 в renderer | ✅ |
+
+### Deferred Runtime
+
+| Item | Reason | Evidence |
+|---|---|---|
+| Real `webContents.executeJavaScript` calls | Requires running Electron GUI | `Missing X server or $DISPLAY` |
+| Real DOM actions (click/type/scroll/readPage) on live pages | Requires running WebContents | Same |
+| Real stable ID resolution on live pages | Requires running WebContents | Same |
+
+**Но** production dependency graph теперь статически доказано ведёт к существующему WebContents, а не к заглушке. `REAL_EXECUTE_JAVASCRIPT = DEFERRED_RUNTIME` (GUI), но wiring правильный.
+
+### Regression
+
+| Check | Before Repair 5R | After Repair 5R | Verdict |
+|---|---|---|---|
+| typecheck:node | PASS | PASS | ✅ no regression |
+| typecheck:web | PASS | PASS | ✅ no regression |
+| typecheck:test | PASS | PASS | ✅ no regression |
+| lint | PASS | PASS | ✅ no regression |
+| vitest | 21 files / 587 tests PASS | 22 files / 618 tests PASS | ✅ all 587 prior tests still PASS; +31 new resolver tests |
+| vite build (main) | main.js 72.22 kB | main.js 72.37 kB | ✅ expected growth (+0.15 kB — resolveWebContents method) |
+| vite build (preload) | preload.js 2.21 kB | preload.js 2.21 kB | ✅ unchanged |
+| vite build (renderer) | JS 169.11 kB + CSS 30.29 kB | JS 169.11 kB + CSS 30.29 kB | ✅ unchanged |
+| electron-forge package | app.asar 277913 bytes | app.asar 278061 bytes | ✅ expected growth (+148 bytes) |
+| Security grep (source) | 0 matches | 0 matches | ✅ no regression |
+| Security flags (bundle) | All correct | All correct | ✅ no regression |
+| WebContents boundary (bundle) | N/A | main.js: 3 refs; preload: 0; renderer: 0 | ✅ accessor stays in main |
+| Browser Core pure-logic tests | 123 tests PASS | 123 tests PASS | ✅ zero regression |
+| BrowserActionService tests | 173 tests PASS | 173 tests PASS | ✅ zero regression |
+| Neural Cockpit tests | 116 tests PASS | 116 tests PASS | ✅ zero regression |
+| Agent Runtime tests | 175 tests PASS | 175 tests PASS | ✅ zero regression |
+
+### Repair Verdict
+
+**`PROMPT_5R = PASS`**
+
+Production wiring `BrowserActionService → production resolver → existing tab WebContents` реально присутствует в коде:
+- `BrowserCore.resolveWebContents(tabId)` method существует и возвращает существующий WebContents.
+- `main/index.ts` wires `browserCore.resolveWebContents` в BrowserActionService (не stub).
+- Electron object (WebContents) НЕ выходит из main process (0 references в preload/renderer/ExposedApi/shared-types).
+- Duplicate browser state отсутствует (resolver использует существующий `tabRuntimes`, не создаёт новый registry).
+- Arbitrary JS API наружу отсутствует (нет executeJs/eval/runScript; tool registry не содержит execute_js).
+- 618/618 tests PASS, typecheck PASS, lint PASS, builds PASS, previous regressions PASS, security regression PASS.
+
+**`PROMPT_5 = STATIC_VERIFIED + UNIT_VERIFIED + INTEGRATION_VERIFIED + DEFERRED_RUNTIME`**
+
+**`NEXT_ALLOWED = PROMPT_6_CREDENTIAL_VAULT`**

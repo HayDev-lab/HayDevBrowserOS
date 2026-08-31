@@ -37,6 +37,7 @@ import {
   app,
   BrowserWindow,
   WebContentsView,
+  WebContents,
   Rectangle,
 } from 'electron';
 import path from 'node:path';
@@ -210,6 +211,43 @@ export class BrowserCore {
     if (!runtime) return false;
     runtime.nav.stop();
     return true;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Internal runtime accessor — USED ONLY BY TRUSTED MAIN-PROCESS CODE
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Resolve a tab id to its underlying `WebContents`.
+   *
+   * RETURNS A LIVE ELECTRON OBJECT. This method is:
+   *   - NOT serializable (WebContents cannot cross IPC).
+   *   - NOT exposed via the IPC channel whitelist.
+   *   - NOT exported through preload's contextBridge.
+   *   - NOT visible to the renderer.
+   *   - NOT returned by AgentController.
+   *
+   * The ONLY legitimate caller is `BrowserActionServiceDeps.resolveWebContents`,
+   * wired in `main/index.ts`. That resolver is consumed by
+   * `WebContentsActionAdapter` which uses `webContents.executeJavaScript()`
+   * with internally-generated static templates ONLY.
+   *
+   * Returns null if:
+   *   - The tab id is unknown.
+   *   - The tab was closed (TabRuntime deleted).
+   *   - The underlying webContents has been destroyed.
+   *
+   * SECURITY: This accessor does NOT grant arbitrary JS execution. It only
+   * returns a reference to an existing WebContents. All JS execution still
+   * goes through WebContentsActionAdapter's static script templates, which
+   * never accept caller-supplied JS strings.
+   */
+  resolveWebContents(tabId: string): WebContents | null {
+    const runtime = this.tabRuntimes.get(tabId);
+    if (!runtime) return null;
+    const wc = runtime.view.webContents;
+    if (wc.isDestroyed()) return null;
+    return wc;
   }
 
   // ---------------------------------------------------------------------------
