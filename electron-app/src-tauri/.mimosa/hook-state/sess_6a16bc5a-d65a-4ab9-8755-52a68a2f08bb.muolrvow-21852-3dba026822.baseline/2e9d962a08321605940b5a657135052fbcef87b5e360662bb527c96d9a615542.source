@@ -1,0 +1,46 @@
+[package]
+name = "app"
+version = "0.1.0"
+description = "HayDevBrowser — Tauri 2 desktop runtime (browser core)"
+authors = ["HayDev Labs"]
+license = "UNLICENSED"
+repository = ""
+edition = "2021"
+rust-version = "1.77.2"
+
+[lib]
+name = "app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+log = "0.4"
+# `unstable` = the multi-webview API surface (WebviewBuilder + Window::add_child).
+# Required for child tab webviews in one window; this is the standard route for
+# Tauri-based browsers ("unstable" = API may change between minors, not runtime).
+tauri = { version = "2.11.6", features = ["unstable"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-log = "2"
+tauri-plugin-single-instance = "2"
+uuid = { version = "1", features = ["v4"] }
+ureq = { version = "2", features = ["json"] }
+url = "2"
+sha2 = "0.10"
+regex = "1"
+# HTML allowlist sanitizer for the darkweb preview (parity: the Electron
+# preview sanitizer — script/style-free fragment, a[href http(s)] only).
+ammonia = "4"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+# unwind (NOT abort): a panicking provider/agent worker thread must kill only
+# itself — never the whole browser with 20 open tabs. The panic hook in
+# lib.rs still logs every unwind.
+panic = "unwind"
+strip = true

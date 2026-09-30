@@ -624,11 +624,23 @@ fn serve_darkweb(
             let id = api.trim_start_matches("api/search/").trim_end_matches("/cancel");
             respond(serde_json::json!({ "ok": service.cancel_search(id) }), 200)
         }
-        ("api/preview", "POST") | ("api/fetch", "POST") => {
+        ("api/preview", "POST") => {
             let Some(url) = body.get("url").and_then(|v| v.as_str()) else {
                 return respond(serde_json::json!({ "error": "invalid_json" }), 400);
             };
-            let mode = if api == "api/preview" || body.get("mode").and_then(|v| v.as_str()) == Some("text") {
+            // Electron parity: sanitized HTML fragment ({title, html, …}) —
+            // the page renders it via srcdoc in a sandboxed iframe.
+            let config = service.config();
+            match crate::darkweb::fetch_preview_html(app, &config, url) {
+                Ok(v) => respond(v, 200),
+                Err(code) => respond(serde_json::json!({ "error": code }), 502),
+            }
+        }
+        ("api/fetch", "POST") => {
+            let Some(url) = body.get("url").and_then(|v| v.as_str()) else {
+                return respond(serde_json::json!({ "error": "invalid_json" }), 400);
+            };
+            let mode = if body.get("mode").and_then(|v| v.as_str()) == Some("text") {
                 "text"
             } else {
                 "metadata"

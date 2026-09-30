@@ -68,6 +68,13 @@ pub struct DarkWebConfig {
     pub ahmia_enabled: bool,
     pub tor66_enabled: bool,
     pub store_search_history: bool,
+    // Ranking weights (Electron DARKWEB_HARD_BOUNDS.ranking, clamp 0..10).
+    pub rank_provider_count: f64,
+    pub rank_title_match: f64,
+    pub rank_snippet_match: f64,
+    pub rank_url_match: f64,
+    pub rank_reachable: f64,
+    pub rank_freshness: f64,
 }
 
 impl Default for DarkWebConfig {
@@ -87,6 +94,12 @@ impl Default for DarkWebConfig {
             ahmia_enabled: true,
             tor66_enabled: true,
             store_search_history: true,
+            rank_provider_count: 3.0,
+            rank_title_match: 2.0,
+            rank_snippet_match: 0.5,
+            rank_url_match: 1.0,
+            rank_reachable: 1.5,
+            rank_freshness: 0.5,
         }
     }
 }
@@ -124,6 +137,14 @@ impl DarkWebConfig {
                 "tor66": { "enabled": self.tor66_enabled },
             },
             "storeSearchHistory": self.store_search_history,
+            "ranking": {
+                "providerCount": self.rank_provider_count,
+                "titleMatch": self.rank_title_match,
+                "snippetMatch": self.rank_snippet_match,
+                "urlMatch": self.rank_url_match,
+                "reachable": self.rank_reachable,
+                "freshness": self.rank_freshness,
+            },
         });
         let _ = std::fs::write(&path, serde_json::to_string_pretty(&doc).unwrap_or_default());
     }
@@ -166,6 +187,15 @@ impl DarkWebConfig {
         }
         c.enabled = raw.get("enabled").and_then(get_bool).unwrap_or(c.enabled);
         c.store_search_history = raw.get("storeSearchHistory").and_then(get_bool).unwrap_or(c.store_search_history);
+        if let Some(r) = raw.get("ranking") {
+            let get_f = |v: &Value| v.as_f64();
+            c.rank_provider_count = clamp_f64(r.get("providerCount").and_then(get_f), 0.0, 10.0, c.rank_provider_count);
+            c.rank_title_match = clamp_f64(r.get("titleMatch").and_then(get_f), 0.0, 10.0, c.rank_title_match);
+            c.rank_snippet_match = clamp_f64(r.get("snippetMatch").and_then(get_f), 0.0, 10.0, c.rank_snippet_match);
+            c.rank_url_match = clamp_f64(r.get("urlMatch").and_then(get_f), 0.0, 10.0, c.rank_url_match);
+            c.rank_reachable = clamp_f64(r.get("reachable").and_then(get_f), 0.0, 10.0, c.rank_reachable);
+            c.rank_freshness = clamp_f64(r.get("freshness").and_then(get_f), 0.0, 10.0, c.rank_freshness);
+        }
         c
     }
 
@@ -212,6 +242,14 @@ impl DarkWebConfig {
                 self.tor66_enabled = t;
             }
         }
+        if let Some(r) = patch.get("ranking") {
+            self.rank_provider_count = clamp_f64(r.get("providerCount").and_then(Value::as_f64), 0.0, 10.0, self.rank_provider_count);
+            self.rank_title_match = clamp_f64(r.get("titleMatch").and_then(Value::as_f64), 0.0, 10.0, self.rank_title_match);
+            self.rank_snippet_match = clamp_f64(r.get("snippetMatch").and_then(Value::as_f64), 0.0, 10.0, self.rank_snippet_match);
+            self.rank_url_match = clamp_f64(r.get("urlMatch").and_then(Value::as_f64), 0.0, 10.0, self.rank_url_match);
+            self.rank_reachable = clamp_f64(r.get("reachable").and_then(Value::as_f64), 0.0, 10.0, self.rank_reachable);
+            self.rank_freshness = clamp_f64(r.get("freshness").and_then(Value::as_f64), 0.0, 10.0, self.rank_freshness);
+        }
     }
 
     /// UI echo (parity: getConfig / redacted).
@@ -232,8 +270,20 @@ impl DarkWebConfig {
                 "tor66": { "enabled": self.tor66_enabled },
             },
             "storeSearchHistory": self.store_search_history,
+            "ranking": {
+                "providerCount": self.rank_provider_count,
+                "titleMatch": self.rank_title_match,
+                "snippetMatch": self.rank_snippet_match,
+                "urlMatch": self.rank_url_match,
+                "reachable": self.rank_reachable,
+                "freshness": self.rank_freshness,
+            },
         })
     }
+}
+
+fn clamp_f64(v: Option<f64>, min: f64, max: f64, default: f64) -> f64 {
+    v.unwrap_or(default).clamp(min, max)
 }
 
 fn clamp_port(p: u64) -> u16 {
@@ -604,16 +654,24 @@ pub fn merge_results(entries: Vec<NormalizedResult>) -> Vec<MergedResult> {
     order.into_iter().filter_map(|k| by_key.remove(&k)).collect()
 }
 
-/// Weighted deterministic ranking (parity: rank.ts defaults).
+/// Weighted deterministic ranking (parity: rank.ts — weights from CONFIG,
+/// Electron defaults providerCount 3 / titleMatch 2 / snippetMatch 0.5 /
+/// urlMatch 1 / reachable 1.5 / freshness 0.5).
 pub fn rank_results(
     merged: Vec<MergedResult>,
     query: &str,
     reachability: &HashMap<String, (&'static str, Option<u64>)>,
     now: u64,
+    config: &DarkWebConfig,
 ) -> Vec<Value> {
-    // Default weights from DARKWEB_HARD_BOUNDS.ranking.
-    let (w_provider, w_title, w_snippet, w_url, w_reach, w_fresh) =
-        (2.0f64, 2.0, 0.5, 1.0, 1.5, 0.5);
+    let (w_provider, w_title, w_snippet, w_url, w_reach, w_fresh) = (
+        config.rank_provider_count,
+        config.rank_title_match,
+        config.rank_snippet_match,
+        config.rank_url_match,
+        config.rank_reachable,
+        config.rank_freshness,
+    );
     let terms = extract_query_terms(query);
     let mut scored: Vec<(f64, MergedResult, &'static str, Option<u64>)> = merged
         .into_iter()
@@ -753,6 +811,61 @@ fn extract_title(html: &str) -> Option<String> {
         .map(|m| unescape_html(m.as_str()).chars().take(300).collect())
 }
 
+/// Sanitize fetched HTML into an allowlisted, script-free fragment for the
+/// darkweb preview overlay — port of the Electron preview sanitizer
+/// (html-extract.ts): every tag outside the allowlist is dropped, ALL
+/// attributes disappear except a[href] with http(s) URLs, and ammonia
+/// forces rel="noopener noreferrer" on the surviving links. The page
+/// renders the fragment in a sandbox="" iframe — belt and braces.
+pub fn sanitize_for_preview(html: &str) -> String {
+    use std::collections::{HashMap, HashSet};
+    let capped: String = html.chars().take(200_000).collect();
+    let tags: HashSet<&str> = [
+        "p", "br", "hr", "h1", "h2", "h3", "h4", "h5", "h6",
+        "ul", "ol", "li", "blockquote", "pre", "code",
+        "b", "strong", "i", "em", "u", "s",
+        "table", "thead", "tbody", "tr", "th", "td", "a",
+    ]
+    .into_iter()
+    .collect();
+    let mut tag_attributes: HashMap<&str, HashSet<&str>> = HashMap::new();
+    tag_attributes.insert("a", ["href"].into_iter().collect());
+    let schemes: HashSet<&str> = ["http", "https"].into_iter().collect();
+    ammonia::Builder::new()
+        .tags(tags)
+        .tag_attributes(tag_attributes)
+        .url_schemes(schemes)
+        .strip_comments(true)
+        .clean(&capped)
+        .to_string()
+}
+
+/// Sanitized HTML preview (parity: fetchPreview → {url, finalUrl, title,
+/// html, status, contentType}); the page renders `html` via srcdoc in a
+/// sandboxed iframe.
+pub fn fetch_preview_html(
+    app: &tauri::AppHandle<tauri::Wry>,
+    config: &DarkWebConfig,
+    url: &str,
+) -> Result<Value, String> {
+    if !is_onion_url(url) {
+        return Err("ONION_ONLY".to_string());
+    }
+    let Some((host, port)) = tor_endpoint(app, config) else {
+        return Err("TOR_UNAVAILABLE".to_string());
+    };
+    let resp = socks_http::get_via_socks5(&host, port, url, config.fetch_timeout_ms, config.fetch_max_bytes)
+        .map_err(|e: FetchError| e.code().to_string())?;
+    Ok(json!({
+        "url": url,
+        "finalUrl": resp.final_url,
+        "title": extract_title(&resp.text),
+        "html": sanitize_for_preview(&resp.text),
+        "status": resp.status,
+        "contentType": resp.content_type,
+    }))
+}
+
 /// onion-only fetch through the Tor gateway (parity: fetcher.ts bounds).
 pub fn fetch_page(
     app: &tauri::AppHandle<tauri::Wry>,
@@ -824,6 +937,11 @@ pub struct SearchJob {
     pub cancelled: bool,
     pub settled: usize,
     pub registered: usize,
+    /// Provider ids this job waits on (for the global-timeout report).
+    pub registered_ids: Vec<String>,
+    /// Finalize runs exactly once (late provider settles after a forced
+    /// global-timeout finalize must not re-rank/re-cache/re-chronicle).
+    pub finalized: bool,
 }
 
 impl SearchJob {
@@ -966,6 +1084,8 @@ impl DarkWebService {
             cancelled: false,
             settled: 0,
             registered: runnable.len(),
+            registered_ids: runnable.iter().map(|(id, _)| id.to_string()).collect(),
+            finalized: false,
         }));
         {
             let mut jobs = self.jobs.lock().unwrap_or_else(|p| p.into_inner());
@@ -1037,6 +1157,49 @@ impl DarkWebService {
             });
         }
 
+        // Global budget watchdog (Electron parity: globalTimeoutMs). Rust
+        // threads cannot be killed — instead, when the budget is exhausted
+        // the job is force-finalized with whatever arrived; provider threads
+        // still blocked in a socket read settle later and are ignored via
+        // the `finalized` guard in maybe_finalize.
+        {
+            let job_w = job.clone();
+            let service_w = self.clone();
+            let app_w = app.clone();
+            let cfg_w = config.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(
+                    cfg_w.global_timeout_ms.max(1),
+                ));
+                {
+                    let mut j = job_w.lock().unwrap_or_else(|p| p.into_inner());
+                    if j.finalized || j.cancelled || j.ended_at.is_some() {
+                        return;
+                    }
+                    // Providers that never settled report a GLOBAL timeout.
+                    // No circuit-breaker penalty — the budget is ours, not a
+                    // provider failure (honest health bookkeeping).
+                    let started_at = j.started_at;
+                    for id in j.registered_ids.clone() {
+                        if !j.providers.contains_key(&id) {
+                            j.providers.insert(
+                                id.clone(),
+                                json!({
+                                    "id": id,
+                                    "status": "timeout",
+                                    "durationMs": now_ms().saturating_sub(started_at),
+                                    "resultCount": 0,
+                                    "errorCode": "GLOBAL_TIMEOUT",
+                                }),
+                            );
+                        }
+                    }
+                    j.settled = j.registered;
+                }
+                service_w.maybe_finalize(&app_w, &cfg_w, &job_w);
+            });
+        }
+
         let initial = job.lock().unwrap_or_else(|p| p.into_inner()).snapshot(now);
         Ok(initial)
     }
@@ -1099,6 +1262,10 @@ impl DarkWebService {
         let now = now_ms();
         let (merged, query, search_id) = {
             let mut j = job.lock().unwrap_or_else(|p| p.into_inner());
+            if j.finalized {
+                return;
+            }
+            j.finalized = true;
             if cancelled {
                 j.state = "CANCELLED";
                 j.ended_at = Some(now);
@@ -1144,7 +1311,7 @@ impl DarkWebService {
             reachability = checked.into_inner().unwrap_or_default();
         }
 
-        let ranked = rank_results(merged, &query, &reachability, now);
+        let ranked = rank_results(merged, &query, &reachability, now, config);
         let results: Vec<Value> = ranked
             .into_iter()
             .take(config.max_results)
@@ -1375,6 +1542,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn preview_sanitizer_strips_active_content() {
+        let html = concat!(
+            "<html><head><style>body{}</style></head><body>",
+            "<script>alert(1)</script>",
+            "<p onclick=\"evil()\">text <b>bold</b></p>",
+            "<a href=\"javascript:alert(1)\">bad</a>",
+            "<a href=\"http://x.onion/a?b=1\">good</a>",
+            "<img src=\"http://x.onion/pixel.png\" onerror=\"pwn()\">",
+            "</body></html>"
+        );
+        let clean = sanitize_for_preview(html);
+        assert!(!clean.contains("script"), "script survived: {clean}");
+        assert!(!clean.contains("style"), "style survived: {clean}");
+        assert!(!clean.contains("img"), "img survived: {clean}");
+        assert!(!clean.contains("onclick"), "attribute survived: {clean}");
+        assert!(!clean.contains("javascript:"), "js url survived: {clean}");
+        assert!(clean.contains("<b>bold</b>"), "allowed tag lost: {clean}");
+        assert!(clean.contains("href=\"http://x.onion/a?b=1\""), "safe href lost: {clean}");
+        assert!(clean.contains("rel=\""), "noopener rel missing: {clean}");
+    }
+
+    #[test]
+    fn rank_weights_come_from_config() {
+        // Electron default provider weight is 3 — the config must own it.
+        assert_eq!(DarkWebConfig::default().rank_provider_count, 3.0);
+        let mut cfg = DarkWebConfig::default();
+        let patch = serde_json::json!({ "ranking": { "providerCount": 10.0, "titleMatch": 99.0 } });
+        cfg.apply_patch(&patch);
+        assert_eq!(cfg.rank_provider_count, 10.0);
+        assert_eq!(cfg.rank_title_match, 10.0, "clamp to hard bound failed");
+    }
+
+    #[test]
     fn ahmia_token_extraction() {
         let html = r#"<form><input type="hidden" name="gqfxw" value="7f3a"><input type="text" name="q"></form>"#;
         let token = parse_ahmia_token(html).unwrap();
@@ -1486,7 +1686,7 @@ mod tests {
             make("http://weak.onion/", 1, "unrelated text"),
             make("http://strong.onion/", 3, "bitcoin wallet guide"),
         ];
-        let ranked = rank_results(merged, "bitcoin wallet", &HashMap::new(), 0);
+        let ranked = rank_results(merged, "bitcoin wallet", &HashMap::new(), 0, &DarkWebConfig::default());
         assert_eq!(ranked[0]["url"], "http://strong.onion/");
         assert!(ranked[0]["score"].as_f64().unwrap() > ranked[1]["score"].as_f64().unwrap());
     }
