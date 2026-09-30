@@ -327,11 +327,18 @@ fn attachments_state(app: &tauri::AppHandle<tauri::Wry>) -> SharedAttachments {
 pub const BRIDGE_INIT_SCRIPT: &str = r#"
 (function () {
   'use strict';
-  var href = String(location.href);
-  var m = /^(?:pab:\/\/|(?:https?:)?\/\/pab\.localhost\/)(newtab|search)?\/?(\?.*)?$/i.exec(href);
-  if (!m) return;
-  var page = (m[1] || 'newtab').toLowerCase();
-  if (page !== 'newtab' && page !== 'search') return;
+  // pab pages surface under THREE URL forms depending on the webview
+  // engine/platform: pab://newtab/, http(s)://pab.localhost/newtab/ and
+  // http(s)://pab.newtab/ (WebView2 maps custom schemes to virtual hosts).
+  // The bridge exists ONLY on our own newtab/search documents.
+  function bridgePage(href) {
+    var m = /^pab:\/\/(newtab|search)\/?(\?.*)?$/i.exec(href)
+         || /^(?:https?:)?\/\/pab\.localhost\/(newtab|search)?\/?(\?.*)?$/i.exec(href)
+         || /^(?:https?:)?\/\/pab\.(newtab|search)\/?(\?.*)?$/i.exec(href);
+    return m ? (m[1] || 'newtab').toLowerCase() : null;
+  }
+  var page = bridgePage(String(location.href));
+  if (!page) return;
   if (window.__pabNewTab) return;
   function post(path, body) {
     return fetch(path, {
