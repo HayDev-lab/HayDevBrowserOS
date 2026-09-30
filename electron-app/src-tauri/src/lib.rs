@@ -15,6 +15,7 @@
 //! attachments, memory prompts, download cancel, darkweb crawl/index/quarantine.
 
 pub mod agent;
+pub mod attachments;
 pub mod bridge;
 pub mod cdp;
 pub mod challenge;
@@ -48,6 +49,9 @@ pub fn run() {
     // thread leaves a trace we can read after the fact.
     install_panic_logger();
     tauri::Builder::default()
+        // Native file dialogs for the __pabNewTab attachment bridge (Rust
+        // API only — no JS-side permissions are granted by this plugin).
+        .plugin(tauri_plugin_dialog::init())
         // Single instance: a second launch focuses the existing window instead
         // of forking a second browser state (Electron had this; parity).
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -63,6 +67,7 @@ pub fn run() {
         })
         .manage(runtime_manager::new_manager())
         .manage(agent::new_agent())
+        .manage(attachments::SharedAttachments::default())
         .manage(control::SharedControl::default())
         .manage(darkweb::SharedDarkWeb::new(darkweb::DarkWebService::new(
             &darkweb_data_dir(),

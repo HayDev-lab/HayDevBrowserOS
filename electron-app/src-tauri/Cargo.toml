@@ -23,6 +23,7 @@ log = "0.4"
 # Required for child tab webviews in one window; this is the standard route for
 # Tauri-based browsers ("unstable" = API may change between minors, not runtime).
 tauri = { version = "2.11.6", features = ["unstable"] }
+tauri-plugin-dialog = "2"
 tauri-plugin-log = "2"
 tauri-plugin-single-instance = "2"
 uuid = { version = "1", features = ["v4"] }

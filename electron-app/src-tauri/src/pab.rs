@@ -260,18 +260,129 @@ fn compute_top_sites(entries: &[crate::types::HistoryEntry], limit: usize) -> se
         .collect::<Vec<_>>())
 }
 
-/// Serve `pab://newtab` — the generated page plus live JSON endpoints.
-fn serve_newtab(app: &AppHandle<tauri::Wry>, path: &str) -> http::Response<Vec<u8>> {
+/// Serve `pab://newtab` — the generated page plus live JSON endpoints
+/// (news/topsites) and the attachment/research bridge API that backs
+/// `window.__pabNewTab` (see attachments::BRIDGE_INIT_SCRIPT).
+fn serve_newtab(
+    app: &AppHandle<tauri::Wry>,
+    path: &str,
+    uri: &Uri,
+    request: &tauri::http::Request<Vec<u8>>,
+) -> http::Response<Vec<u8>> {
     let path = path.trim_end_matches('/');
-    match path {
-        "" | "/" | "/index.html" => match read_internal_page("newtab.html") {
+    let method = request.method().as_str();
+    let body: serde_json::Value = if method == "POST" {
+        serde_json::from_slice(request.body()).unwrap_or(serde_json::Value::Null)
+    } else {
+        serde_json::Value::Null
+    };
+    let respond = |v: serde_json::Value, status: u16| -> http::Response<Vec<u8>> {
+        let mut resp = json_response(v.to_string());
+        *resp.status_mut() = http::StatusCode::from_u16(status).unwrap_or(http::StatusCode::OK);
+        resp
+    };
+    match (path, method) {
+        ("", "GET") | ("/", "GET") | ("/index.html", "GET") => match read_internal_page("newtab.html") {
             Some(html) => html_response(html),
             None => not_found("pab://newtab"),
         },
-        "/api/news" => json_response(fetch_tech_news(4)),
-        "/api/topsites" => json_response(topsites_payload(app)),
+        ("/api/news", "GET") => json_response(fetch_tech_news(4)),
+        ("/api/topsites", "GET") => json_response(topsites_payload(app)),
+        // ---- __pabNewTab bridge (pab://newtab + pab://search documents) ----
+        ("/api/attachment/pick", "POST") => {
+            let kind = body.get("kind").and_then(|v| v.as_str()).unwrap_or("file");
+            let pick_id = crate::attachments::start_pick(app, kind);
+            respond(serde_json::json!({ "pickId": pick_id }), 200)
+        }
+        ("/api/attachment/poll", "GET") => {
+            let id = uri
+                .query()
+                .and_then(|q| q.split('&').find(|p| p.starts_with("id=")))
+                .map(|p| urldecode(&p[3..]));
+            match id {
+                Some(id) => match crate::attachments::poll_pick(app, &id) {
+                    Some(v) => respond(v, 200),
+                    None => respond(serde_json::json!({ "error": "NOT_FOUND" }), 404),
+                },
+                None => respond(serde_json::json!({ "error": "invalid_request" }), 400),
+            }
+        }
+        ("/api/research/run", "POST") => {
+            let Some(query) = body.get("query").and_then(|v| v.as_str()) else {
+                return respond(serde_json::json!({ "started": false, "error": "invalid_request" }), 400);
+            };
+            let ids: Vec<String> = body
+                .get("attachmentIds")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+                .unwrap_or_default();
+            respond(start_research_run(app, query, &ids), 200)
+        }
         _ => not_found("pab://newtab"),
     }
+}
+
+/// Fire-and-forget DEEP_RESEARCH start (Electron `newtab:runResearch`
+/// parity): validates the control gates synchronously, then runs the agent
+/// loop on a worker thread — the page gets {started, error?} immediately
+/// and follows progress through the agent timeline pushes.
+fn start_research_run(
+    app: &AppHandle<tauri::Wry>,
+    query: &str,
+    attachment_ids: &[String],
+) -> serde_json::Value {
+    use tauri::Manager;
+    let query = query.trim();
+    if query.is_empty() {
+        return serde_json::json!({ "started": false, "error": "query is empty" });
+    }
+    if query.chars().count() > crate::attachments::NEWTAB_RESEARCH_QUERY_MAX {
+        return serde_json::json!({ "started": false, "error": "query too long" });
+    }
+    let Some(shared) = app.try_state::<crate::agent::SharedAgent>() else {
+        return serde_json::json!({ "started": false, "error": "agent state missing" });
+    };
+    let shared = shared.inner().clone();
+    {
+        let snap = shared.snapshot.lock().unwrap_or_else(|p| p.into_inner());
+        if snap.state == crate::agent::AgentStatus::Running
+            || snap.state == crate::agent::AgentStatus::WaitingForHuman
+        {
+            return serde_json::json!({
+                "started": false,
+                "error": "agent already running (or waiting for human) — stop it first"
+            });
+        }
+    }
+    let Some(control) = app.try_state::<crate::control::SharedControl>() else {
+        return serde_json::json!({ "started": false, "error": "control state missing" });
+    };
+    let control = control.inner().clone();
+    {
+        let mut cs = control.lock().unwrap_or_else(|p| p.into_inner());
+        if !cs.mark_run_started() {
+            return serde_json::json!({
+                "started": false,
+                "error": "switch to AGENT mode first (the run is refused in HUMAN mode)"
+            });
+        }
+    }
+    let digests = crate::attachments::digests_for(app, attachment_ids);
+    let command = crate::attachments::compose_research_command(query, &digests);
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        let profile = "DEEP_RESEARCH".to_string();
+        let _ = crate::agent::run_loop(
+            handle,
+            shared,
+            &control,
+            command,
+            crate::agent::RESEARCH_MAX_STEPS_DEFAULT,
+            &profile,
+        );
+        control.lock().unwrap_or_else(|p| p.into_inner()).mark_run_ended();
+    });
+    serde_json::json!({ "started": true })
 }
 
 /// Serve `pab://search` — the generated page with runtime placeholders
@@ -387,7 +498,7 @@ pub fn handle_pab(app: &AppHandle<tauri::Wry>, request: &tauri::http::Request<Ve
         };
     log::info!("[WEBVIEW] pab request page={page} path={sub_path}");
     match page.as_str() {
-        "newtab" => serve_newtab(app, &sub_path),
+        "newtab" => serve_newtab(app, &sub_path, &uri, request),
         "search" => serve_search(app, &uri),
         "darkweb" => serve_darkweb(app, &sub_path, &uri, request),
         _ => not_found("pab:// page"),

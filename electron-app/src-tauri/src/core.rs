@@ -221,6 +221,13 @@ fn create_tab_webview(
         builder = builder.initialization_script(crate::vault_capture::CAPTURE_INIT_SCRIPT);
     }
 
+    // __pabNewTab bridge (Electron tab-preload parity): fetch()-backed
+    // attachment/research bridge for pab://newtab + pab://search documents.
+    // Injected into every tab webview but SELF-GATED by document URL, so
+    // remote pages never see it — and tab webviews still have ZERO invoke
+    // capability (migration contract §9).
+    builder = builder.initialization_script(crate::attachments::BRIDGE_INIT_SCRIPT);
+
     // Profile mapping: PRIVATE → incognito; DEFAULT/AGENT → dedicated
     // persistent WebView2 user-data folder; DARKWEB → its OWN environment
     // (isolated user-data folder) routed through the Tor SOCKS proxy so
