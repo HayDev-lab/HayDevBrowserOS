@@ -1,7 +1,7 @@
 /**
  * Tor66 search-result parsing (pure).
  *
- * Tor66 (http://tor66sewebgixwhcqfnp5inzp5x5uohhyl3qcyyeiafkliegvfiogiijd.onion)
+ * Tor66 (http://tor66sewebgixwhcqfnp5inzp5x5uohhdy3kvtnyfxc2e5mxiuh34iid.onion)
  * is an onion-only engine; the parser is written defensively because its
  * markup has no published schema: result links are <a> tags whose href is
  * a bare .onion address or http(s) .onion URL, with the surrounding text

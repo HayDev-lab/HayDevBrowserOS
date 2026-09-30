@@ -134,12 +134,17 @@ fn fetch_once_via_socks5(
     connect.extend_from_slice(target.host.as_bytes());
     connect.extend_from_slice(&target.port.to_be_bytes());
     stream.write_all(&connect).map_err(socks_write)?;
-    // Reply: VER REP RSV ATYP ADDR(PORT optional to read fully; read header
-    // then drain the bound address by ATYP).
+    // Reply: VER REP RSV ATYP ADDR — read the header then drain the bound
+    // address by ATYP.
+    // Error-semantics split: tor HOLDS the CONNECT reply for an onion target
+    // until the rendezvous circuit is established, so a timeout here means
+    // "circuit to the target failed/slow" while tor itself is up →
+    // Unreachable (ONION_UNREACHABLE). TorUnavailable stays reserved for
+    // proxy-level failures (tcp connect / greeting / auth reject).
     let mut head = [0u8; 4];
-    stream.read_exact(&mut head).map_err(socks_read)?;
+    stream.read_exact(&mut head).map_err(tunnel_read)?;
     if head[1] != 0x00 {
-        return Err(FetchError::TorUnavailable(format!(
+        return Err(FetchError::Unreachable(format!(
             "SOCKS CONNECT reply status {}",
             head[1]
         )));
@@ -148,7 +153,7 @@ fn fetch_once_via_socks5(
         0x01 => 4 + 2,
         0x03 => {
             let mut l = [0u8; 1];
-            stream.read_exact(&mut l).map_err(socks_read)?;
+            stream.read_exact(&mut l).map_err(tunnel_read)?;
             l[0] as usize + 2
         }
         0x04 => 16 + 2,
@@ -156,12 +161,12 @@ fn fetch_once_via_socks5(
     };
     if drain > 0 {
         let mut sink = vec![0u8; drain];
-        stream.read_exact(&mut sink).map_err(socks_read)?;
+        stream.read_exact(&mut sink).map_err(tunnel_read)?;
     }
 
     // HTTP/1.1 request over the tunnel.
     let req = build_request(&target.host, &target.path);
-    stream.write_all(req.as_bytes()).map_err(socks_write)?;
+    stream.write_all(req.as_bytes()).map_err(tunnel_write)?;
 
     read_http_response(&mut stream, max_bytes)
 }
@@ -171,6 +176,14 @@ fn socks_write(e: std::io::Error) -> FetchError {
 }
 fn socks_read(e: std::io::Error) -> FetchError {
     FetchError::TorUnavailable(format!("read: {e}"))
+}
+/// Post-handshake I/O on the ESTABLISHED tunnel: tor is up; the target
+/// circuit/transfer failed → Unreachable, not TorUnavailable.
+fn tunnel_read(e: std::io::Error) -> FetchError {
+    FetchError::Unreachable(format!("tunnel read: {e}"))
+}
+fn tunnel_write(e: std::io::Error) -> FetchError {
+    FetchError::Unreachable(format!("tunnel write: {e}"))
 }
 
 fn build_request(host: &str, path: &str) -> String {

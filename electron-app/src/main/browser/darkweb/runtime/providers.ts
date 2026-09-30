@@ -100,7 +100,10 @@ export class AhmiaProvider implements DarkWebProvider {
 // ---------------------------------------------------------------------------
 
 export const TOR66_ONION_BASE =
-  'http://tor66sewebgixwhcqfnp5inzp5x5uohhyl3qcyyeiafkliegvfiogiijd.onion';
+  // v3 onion, verified live through the managed Tor SOCKS gateway
+  // (2026-10-01): the previously listed ...uohhyl3qcyyeiafkliegvfiogiijd
+  // address is 55 base32 chars — tor rejects it as an invalid hostname.
+  'http://tor66sewebgixwhcqfnp5inzp5x5uohhdy3kvtnyfxc2e5mxiuh34iid.onion';
 
 export class Tor66Provider implements DarkWebProvider {
   readonly id = 'tor66';

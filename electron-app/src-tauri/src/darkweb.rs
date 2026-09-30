@@ -46,7 +46,7 @@ pub const AHMIA_CLEARNET_BASE: &str = "https://ahmia.fi";
 pub const AHMIA_ONION_BASE: &str =
     "http://juhanurmihxlp77nkq76byazcldy2hlmovfu2epvl5ankdibsot4csyd.onion";
 pub const TOR66_ONION_BASE: &str =
-    "http://tor66sewebgixwhcqfnp5inzp5x5uohhyl3qcyyeiafkliegvfiogiijd.onion";
+    "http://tor66sewebgixwhcqfnp5inzp5x5uohhdy3kvtnyfxc2e5mxiuh34iid.onion";
 
 // ---------------------------------------------------------------------------
 // Config (clamped subset; unknown/absent fields keep defaults)
