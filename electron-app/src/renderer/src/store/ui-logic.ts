@@ -8,7 +8,8 @@
  * React components. Components consume these helpers to compute their
  * rendered output deterministically.
  */
-import type { TabLoadState, TabState, DownloadStateName } from '@shared/browser-types';
+import type { TabLoadState, TabState, DownloadStateName, WebAppPin } from '@shared/browser-types';
+import { CHROME_LAYOUT } from '@shared/browser-types';
 
 // ---------------------------------------------------------------------------
 // Control mode (HUMAN ↔ AGENT)
@@ -142,6 +143,8 @@ export interface TabClassNameInput {
   isIncognito: boolean;
   isAudioPlaying: boolean;
   hovered: boolean;
+  /** Dark-web (Tor) tab — purple accent + indicator (spec §67). */
+  isDarkWeb?: boolean;
 }
 
 /**
@@ -156,6 +159,7 @@ export function getTabModifiers(input: TabClassNameInput): string {
   if (input.loadState === 'error') mods.push('tab--error');
   if (input.loadState === 'committed' && input.active) mods.push('tab--committed');
   if (input.isIncognito) mods.push('tab--incognito');
+  if (input.isDarkWeb) mods.push('tab--darkweb');
   if (input.isAudioPlaying) mods.push('tab--audio');
   if (input.hovered) mods.push('tab--hovered');
   return mods.join(' ');
@@ -180,6 +184,8 @@ export function truncateTitle(title: string, maxLen: number): string {
  */
 export function getFaviconFallback(displayUrl: string): string {
   if (!displayUrl) return '?';
+  // Internal pages get a house glyph instead of a host letter.
+  if (displayUrl.startsWith('pab://')) return '⌂';
   try {
     const u = new URL(displayUrl);
     const host = u.host;
@@ -224,6 +230,8 @@ export interface CommandBarStateInput {
   isHttps: boolean;
   isIncognito: boolean;
   input: string;
+  /** False when the committed URL is an internal page (about:blank, …). */
+  isWebUrl?: boolean;
 }
 
 /**
@@ -253,6 +261,9 @@ export function getCommandBarState(input: CommandBarStateInput): CommandBarState
     return trimmed.length > 0 ? 'navigating' : 'focused';
   }
   if (!input.hasUrl) return 'idle';
+  // Internal pages (about:blank and friends) carry no security signal —
+  // showing the warning border on them is noise.
+  if (input.isWebUrl === false) return 'idle';
   return input.isHttps ? 'secure' : 'insecure';
 }
 
@@ -405,7 +416,7 @@ export type LayoutKind = 'narrow' | 'normal' | 'wide';
  *   wide:    > 1440  — agent panel + extra padding
  */
 export function pickLayoutKind(width: number): LayoutKind {
-  if (width < 980) return 'narrow';
+  if (width < CHROME_LAYOUT.agentPanelMinWidth) return 'narrow';
   if (width < 1440) return 'normal';
   return 'wide';
 }
@@ -415,6 +426,27 @@ export function pickLayoutKind(width: number): LayoutKind {
  */
 export function getLayoutModifier(kind: LayoutKind): string {
   return `app--${kind}`;
+}
+
+// ---------------------------------------------------------------------------
+// Web app pins (tab strip quick launch)
+// ---------------------------------------------------------------------------
+
+/**
+ * Find the tab already showing a pinned web app (origin-prefix match on
+ * committed or pending URL). Returns the tab id, or null when the app has
+ * no open tab — the caller then opens a fresh one.
+ */
+export function findWebAppTabId(tabs: TabState[], app: WebAppPin): string | null {
+  const tab = tabs.find(
+    (t) => t.url.startsWith(app.url) || t.pendingUrl.startsWith(app.url)
+  );
+  return tab?.id ?? null;
+}
+
+/** True when the given (active) tab URL belongs to the pinned app. */
+export function isWebAppTabActive(activeTabUrl: string, app: WebAppPin): boolean {
+  return activeTabUrl.startsWith(app.url);
 }
 
 // ---------------------------------------------------------------------------

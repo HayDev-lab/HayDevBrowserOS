@@ -89,6 +89,36 @@ export interface VaultDeleteInput {
 }
 
 // ---------------------------------------------------------------------------
+// Login capture (save-password prompt)
+// ---------------------------------------------------------------------------
+
+/**
+ * A pending "save password?" prompt. Delivered to the renderer chrome via a
+ * push event. SECURITY: the captured plaintext password NEVER appears here —
+ * it lives only in the main-process capture service until resolved.
+ */
+export interface PasswordSavePrompt {
+  id: string;
+  tabId: string;
+  /** Canonicalized hostname (e.g. "example.com"). */
+  domain: string;
+  username: string;
+  createdAt: number;
+}
+
+/** Push payload for the `vault:prompt:update` channel. */
+export type PasswordPromptUpdate =
+  | { kind: 'set'; prompt: PasswordSavePrompt }
+  | { kind: 'clear' };
+
+/** Raw payload sent by the tab preload when a login form is submitted. */
+export interface CapturedLoginSubmit {
+  url: string;
+  username: string;
+  password: string;
+}
+
+// ---------------------------------------------------------------------------
 // Vault operation results (ALL safe — no plaintext)
 // ---------------------------------------------------------------------------
 

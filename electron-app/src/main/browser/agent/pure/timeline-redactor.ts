@@ -98,6 +98,10 @@ export function buildSafeSummary(
       const amt = typeof args.amount === 'number' ? args.amount : 400;
       return `scroll ${dir} → ${amt}px`;
     }
+    case 'page.screenshot': {
+      // NEVER include imageBase64 — a status word only.
+      return `screenshot → ${result?.success ? 'captured' : 'failed'}`;
+    }
     case 'agent.stop': {
       return `stop → ${truncate(String(args.reason ?? ''), 100)}`;
     }
@@ -196,7 +200,8 @@ export function createEventTimelineEntry(
   kind: string,
   summary: string,
   state: TimelineEntryState = 'completed',
-  now: () => number = Date.now
+  now: () => number = Date.now,
+  fullText?: string
 ): AgentTimelineEntry {
   return {
     id: generateEntryId(),
@@ -205,6 +210,9 @@ export function createEventTimelineEntry(
     target: '-',
     state,
     summary: truncate(summary, AGENT_LOOP_BOUNDS.MAX_SUMMARY_LENGTH),
+    ...(fullText !== undefined
+      ? { fullText: truncate(fullText, AGENT_LOOP_BOUNDS.MAX_CHAT_TEXT) }
+      : {}),
     timestamp: now(),
   };
 }

@@ -1,12 +1,12 @@
 {
-  "name": "personal-agentic-browser",
-  "productName": "Personal Agentic Browser",
+  "name": "haydev-browser-os",
+  "productName": "HayDev Browser OS",
   "version": "0.1.0",
   "description": "Personal Windows agentic browser — Production v1 (Electron + Chromium + TypeScript + React).",
   "license": "UNLICENSED",
   "private": true,
   "author": {
-    "name": "Personal V1"
+    "name": "HayDev Labs"
   },
   "main": ".vite/build/main.js",
   "scripts": {
@@ -17,17 +17,23 @@
     "lint": "node_modules/.bin/eslint \"src/**/*.{ts,tsx}\"",
     "test": "node_modules/.bin/vitest run --config vitest.config.ts",
     "test:watch": "node_modules/.bin/vitest --config vitest.config.ts",
-    "start": "electron-forge start",
-    "dev": "electron-forge start",
-    "package": "electron-forge package",
-    "make": "electron-forge make",
-    "build": "electron-vite build || true"
+    "start": "npm run dev:electron",
+    "dev:electron": "electron-forge start",
+    "dev:vite": "vite -c vite.renderer.config.ts",
+    "dev:tauri": "tauri dev",
+    "build:internal-pages": "node scripts/build-internal-pages.mjs",
+    "package:electron": "electron-forge package",
+    "make:electron": "electron-forge make",
+    "build:electron": "electron-vite build || true",
+    "build:vite": "vite build -c vite.renderer.config.ts",
+    "build:tauri": "tauri build"
   },
   "devDependencies": {
     "@electron-forge/cli": "^7.5.0",
     "@electron-forge/maker-squirrel": "^7.5.0",
     "@electron-forge/maker-zip": "^7.5.0",
     "@electron-forge/plugin-vite": "^7.5.0",
+    "@tauri-apps/cli": "^2.11.5",
     "@types/node": "^20.14.10",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
@@ -35,13 +41,18 @@
     "@typescript-eslint/parser": "^7.18.0",
     "@vitejs/plugin-react": "^4.3.1",
     "@vitest/expect": "^4.1.11",
-    "electron": "^31.3.1",
+    "electron": "^44.3.0",
     "eslint": "^8.57.0",
+    "ollama": "^0.6.3",
+    "png-to-ico": "^3.0.2",
     "typescript": "^5.5.4",
     "vite": "^5.4.0",
     "vitest": "^4.1.11"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@tauri-apps/api": "^2.11.1",
+    "dotenv": "^17.4.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },

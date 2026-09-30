@@ -34,10 +34,18 @@ import type {
   ControlModeUpdate,
   OllamaClientPort,
 } from '@shared/agent-types';
+import { AGENT_LOOP_BOUNDS, AGENT_RUN_MAX_IMAGES } from '@shared/agent-types';
 import type { VaultPort } from '@shared/vault-types';
+import type { ResearchReport } from '@shared/research-types';
+import { RESEARCH_BOUNDS } from '@shared/research-types';
 import type { BrowserActionService } from '../../actions/runtime/browser-action-service';
 import { AgentStateMachine } from '../pure/agent-state-machine';
 import { runAgentLoop, type AbortSignal, type AgentLoopDeps } from '../pure/agent-loop';
+import { getOverlayLabelForTool } from '../pure/overlay-labels';
+import type { MemoryStore } from '../pure/memory-store';
+import type { MemoryPromptUpdate, MemorySavePrompt } from '@shared/memory-types';
+import { ResearchSession } from '../../research/runtime/research-session';
+import { validateResearchQuery } from '../../research/pure/research-query';
 import {
   DEFAULT_CONTROL_AUTHORIZATION,
   switchToAgent as authSwitchToAgent,
@@ -69,12 +77,50 @@ export interface AgentControllerCallbacks {
 
 export interface AgentControllerDeps {
   ollama: OllamaClientPort;
+  /**
+   * Model override for DEEP_RESEARCH runs (e.g. a heavier model than the
+   * STANDARD profile's). Undefined → every run uses ollama.config.model.
+   */
+  deepResearchModel?: string;
   actions: BrowserActionService;
   /** Optional vault port for vault.* agent tools (PROMPT 6). */
   vault?: VaultPort;
+  /** Optional in-page status plaque shown while a run is active. */
+  overlay?: AgentOverlayPort;
+  /**
+   * Confirmed-facts store. When present, memory.save is enabled: proposed
+   * facts surface to the user as a confirmation prompt via pushMemoryPrompt.
+   */
+  memory?: MemoryStore;
+  /** Push a memory confirmation prompt to the chrome renderer (or clear). */
+  pushMemoryPrompt?: (update: import('@shared/memory-types').MemoryPromptUpdate) => void;
   callbacks?: AgentControllerCallbacks;
   /** Override Date.now for tests. */
   now?: () => number;
+}
+
+/** Status plaque port — implemented by AgentOverlay; mocked in tests. */
+export interface AgentOverlayPort {
+  /** Track a tab so hide() can clean it up even after navigation. */
+  track(tabId: string): void;
+  /** Show/refresh the plaque label on the tab the agent acts on. */
+  update(tabId: string, label: string): void;
+  /** Remove every tracked plaque. */
+  hide(): void;
+}
+
+/**
+ * Derive a port whose config.model is overridden. The loop reads
+ * `deps.ollama.config.model` for every chat call, so this is the single
+ * switch point for per-profile models (DEEP_RESEARCH). Everything else is
+ * delegated — the underlying client keeps reading its own credential.
+ */
+function withModelOverride(port: OllamaClientPort, model: string): OllamaClientPort {
+  return {
+    config: { ...port.config, model },
+    isConfigured: () => port.isConfigured(),
+    chat: (request) => port.chat(request),
+  };
 }
 
 export class AgentController {
@@ -84,6 +130,10 @@ export class AgentController {
   private abortSignal: AbortSignal = { aborted: false, reason: '' };
   private currentRun: Promise<AgentRunResult> | null = null;
   private incognitoContext: boolean = false;
+  /** Active research session (only while a DEEP_RESEARCH run is active). */
+  private researchSession: ResearchSession | null = null;
+  /** Last research report (in-memory only — never persisted in V1). */
+  private lastResearchReport: ResearchReport | null = null;
 
   constructor(private deps: AgentControllerDeps) {
     this.stateMachine = new AgentStateMachine(deps.now ?? Date.now);
@@ -98,7 +148,7 @@ export class AgentController {
       state: this.stateMachine.getState(),
       controlMode: this.control.mode,
       stepCount: this.stateMachine.snapshot().stepCount,
-      maxSteps: 15, // TODO: expose from loop bounds
+      maxSteps: AGENT_LOOP_BOUNDS.DEFAULT_MAX_STEPS,
       startedAt: this.stateMachine.snapshot().startedAt,
       endedAt: this.stateMachine.snapshot().endedAt,
       reason: this.stateMachine.snapshot().reason,
@@ -129,9 +179,11 @@ export class AgentController {
   setIncognitoContext(isIncognito: boolean): void {
     const wasIncognito = this.incognitoContext;
     this.incognitoContext = isIncognito;
-    // If transitioning OUT of incognito, clear the private timeline.
+    // If transitioning OUT of incognito, clear the private timeline and any
+    // private research evidence (PROMPT 7 + PROMPT 9 privacy policy).
     if (wasIncognito && !isIncognito) {
       this.clearPrivateTimeline();
+      this.clearResearchState();
     }
   }
 
@@ -154,6 +206,16 @@ export class AgentController {
    */
   isIncognitoContext(): boolean {
     return this.incognitoContext;
+  }
+
+  /**
+   * Clear in-memory research state (the ledger lives inside the session and
+   * is dropped with it; the stored report is discarded). Used on private
+   * context cleanup and disposal — no persistent research history in V1.
+   */
+  clearResearchState(): void {
+    this.lastResearchReport = null;
+    this.researchSession = null;
   }
 
   // ---------------------------------------------------------------------------
@@ -265,10 +327,81 @@ export class AgentController {
     // Clear the timeline for the new run.
     this.timeline = [];
 
+    // DEEP_RESEARCH profile (PROMPT 9): same loop, same services — plus a
+    // deterministic recording session and the research prompt overlay.
+    let researchSession: ResearchSession | null = null;
+    if (request.profile === 'DEEP_RESEARCH') {
+      const query = validateResearchQuery(request.command);
+      if (!query.valid) {
+        this.stateMachine.start();
+        this.stateMachine.markFailed('INVALID_RESEARCH_QUERY', query.reason ?? 'invalid_query');
+        this.emitStateChange();
+        return Promise.resolve({
+          state: 'FAILED',
+          answer: null,
+          stepCount: 0,
+          reason: 'invalid_research_query',
+          error: `Invalid research query: ${query.reason ?? 'invalid'}`,
+        });
+      }
+      researchSession = new ResearchSession();
+      this.researchSession = researchSession;
+    }
+
+    const basePort = this.wrapActionService(this.deps.actions);
+    const actionsPort = researchSession
+      ? researchSession.recordingPort(basePort, this.deps.now ?? Date.now)
+      : basePort;
+
+    // In-page status plaque: show immediately on the active tab (the model
+    // may think for seconds before its first tool call).
+    void (async () => {
+      try {
+        const listed = await this.deps.actions.listTabs();
+        if (!listed.success || !listed.data) return;
+        const tabId =
+          listed.data.tabs.find((t) => t.isActive)?.id ??
+          listed.data.tabs[0]?.id;
+        if (tabId) {
+          this.deps.overlay?.track(tabId);
+          this.deps.overlay?.update(tabId, 'Thinking');
+        }
+      } catch {
+        // Cosmetic — never block a run on the plaque.
+      }
+    })();
+
+    // Per-profile model: DEEP_RESEARCH runs on the heavier research model
+    // (deps.deepResearchModel) when configured; STANDARD keeps the default.
+    const ollamaPort =
+      request.profile === 'DEEP_RESEARCH' && this.deps.deepResearchModel
+        ? withModelOverride(this.deps.ollama, this.deps.deepResearchModel)
+        : this.deps.ollama;
+
     const loopDeps: AgentLoopDeps = {
-      ollama: this.deps.ollama,
-      actions: this.wrapActionService(this.deps.actions),
+      ollama: ollamaPort,
+      actions: actionsPort,
+      resolveActiveTabId: async () => {
+        // Best-effort: the active tab for the model's tab-scoped calls.
+        try {
+          const listed = await this.deps.actions.listTabs();
+          if (!listed.success || !listed.data) return null;
+          return (
+            listed.data.tabs.find((t) => t.isActive)?.id ??
+            listed.data.tabs[0]?.id ??
+            null
+          );
+        } catch {
+          return null;
+        }
+      },
       vault: this.deps.vault,
+      memory: this.deps.memory
+        ? {
+            propose: (fact) => this.proposeMemoryFact(fact),
+          }
+        : undefined,
+      memoryFacts: this.deps.memory?.factTexts(50) ?? [],
       incognitoContext: this.incognitoContext,
       control: this.control,
       onControlChange: (next) => {
@@ -282,17 +415,26 @@ export class AgentController {
         this.deps.callbacks?.onStateChange?.(snapshot);
       },
       now: this.deps.now,
-      maxSteps: request.maxSteps,
+      maxSteps: request.maxSteps ?? (researchSession ? RESEARCH_BOUNDS.DEFAULT_MAX_STEPS : undefined),
+      timeoutMs: researchSession ? RESEARCH_BOUNDS.TIMEOUT_MS : undefined,
+      systemPromptOverlay: researchSession?.promptOverlay(),
     };
 
-    this.currentRun = runAgentLoop(loopDeps, request.command, this.abortSignal)
+    const session = researchSession;
+    // Seeded vision attachments (New Tab image uploads) — bounded by the
+    // shared run-request cap before they enter the loop.
+    const seedImages = (request.images ?? []).slice(0, AGENT_RUN_MAX_IMAGES);
+    this.currentRun = runAgentLoop(loopDeps, request.command, this.abortSignal, seedImages)
       .then((result) => {
         this.currentRun = null;
+        this.deps.overlay?.hide();
+        this.finishResearch(session, result);
         this.deps.callbacks?.onRunComplete?.(result);
         return result;
       })
       .catch((err) => {
         this.currentRun = null;
+        this.deps.overlay?.hide();
         const result: AgentRunResult = {
           state: 'FAILED',
           answer: null,
@@ -300,11 +442,67 @@ export class AgentController {
           reason: 'uncaught_exception',
           error: safeErr(err),
         };
+        this.finishResearch(session, result);
         this.deps.callbacks?.onRunComplete?.(result);
         return result;
       });
 
     return this.currentRun;
+  }
+
+
+  /**
+   * memory.save execution: surface the proposed fact as a confirmation
+   * prompt in the rail. Only the confirmed path writes to the store
+   * (memory:prompt:resolve handler in main).
+   */
+  private pendingMemoryPrompt: MemorySavePrompt | null = null;
+
+  private async proposeMemoryFact(fact: string): Promise<void> {
+    this.pendingMemoryPrompt = {
+      id: `mem_${(this.deps.now ?? Date.now)().toString(36)}_${Math.floor(Math.random() * 1e6).toString(36)}`,
+      fact: fact.slice(0, 300),
+      createdAt: (this.deps.now ?? Date.now)(),
+    };
+    this.deps.pushMemoryPrompt?.({ kind: 'set', prompt: this.pendingMemoryPrompt });
+  }
+
+  /** Resolve the pending memory prompt (called by the IPC layer). */
+  async resolveMemoryPrompt(promptId: string, save: boolean): Promise<{ success: boolean }> {
+    const pending = this.pendingMemoryPrompt;
+    this.pendingMemoryPrompt = null;
+    this.deps.pushMemoryPrompt?.({ kind: 'clear' });
+    if (!pending || pending.id !== promptId || !save) return { success: false };
+    if (!this.deps.memory) return { success: false };
+    await this.deps.memory.confirm(pending.fact);
+    return { success: true };
+  }
+
+  /** Current pending memory prompt (for the renderer's initial fetch). */
+  getMemoryPrompt(): MemorySavePrompt | null {
+    return this.pendingMemoryPrompt;
+  }
+
+  /**
+   * Build + store the research report after a DEEP_RESEARCH run settles —
+   * including STOPPED/aborted runs, where the collected ledger becomes a
+   * SAFE PARTIAL result (architecture allows it; nothing is discarded).
+   */
+  private finishResearch(session: ResearchSession | null, result: AgentRunResult): void {
+    if (!session) return;
+    const nowFn = this.deps.now ?? Date.now;
+    this.lastResearchReport = session.buildReport(result, nowFn());
+    this.researchSession = null;
+  }
+
+  /** Last research report (in-memory only; null before the first run). */
+  getResearchReport(): ResearchReport | null {
+    return this.lastResearchReport;
+  }
+
+  /** True while a DEEP_RESEARCH run is active. */
+  isResearchRunning(): boolean {
+    return this.researchSession !== null;
   }
 
   /**
@@ -330,6 +528,7 @@ export class AgentController {
     this.control = { ...DEFAULT_CONTROL_AUTHORIZATION };
     this.timeline = [];
     this.currentRun = null;
+    this.clearResearchState();
   }
 
   // ---------------------------------------------------------------------------
@@ -346,6 +545,15 @@ export class AgentController {
   private wrapActionService(service: BrowserActionService): BrowserActionPort {
     return {
       dispatch: async (input: ActionInput): Promise<ActionResult<unknown>> => {
+        // In-page plaque follows the tab the agent acts on.
+        const overlay = this.deps.overlay;
+        if (overlay) {
+          const tabId = 'tabId' in input ? (input.tabId as string | undefined) : undefined;
+          if (tabId) {
+            overlay.track(tabId);
+            overlay.update(tabId, getOverlayLabelForTool(kindToToolName(input.kind)));
+          }
+        }
         // The service's dispatch accepts any ActionInput variant and returns
         // a typed result; we widen to ActionResult<unknown> for the port.
         return service.dispatch(input) as Promise<ActionResult<unknown>>;
@@ -378,4 +586,21 @@ function safeErr(err: unknown): string {
     return err.message.replace(/\s+/g, ' ').slice(0, 200);
   }
   return String(err).slice(0, 200);
+}
+
+/** Map an action kind to its tool name for the overlay label lookup. */
+function kindToToolName(kind: ActionInput['kind']): string {
+  switch (kind) {
+    case 'navigate': return 'browser.navigate';
+    case 'readPage': return 'browser.read';
+    case 'click': return 'page.click';
+    case 'type': return 'page.type';
+    case 'scroll': return 'page.scroll';
+    case 'listTabs': return 'tabs.list';
+    case 'openTab': return 'tabs.open';
+    case 'activateTab': return 'tabs.activate';
+    case 'closeTab': return 'tabs.close';
+    case 'stop': return 'agent.stop';
+    default: return kind;
+  }
 }

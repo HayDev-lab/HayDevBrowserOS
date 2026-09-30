@@ -1,7 +1,7 @@
 /* ============================================================================
    NEURAL COCKPIT — DESIGN TOKENS
    ============================================================================
-   Centralized CSS variables for the Personal Agentic Browser renderer.
+   Centralized CSS variables for the HayDev Browser OS renderer.
    All visual surfaces MUST consume these tokens; hardcoded magic values
    are forbidden in component CSS.
 
@@ -15,58 +15,104 @@
      - layout: chrome heights, panel widths
    ========================================================================== */
 
+/* ============================================================================
+   NEURAL COCKPIT — ULTRAFUTURISTIC DESIGN TOKENS
+   ============================================================================
+   Deep-space chrome with holographic glass, animated aurora glows and
+   cybernetic accent system. Inspired by cockpit HUDs, sci-fi terminals and
+   liquid-crystal interfaces.
+   ========================================================================== */
+
 :root {
-  /* ---------- COLORS: foundation ----------------------------------------- */
-  --nc-bg: #04060c;
-  --nc-bg-deep: #02030a;
-  --nc-surface: #0a0e18;
-  --nc-surface-elevated: #111726;
-  --nc-surface-raised: #18202f;
+  /* ---------- COLORS: Matrix foundation ---------------------------------
+     Retinted for the Matrix NTP concept: deep blue-black base #03070B,
+     panels toward #071019/#09141D, primary text #DCE7EE, secondary
+     #8195A6. Teal #00FFD1 stays the system accent; matrix green #00E89D
+     is a RESERVED accent (active/online/agent-focus) — never body text. */
+  --nc-bg: #03070b;
+  --nc-bg-deep: #020508;
+  --nc-bg-void: #000000;
+  --nc-surface: rgba(9, 20, 29, 0.72);
+  --nc-surface-elevated: rgba(12, 27, 38, 0.78);
+  --nc-surface-raised: rgba(18, 38, 52, 0.64);
+  --nc-glass: rgba(7, 16, 25, 0.5);
+  --nc-glass-bright: rgba(13, 29, 42, 0.6);
 
   /* ---------- COLORS: borders -------------------------------------------- */
-  --nc-border: #1c2536;
-  --nc-border-subtle: #131a28;
-  --nc-border-active: #2dd4bf;
-  --nc-border-strong: #2a3548;
+  --nc-border: rgba(38, 66, 90, 0.55);
+  --nc-border-subtle: rgba(30, 52, 72, 0.35);
+  --nc-border-active: #00ffd1;
+  --nc-border-strong: rgba(52, 88, 118, 0.7);
 
   /* ---------- COLORS: text ----------------------------------------------- */
-  --nc-text-primary: #e6edf7;
-  --nc-text-secondary: #8a96a8;
-  --nc-text-muted: #5b6675;
-  --nc-text-inverse: #04060c;
+  --nc-text-primary: #dce7ee;
+  --nc-text-secondary: #8195a6;
+  --nc-text-muted: #556a80;
+  --nc-text-inverse: #03070b;
 
-  /* ---------- COLORS: accent (system / HUMAN) ---------------------------- */
-  --nc-accent: #00e5c4;
-  --nc-accent-soft: #2dd4bf;
-  --nc-accent-dim: rgba(0, 229, 196, 0.18);
-  --nc-accent-faint: rgba(0, 229, 196, 0.06);
+  /* ---------- COLORS: accent (cyan/teal — HUMAN / system) --------------- */
+  --nc-accent: #00ffd1;
+  --nc-accent-soft: #4fffe3;
+  --nc-accent-dim: rgba(0, 255, 209, 0.22);
+  --nc-accent-faint: rgba(0, 255, 209, 0.08);
 
-  /* ---------- COLORS: agent (amber for AGENT mode) ----------------------- */
-  --nc-agent: #f59e0b;
-  --nc-agent-soft: #fbbf24;
-  --nc-agent-dim: rgba(245, 158, 11, 0.18);
-  --nc-agent-faint: rgba(245, 158, 11, 0.06);
+  /* ---------- COLORS: matrix green (reserved accent, dosed) --------------- */
+  --nc-matrix: #00e89d;
+  --nc-matrix-dim: rgba(0, 232, 157, 0.22);
+  --nc-matrix-faint: rgba(0, 232, 157, 0.08);
+
+  /* ---------- COLORS: agent (amber/orange plasma) ----------------------- */
+  --nc-agent: #ff9d00;
+  --nc-agent-soft: #ffcc4d;
+  --nc-agent-dim: rgba(255, 157, 0, 0.22);
+  --nc-agent-faint: rgba(255, 157, 0, 0.08);
 
   /* ---------- COLORS: status --------------------------------------------- */
-  --nc-danger: #ff5a6e;
-  --nc-danger-dim: rgba(255, 90, 110, 0.16);
-  --nc-success: #10b981;
-  --nc-success-dim: rgba(16, 185, 129, 0.16);
-  --nc-warning: #f59e0b;
-  --nc-warning-dim: rgba(245, 158, 11, 0.16);
-  --nc-info: #60a5fa;
-  --nc-info-dim: rgba(96, 165, 250, 0.16);
+  --nc-danger: #ff4d6d;
+  --nc-danger-dim: rgba(255, 77, 109, 0.2);
+  --nc-success: #00e59b;
+  --nc-success-dim: rgba(0, 229, 155, 0.2);
+  --nc-warning: #ff9d00;
+  --nc-warning-dim: rgba(255, 157, 0, 0.2);
+  --nc-info: #5ca8ff;
+  --nc-info-dim: rgba(92, 168, 255, 0.2);
 
-  /* ---------- COLORS: incognito (purple-tinted, distinct) ---------------- */
-  --nc-incognito: #a78bfa;
-  --nc-incognito-dim: rgba(167, 139, 250, 0.18);
-  --nc-incognito-faint: rgba(167, 139, 250, 0.06);
+  /* ---------- COLORS: incognito (violet plasma) ------------------------- */
+  --nc-incognito: #c58aff;
+  --nc-incognito-dim: rgba(197, 138, 255, 0.25);
+  --nc-incognito-faint: rgba(197, 138, 255, 0.08);
+
+  /* ---------- COLORS: web app pins (brand) ------------------------------ */
+  --nc-wa: #25d366;
+  --nc-wa-dim: rgba(37, 211, 102, 0.25);
+  --nc-wa-faint: rgba(37, 211, 102, 0.08);
+  --nc-tg: #229ed9;
+  --nc-tg-dim: rgba(34, 158, 217, 0.25);
+  --nc-tg-faint: rgba(34, 158, 217, 0.08);
+
+  /* ---------- COLORS: dark web (deep onion purple) ---------------------- */
+  /* Distinct from the incognito violet — dark-web surfaces (Tor tabs,
+     pab://darkweb accents) must never be mistaken for incognito. */
+  --nc-onion: #b06bff;
+  --nc-onion-dim: rgba(176, 107, 255, 0.25);
+  --nc-onion-faint: rgba(176, 107, 255, 0.08);
+
+  /* ---------- COLORS: research (cool aurora) ---------------------------- */
+  --nc-research-accent: #a8c6ff;
+  --nc-research-accent-dim: rgba(122, 162, 247, 0.5);
+  --nc-research-accent-faint: rgba(122, 162, 247, 0.15);
+  --nc-research-success: #b4ffd6;
+  --nc-research-success-dim: rgba(140, 220, 170, 0.4);
+  --nc-research-success-faint: rgba(140, 220, 170, 0.12);
+  --nc-research-warning: #ffe0a3;
+  --nc-research-danger: #ff8fa3;
+  --nc-research-link: #9cc3ff;
 
   /* ---------- TYPOGRAPHY ------------------------------------------------- */
-  --nc-font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI",
-    "Segoe UI Variable", "Inter", sans-serif;
-  --nc-font-mono: ui-monospace, "Cascadia Mono", "JetBrains Mono",
-    "SF Mono", Menlo, monospace;
+  --nc-font-sans: "Orbitron", "Exo 2", "Rajdhani", ui-sans-serif, system-ui,
+    -apple-system, "Segoe UI", sans-serif;
+  --nc-font-mono: "JetBrains Mono", "Fira Code", "Cascadia Mono", ui-monospace,
+    Menlo, monospace;
 
   --nc-fs-10: 10px;
   --nc-fs-11: 11px;
@@ -76,16 +122,17 @@
   --nc-fs-16: 16px;
   --nc-fs-18: 18px;
   --nc-fs-22: 22px;
+  --nc-fs-28: 28px;
 
   --nc-fw-regular: 400;
   --nc-fw-medium: 500;
   --nc-fw-semibold: 600;
   --nc-fw-bold: 700;
 
-  --nc-ls-tight: -0.01em;
-  --nc-ls-normal: 0;
-  --nc-ls-wide: 0.04em;
-  --nc-ls-upper: 0.08em;
+  --nc-ls-tight: 0.04em;
+  --nc-ls-normal: 0.06em;
+  --nc-ls-wide: 0.12em;
+  --nc-ls-upper: 0.18em;
 
   --nc-lh-tight: 1.2;
   --nc-lh-normal: 1.4;
@@ -115,34 +162,40 @@
 
   /* ---------- MOTION ----------------------------------------------------- */
   --nc-dur-instant: 80ms;
-  --nc-dur-fast: 120ms;
-  --nc-dur-normal: 200ms;
-  --nc-dur-slow: 300ms;
+  --nc-dur-fast: 150ms;
+  --nc-dur-normal: 280ms;
+  --nc-dur-slow: 450ms;
   --nc-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --nc-ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
   --nc-ease-linear: linear;
 
-  /* ---------- SHADOW / GLOW (controlled, not heavy) --------------------- */
-  --nc-shadow-subtle: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --nc-shadow-normal: 0 2px 8px rgba(0, 0, 0, 0.45);
-  --nc-shadow-strong: 0 8px 24px rgba(0, 0, 0, 0.55);
-  --nc-glow-accent: 0 0 0 1px var(--nc-accent-dim),
-    0 0 12px rgba(0, 229, 196, 0.22);
-  --nc-glow-agent: 0 0 0 1px var(--nc-agent-dim),
-    0 0 12px rgba(245, 158, 11, 0.25);
-  --nc-glow-danger: 0 0 0 1px var(--nc-danger-dim),
-    0 0 14px rgba(255, 90, 110, 0.3);
+  /* ---------- SHADOW / GLOW ---------------------------------------------- */
+  --nc-shadow-subtle: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --nc-shadow-normal: 0 4px 16px rgba(0, 0, 0, 0.55);
+  --nc-shadow-strong: 0 12px 32px rgba(0, 0, 0, 0.65);
+  --nc-glow-accent: 0 0 0 1px rgba(0, 255, 209, 0.4),
+    0 0 20px rgba(0, 255, 209, 0.35);
+  --nc-glow-agent: 0 0 0 1px rgba(255, 157, 0, 0.4),
+    0 0 20px rgba(255, 157, 0, 0.35);
+  --nc-glow-danger: 0 0 0 1px rgba(255, 77, 109, 0.4),
+    0 0 20px rgba(255, 77, 109, 0.35);
+  --nc-glow-incognito: 0 0 0 1px rgba(197, 138, 255, 0.4),
+    0 0 20px rgba(197, 138, 255, 0.35);
 
   /* ---------- LAYOUT ----------------------------------------------------- */
-  --nc-chrome-tabstrip-height: 36px;
+  --nc-chrome-titlebar-height: 40px;
+  --nc-chrome-tabstrip-height: 44px;
   --nc-chrome-toolbar-height: 44px;
-  --nc-chrome-footer-height: 22px;
-  --nc-chrome-total: calc(
-    var(--nc-chrome-tabstrip-height) + var(--nc-chrome-toolbar-height) +
-      var(--nc-chrome-footer-height)
+  /* Top of the window down through the toolbar — overlays (agent panel,
+     floating prompts) must start BELOW this line. */
+  --nc-chrome-top: calc(
+    var(--nc-chrome-titlebar-height) + var(--nc-chrome-tabstrip-height) +
+      var(--nc-chrome-toolbar-height)
   );
-  --nc-panel-width: 340px;
-  --nc-agent-panel-width: 320px;
+  --nc-chrome-footer-height: 24px;
+  --nc-chrome-total: calc(var(--nc-chrome-top) + var(--nc-chrome-footer-height));
+  --nc-panel-width: 360px;
+  --nc-agent-panel-width: 360px;
 
   /* ---------- Z-INDEX ----------------------------------------------------- */
   --nc-z-base: 1;

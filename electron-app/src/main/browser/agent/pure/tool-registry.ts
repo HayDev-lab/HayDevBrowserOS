@@ -102,6 +102,22 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
     ],
   },
   {
+    name: 'page.screenshot',
+    description:
+      'Capture a screenshot of the visible viewport (downscaled JPEG) and receive it as an image. Use when browser.read is not enough: canvas, maps, images, complex layouts, or to visually verify the effect of a previous action.',
+    parameters: [
+      { name: 'tabId', type: 'string', required: false, description: 'Tab to capture. Defaults to the active tab.' },
+    ],
+  },
+  {
+    name: 'memory.save',
+    description:
+      'Propose a durable fact about the user (preferences, routines, constraints) to remember for future tasks. The user must confirm before it is stored. NEVER propose credentials, passwords, tokens, or sensitive personal data. One concise fact per call.',
+    parameters: [
+      { name: 'fact', type: 'string', required: true, description: 'A single concise fact, up to 300 chars.' },
+    ],
+  },
+  {
     name: 'agent.stop',
     description:
       'Stop the current agent run. Use this when the task is impossible or you have enough information to give a final answer.',

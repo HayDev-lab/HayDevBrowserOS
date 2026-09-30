@@ -29,6 +29,7 @@ import type {
   ClickResultData,
   TypeResultData,
   ScrollResultData,
+  ScreenshotResultData,
   StopResultData,
   PageSnapshot,
 } from '@shared/browser-actions-types';
@@ -69,6 +70,7 @@ export type ActionDataOf<K extends ActionInput['kind']> =
   : K extends 'click' ? ClickResultData
   : K extends 'type' ? TypeResultData
   : K extends 'scroll' ? ScrollResultData
+  : K extends 'screenshot' ? ScreenshotResultData
   : K extends 'stop' ? StopResultData
   : never;
 
@@ -189,6 +191,8 @@ async function routeByKind(
       return routeType(deps, input);
     case 'scroll':
       return routeScroll(deps, input);
+    case 'screenshot':
+      return routeScreenshot(deps, input);
     case 'stop':
       return routeStop(deps, input, executionId);
     default: {
@@ -339,6 +343,25 @@ async function routeScroll(
     direction: input.direction,
     amount,
     dispatched,
+  };
+}
+
+async function routeScreenshot(
+  deps: RouterDeps,
+  input: Extract<ActionInput, { kind: 'screenshot' }>
+): Promise<ScreenshotResultData> {
+  if (!deps.tabManagement.hasTab(input.tabId)) {
+    throw new ActionError('tab_not_found', `tab_id:${input.tabId}`);
+  }
+  const captured = await deps.adapter.captureTab(input.tabId, {
+    maxWidth: input.maxWidth ?? 1024,
+  });
+  return {
+    tabId: input.tabId,
+    imageBase64: captured.imageBase64,
+    width: captured.width,
+    height: captured.height,
+    format: 'jpeg',
   };
 }
 

@@ -101,8 +101,8 @@ describe('vault-result-mapper / agent tool security', () => {
     expect(isKnownTool('vault.generate_and_store')).toBe(true);
   });
 
-  it('tool registry now has 13 tools total (10 + 3 vault)', () => {
-    expect(TOOL_DEFINITIONS.length).toBe(13);
+  it('tool registry now has 15 tools total (11 + 3 vault + memory)', () => {
+    expect(TOOL_DEFINITIONS.length).toBe(15);
   });
 });
 

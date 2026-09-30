@@ -498,6 +498,8 @@ function minimalValidInput(kind: ActionInput['kind']): ActionInput {
       return { kind, tabId: 'tab_1', elementId: 'el_1', text: 'x' };
     case 'scroll':
       return { kind, tabId: 'tab_1', direction: 'down', amount: 100 };
+    case 'screenshot':
+      return { kind, tabId: 'tab_1' };
     case 'stop':
       return { kind };
   }

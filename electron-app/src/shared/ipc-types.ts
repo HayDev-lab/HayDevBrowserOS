@@ -30,6 +30,7 @@ import type {
   ControlMode,
   ControlModeUpdate,
 } from './agent-types';
+import type { MemorySavePrompt } from './memory-types';
 import type {
   CredentialMetadata,
   VaultSaveInput,
@@ -42,12 +43,14 @@ import type {
   VaultHasResult,
   VaultListResult,
   VaultDeleteResult,
+  PasswordSavePrompt,
 } from './vault-types';
 
 // Re-export all browser + agent + vault types for convenience.
 export * from './browser-types';
 export * from './agent-types';
 export * from './vault-types';
+export * from './research-types';
 
 // ---------------------------------------------------------------------------
 // Foundation channels (PROMPT 1)
@@ -117,6 +120,7 @@ export type AgentChannel =
   | 'agent:stop'
   | 'agent:status'
   | 'agent:timeline:list'
+  | 'agent:research:report'
   // Control mode
   | 'control:setMode'
   | 'control:takeControl'
@@ -185,6 +189,38 @@ export interface AgentApi {
   status(): Promise<AgentStatusSnapshot>;
   /** Get the current timeline. */
   listTimeline(): Promise<AgentTimelineEntry[]>;
+  /** Last Deep Research report (PROMPT 9); null before the first run. */
+  researchReport(): Promise<import('./research-types').ResearchReport | null>;
+  /**
+   * Native file/image picker for chat attachments. Returns an opaque
+   * descriptor (no filesystem paths); content stays in the MAIN process
+   * registry and is consumed by the next run via attachmentIds.
+   */
+  pickAttachment(kind?: 'file' | 'image'): Promise<{
+    attachment: import('./newtab-bridge').NewTabAttachment | null;
+  }>;
+}
+
+// ---------------------------------------------------------------------------
+// Window API — frameless Matrix title bar controls
+// ---------------------------------------------------------------------------
+export interface WindowApi {
+  minimize(): void;
+  toggleMaximize(): void;
+  close(): void;
+}
+
+/** Managed-runtime health for the chrome footer. */
+export interface RuntimeStatus {
+  /** Configured Perplexica endpoint (e.g. http://127.0.0.1:3000). */
+  endpoint: string;
+  reachable: boolean;
+  /**
+   * Managed-engine phase for the footer chip: 'ready' (engine serving),
+   * 'starting' (engine booting — not an outage), 'offline'. Optional so the
+   * Electron runtime (which does not send it) keeps working unchanged.
+   */
+  state?: 'ready' | 'starting' | 'offline';
 }
 
 // ---------------------------------------------------------------------------
@@ -215,6 +251,14 @@ export interface VaultApi {
   fill(input: VaultFillInput): Promise<VaultFillResult>;
   /** Delete a credential by id. */
   delete(id: string): Promise<VaultDeleteResult>;
+  /** Save-password prompt (login capture). No password ever crosses IPC. */
+  prompt: {
+    current(): Promise<PasswordSavePrompt | null>;
+    resolve(answer: {
+      promptId: string;
+      save: boolean;
+    }): Promise<{ success: boolean; error?: string }>;
+  };
 }
 
 /**
@@ -238,6 +282,15 @@ export interface ExposedApi {
   // Vault (PROMPT 6)
   vault: VaultApi;
 
+  // Agent memory (confirmation prompt for memory.save)
+  memory: MemoryApi;
+
+  // Frameless window controls (Matrix title bar)
+  window: WindowApi;
+
+  // Managed runtime health (footer status)
+  runtimeStatus(): Promise<RuntimeStatus>;
+
   // Event subscription (whitelisted channels only)
   on(channel: string, listener: (data: unknown) => void): () => void;
 }
@@ -249,3 +302,14 @@ declare global {
 }
 
 export const API_NAMESPACE = 'api' as const;
+
+// ---------------------------------------------------------------------------
+// Memory API — agent memory confirmation prompt
+// ---------------------------------------------------------------------------
+export interface MemoryApi {
+  current(): Promise<MemorySavePrompt | null>;
+  resolve(answer: {
+    promptId: string;
+    save: boolean;
+  }): Promise<{ success: boolean }>;
+}

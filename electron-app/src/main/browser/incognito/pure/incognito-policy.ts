@@ -35,7 +35,11 @@ import type { TabState, SessionKind } from '@shared/browser-types';
  * tab is closed.
  */
 export function shouldPersistHistory(tab: TabState): boolean {
-  return !tab.isIncognito;
+  // Internal pages (pab://newtab) are not real visits — never persisted.
+  if (tab.isIncognito || tab.url.startsWith('pab:')) return false;
+  // Local Perplexica search URLs would flood history/top-sites with queries.
+  if (/^http:\/\/(127\.0\.0\.1|localhost)/.test(tab.url)) return false;
+  return true;
 }
 
 /**

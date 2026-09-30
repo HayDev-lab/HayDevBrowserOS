@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "mimosa-hook-status/v1",
+  "recordedAt": "2026-09-30T20:28:11.803Z",
+  "sessionId": "sess_6a16bc5a-d65a-4ab9-8755-52a68a2f08bb",
+  "event": "PostToolUse",
+  "toolName": "Write",
+  "file": "D:\\Projects\\BrowserHayDev\\.diagnostics\\linkcheck.rs",
+  "outcome": "inconclusive",
+  "coverage": "partial",
+  "findingCount": 0,
+  "durationMs": 23,
+  "hostState": "hook_complete",
+  "reportHint": ".mimosa/reports/"
+}

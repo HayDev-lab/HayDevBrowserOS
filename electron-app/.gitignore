@@ -5,9 +5,17 @@ out/
 dist/
 *.log
 
+# Environment variables (contains API keys)
+.env
+.env.local
+.env.*.local
+
 # Forge
 release/
 
 # OS
 .DS_Store
 Thumbs.db
+
+# bundled runtimes (built by scripts/bundle-runtimes.mjs)
+resources/runtimes/

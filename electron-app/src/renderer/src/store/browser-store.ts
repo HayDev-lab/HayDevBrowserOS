@@ -1,8 +1,9 @@
+import { platformApi } from '../platform';
 /**
  * Browser UI store — client-side state mirror of the main process state.
  *
- * Polls `window.api.browser.listTabs()` etc. on a low-frequency interval.
- * Future stages may add push-based subscription via `window.api.on(...)`.
+ * Polls `platformApi.browser.listTabs()` etc. on a low-frequency interval.
+ * Future stages may add push-based subscription via `platformApi.on(...)`.
  */
 import { useEffect, useState, useCallback } from 'react';
 import type {
@@ -58,7 +59,7 @@ export function useBrowserUi(): BrowserUiState {
 
   const refreshTabs = useCallback(async () => {
     try {
-      setTabs(await window.api.browser.listTabs());
+      setTabs(await platformApi.browser.listTabs());
     } catch (e) {
       setError(String(e));
     }
@@ -66,7 +67,7 @@ export function useBrowserUi(): BrowserUiState {
 
   const refreshHistory = useCallback(async () => {
     try {
-      setHistory(await window.api.browser.queryHistory({ limit: 200 }));
+      setHistory(await platformApi.browser.queryHistory({ limit: 200 }));
     } catch (e) {
       setError(String(e));
     }
@@ -74,7 +75,7 @@ export function useBrowserUi(): BrowserUiState {
 
   const refreshBookmarks = useCallback(async () => {
     try {
-      setBookmarks(await window.api.browser.listBookmarks());
+      setBookmarks(await platformApi.browser.listBookmarks());
     } catch (e) {
       setError(String(e));
     }
@@ -82,7 +83,7 @@ export function useBrowserUi(): BrowserUiState {
 
   const refreshDownloads = useCallback(async () => {
     try {
-      setDownloads(await window.api.browser.listDownloads());
+      setDownloads(await platformApi.browser.listDownloads());
     } catch (e) {
       setError(String(e));
     }
@@ -129,25 +130,25 @@ export function useBrowserUi(): BrowserUiState {
 }
 
 // ---------------------------------------------------------------------------
-// Action helpers — thin wrappers around window.api.browser for ergonomics.
+// Action helpers — thin wrappers around platformApi.browser for ergonomics.
 // ---------------------------------------------------------------------------
 export function useBrowserActions() {
   return {
-    openTab: (req: OpenTabRequest) => window.api.browser.openTab(req),
-    closeTab: (tabId: string) => window.api.browser.closeTab(tabId),
-    activateTab: (tabId: string) => window.api.browser.activateTab(tabId),
+    openTab: (req: OpenTabRequest) => platformApi.browser.openTab(req),
+    closeTab: (tabId: string) => platformApi.browser.closeTab(tabId),
+    activateTab: (tabId: string) => platformApi.browser.activateTab(tabId),
     navigate: (tabId: string, url: string) =>
-      window.api.browser.navigate({ tabId, url }),
-    back: (tabId: string) => window.api.browser.back(tabId),
-    forward: (tabId: string) => window.api.browser.forward(tabId),
-    reload: (tabId: string) => window.api.browser.reload(tabId),
-    stop: (tabId: string) => window.api.browser.stop(tabId),
+      platformApi.browser.navigate({ tabId, url }),
+    back: (tabId: string) => platformApi.browser.back(tabId),
+    forward: (tabId: string) => platformApi.browser.forward(tabId),
+    reload: (tabId: string) => platformApi.browser.reload(tabId),
+    stop: (tabId: string) => platformApi.browser.stop(tabId),
     addBookmark: (url: string, title: string) =>
-      window.api.browser.addBookmark({ url, title }),
-    deleteBookmark: (id: string) => window.api.browser.deleteBookmark(id),
-    deleteHistory: (id: string) => window.api.browser.deleteHistory(id),
-    clearHistory: () => window.api.browser.clearHistory(),
-    cancelDownload: (id: string) => window.api.browser.cancelDownload(id),
-    removeDownload: (id: string) => window.api.browser.removeDownload(id),
+      platformApi.browser.addBookmark({ url, title }),
+    deleteBookmark: (id: string) => platformApi.browser.deleteBookmark(id),
+    deleteHistory: (id: string) => platformApi.browser.deleteHistory(id),
+    clearHistory: () => platformApi.browser.clearHistory(),
+    cancelDownload: (id: string) => platformApi.browser.cancelDownload(id),
+    removeDownload: (id: string) => platformApi.browser.removeDownload(id),
   };
 }

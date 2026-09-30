@@ -48,6 +48,29 @@ export interface WebContentsAdapterDeps {
 export class WebContentsActionAdapter implements ActionRuntimeAdapter {
   constructor(private deps: WebContentsAdapterDeps) {}
 
+  async captureTab(
+    tabId: string,
+    opts: { maxWidth: number }
+  ): Promise<{ imageBase64: string; width: number; height: number }> {
+    const wc = this.resolve(tabId);
+    try {
+      let image = await wc.capturePage();
+      const maxWidth = Math.max(320, Math.min(opts.maxWidth, 1600));
+      if (image.getSize().width > maxWidth) {
+        // Only width is given — height keeps the aspect ratio.
+        image = image.resize({ width: maxWidth });
+      }
+      const size = image.getSize();
+      return {
+        imageBase64: image.toJPEG(85).toString('base64'),
+        width: size.width,
+        height: size.height,
+      };
+    } catch (err) {
+      throw new ActionError('screenshot_failed', `tab:${tabId},${safeErr(err)}`);
+    }
+  }
+
   async navigate(tabId: string, url: string): Promise<string> {
     const wc = this.resolve(tabId);
     try {

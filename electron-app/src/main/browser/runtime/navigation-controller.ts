@@ -136,6 +136,11 @@ export class NavigationController {
     return this.stack.snapshot();
   }
 
+  /** Restore navigation state from a session snapshot (back/forward history). */
+  restore(snapshot: { backStack: string[]; current: string | null; forwardStack: string[] }): void {
+    this.stack.restore(snapshot);
+  }
+
   private async loadUrl(url: string): Promise<void> {
     try {
       await this.webContents.loadURL(url);

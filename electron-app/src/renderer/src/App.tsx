@@ -1,13 +1,19 @@
+import { platformApi } from './platform';
 import { useState, useEffect, useCallback } from 'react';
 import { useBrowserUi, useBrowserActions } from './store/browser-store';
 import { useAgentStore } from './store/agent-store';
 import { TopBar } from './components/TopBar';
 import { AgentPanel } from './components/AgentPanel';
+import { PasswordPrompt } from './components/PasswordPrompt';
+import { MemoryPrompt } from './components/MemoryPrompt';
 import { HistoryPanel } from './components/panels/HistoryPanel';
 import { BookmarksPanel } from './components/panels/BookmarksPanel';
 import { DownloadsPanel } from './components/panels/DownloadsPanel';
 import { VaultPanel } from './components/panels/VaultPanel';
-import { pickLayoutKind, getLayoutModifier, type PanelKind } from './store/ui-logic';
+import { pickLayoutKind, getLayoutModifier, findWebAppTabId, type PanelKind } from './store/ui-logic';
+import type { WebAppPin } from '@shared/browser-types';
+import { PAB_NEW_TAB_URL } from '@shared/browser-types';
+import type { RuntimeStatus } from '@shared/ipc-types';
 
 export function App() {
   const ui = useBrowserUi();
@@ -15,6 +21,10 @@ export function App() {
   const agent = useAgentStore();
   const [activePanel, setActivePanel] = useState<PanelKind | null>(null);
   const [version, setVersion] = useState<string>('—');
+  const [runtime, setRuntime] = useState<RuntimeStatus | null>(null);
+  const [online, setOnline] = useState<boolean>(
+    typeof navigator !== 'undefined' ? navigator.onLine : true
+  );
   const [windowWidth, setWindowWidth] = useState(
     typeof window !== 'undefined' ? window.innerWidth : 1280
   );
@@ -29,14 +39,47 @@ export function App() {
   // Read app version once for the chrome footer.
   useEffect(() => {
     let cancelled = false;
-    window.api
+    platformApi
       .getVersion()
       .then((v) => {
-        if (!cancelled) setVersion(`Electron ${v.electron} · Chromium ${v.chrome}`);
+        if (!cancelled) {
+          setVersion(`Electron ${v.electron} · Chromium ${v.chrome}`);
+        }
       })
       .catch(() => {});
     return () => {
       cancelled = true;
+    };
+  }, []);
+
+  // Managed-runtime health for the footer (polled — main caches 20s).
+  useEffect(() => {
+    let cancelled = false;
+    const poll = () => {
+      platformApi
+        .runtimeStatus()
+        .then((s) => {
+          if (!cancelled) setRuntime(s);
+        })
+        .catch(() => {});
+    };
+    poll();
+    const timer = setInterval(poll, 10_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, []);
+
+  // Live network state for the titlebar ONLINE pill.
+  useEffect(() => {
+    const up = () => setOnline(true);
+    const down = () => setOnline(false);
+    window.addEventListener('online', up);
+    window.addEventListener('offline', down);
+    return () => {
+      window.removeEventListener('online', up);
+      window.removeEventListener('offline', down);
     };
   }, []);
 
@@ -46,13 +89,33 @@ export function App() {
   const showAgentPanel = layoutKind !== 'narrow';
 
   const handleOpenTab = useCallback(async () => {
-    await actions.openTab({ url: 'about:blank', activate: true });
+    await actions.openTab({ url: PAB_NEW_TAB_URL, activate: true });
     await ui.refreshTabs();
   }, [actions, ui]);
+
+  // Pinned web apps (WhatsApp / Telegram): focus the existing app tab, or
+  // open one. The pin itself stays in the strip — tabs come and go.
+  const handleOpenWebApp = useCallback(
+    async (app: WebAppPin) => {
+      const existing = findWebAppTabId(ui.tabs, app);
+      if (existing) {
+        await actions.activateTab(existing);
+      } else {
+        await actions.openTab({ url: app.url, activate: true });
+      }
+      await ui.refreshTabs();
+    },
+    [actions, ui]
+  );
 
   const handleCloseTab = useCallback(
     async (tabId: string) => {
       await actions.closeTab(tabId);
+      // Matrix concept: closing the LAST tab never leaves an empty window —
+      // a fresh search dashboard (pab://newtab) takes its place.
+      if (ui.tabs.length <= 1) {
+        await actions.openTab({ url: PAB_NEW_TAB_URL, activate: true });
+      }
       await ui.refreshTabs();
     },
     [actions, ui]
@@ -178,8 +241,15 @@ export function App() {
   }, [agent]);
 
   const handleAgentRun = useCallback(
-    (command: string) => {
-      void agent.run(command);
+    (command: string, opts?: { attachmentIds?: string[] }) => {
+      void agent.run(command, opts);
+    },
+    [agent]
+  );
+
+  const handleAgentResearch = useCallback(
+    (query: string) => {
+      void agent.runResearch(query);
     },
     [agent]
   );
@@ -187,6 +257,25 @@ export function App() {
   const handleAgentStop = useCallback(() => {
     void agent.stop('user_request');
   }, [agent]);
+
+  // Titlebar quick actions — each maps to a REAL capability.
+  const handleNavAction = useCallback(
+    (action: 'think' | 'research' | 'build' | 'automate' | 'settings') => {
+      if (action === 'think') {
+        window.dispatchEvent(new CustomEvent('pab:focus-agent-input'));
+        if (agent.controlMode !== 'AGENT') void agent.setMode('AGENT');
+      } else if (action === 'research') {
+        void handleOpenUrl('pab://search');
+      } else if (action === 'build') {
+        setActivePanel((prev) => (prev === 'vault' ? null : 'vault'));
+      } else if (action === 'automate') {
+        void agent.setMode('AGENT');
+      } else {
+        setActivePanel((prev) => (prev === 'vault' ? null : 'vault'));
+      }
+    },
+    [agent, handleOpenUrl]
+  );
 
   const agentRunning =
     agent.status?.state === 'RUNNING' || agent.status?.state === 'STOPPING';
@@ -203,10 +292,13 @@ export function App() {
         downloadsCount={ui.downloads.length}
         controlMode={agent.controlMode}
         agentRunning={agentRunning}
+        online={online}
         onOpenTab={handleOpenTab}
+        onOpenWebApp={handleOpenWebApp}
         onCloseTab={handleCloseTab}
         onActivateTab={handleActivateTab}
         onNavigate={handleNavigate}
+        onOpenUrl={handleOpenUrl}
         onBack={handleBack}
         onForward={handleForward}
         onReload={handleReload}
@@ -215,6 +307,7 @@ export function App() {
         onTogglePanel={handleTogglePanel}
         onSetControlMode={handleSetControlMode}
         onTakeControl={handleTakeControl}
+        onNavAction={handleNavAction}
       />
 
       {showAgentPanel && (
@@ -224,10 +317,18 @@ export function App() {
           agentStatus={agent.status}
           timeline={agent.timeline}
           onRun={handleAgentRun}
+          onResearch={handleAgentResearch}
+          researchReport={agent.researchReport}
+          researchActive={agent.researchMode}
           onStop={handleAgentStop}
           onTakeControl={handleTakeControl}
+          chat={agent.chat}
+          onClearChat={agent.clearChat}
         />
       )}
+
+      <PasswordPrompt />
+      <MemoryPrompt />
 
       {ui.error && (
         <div className="app__error" role="alert">
@@ -264,11 +365,34 @@ export function App() {
       />
 
       <footer className="app__footer" role="contentinfo">
-        <span className="app__footer-brand">PERSONAL AGENTIC BROWSER</span>
-        <span className="app__footer-version">{version}</span>
-        <span className="app__footer-tabs">
-          {ui.tabs.length} {ui.tabs.length === 1 ? 'tab' : 'tabs'}
-        </span>
+        <div className="app__footer-left">
+          <span className="app__footer-brand">HayDev Browser OS v0.1.0</span>
+          <span className="app__footer-sep">|</span>
+          <span className="app__footer-version">{version}</span>
+          <span className="app__footer-sep">|</span>
+          <span className="app__footer-lab">HayDev Labs</span>
+        </div>
+        <div className="app__footer-right">
+          <span
+            className={`app__footer-runtime ${runtime?.reachable ? 'app__footer-runtime--ok' : 'app__footer-runtime--down'}`}
+            title={
+              runtime?.reachable
+                ? `Managed search runtime is reachable at ${runtime.endpoint}`
+                : `Search runtime not responding at ${runtime?.endpoint ?? '127.0.0.1:3000'}`
+            }
+          >
+            <span className="app__footer-dot" aria-hidden />
+            {runtime?.endpoint?.replace(/^https?:\/\//, '') ?? '127.0.0.1:3000'}
+          </span>
+          <span className="app__footer-sep">|</span>
+          <span className="app__footer-state">
+            {runtime?.reachable
+              ? 'All Systems Operational'
+              : runtime?.state === 'starting'
+                ? 'Search Runtime Starting…'
+                : 'Search Runtime Offline'}
+          </span>
+        </div>
       </footer>
     </div>
   );

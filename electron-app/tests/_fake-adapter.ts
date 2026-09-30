@@ -107,6 +107,14 @@ export class FakeActionAdapter implements ActionRuntimeAdapter {
     };
   }
 
+  async captureTab(
+    tabId: string,
+    _opts: { maxWidth: number }
+  ): Promise<{ imageBase64: string; width: number; height: number }> {
+    void tabId;
+    return { imageBase64: 'ZmFrZQ==', width: 1024, height: 640 };
+  }
+
   async scroll(
     tabId: string,
     direction: 'up' | 'down' | 'left' | 'right',

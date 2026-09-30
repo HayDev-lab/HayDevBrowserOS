@@ -33,6 +33,11 @@ interface ControlModuleProps {
   onTakeControl: () => void;
   /** Optional compact mode for narrow windows. */
   compact?: boolean;
+  /**
+   * Slim toolbar mode (Matrix concept): just the HUMAN | AGENT pair —
+   * the status pill and TAKE CONTROL live in the agent dock.
+   */
+  slim?: boolean;
 }
 
 export function ControlModule({
@@ -41,6 +46,7 @@ export function ControlModule({
   onSetMode,
   onTakeControl,
   compact = false,
+  slim = false,
 }: ControlModuleProps) {
   // Local takeover latch — set immediately on TAKE CONTROL for instant
   // visual feedback; cleared when the mode flips back to AGENT (user
@@ -83,32 +89,34 @@ export function ControlModule({
     <div
       className={`control-module control-module--${mode.toLowerCase()} ${
         compact ? 'control-module--compact' : ''
-      }`}
+      } ${slim ? 'control-module--slim' : ''}`}
       role="group"
       aria-label="Agent control mode"
     >
-      <div className="control-module__mode-pill" aria-live="polite">
-        <span
-          className={`control-module__mode-dot control-module__mode-dot--${mode.toLowerCase()}`}
-          aria-hidden
-        />
-        <span
-          className="control-module__mode-label"
-          style={{ ['--nc-mode-accent' as string]: `var(${getControlModeAccent(mode)})` }}
-        >
-          {getControlModeLabel(mode)}
-        </span>
-        {agentRunning && (
+      {!slim && (
+        <div className="control-module__mode-pill" aria-live="polite">
           <span
-            className="control-module__agent-status"
-            aria-label="Agent task running"
+            className={`control-module__mode-dot control-module__mode-dot--${mode.toLowerCase()}`}
+            aria-hidden
+          />
+          <span
+            className="control-module__mode-label"
+            style={{ ['--nc-mode-accent' as string]: `var(${getControlModeAccent(mode)})` }}
           >
-            ACTIVE
+            {getControlModeLabel(mode)}
           </span>
-        )}
-      </div>
+          {agentRunning && (
+            <span
+              className="control-module__agent-status"
+              aria-label="Agent task running"
+            >
+              ACTIVE
+            </span>
+          )}
+        </div>
+      )}
 
-      {!compact && (
+      {(!compact || slim) && (
         <div className="control-module__mode-switch" role="radiogroup" aria-label="Control mode selector">
           <ModeSwitchButton
             mode="HUMAN"
@@ -125,11 +133,13 @@ export function ControlModule({
         </div>
       )}
 
-      <TakeControlButton
-        visibility={visibility}
-        onClick={handleTakeControl}
-        compact={compact}
-      />
+      {!slim && (
+        <TakeControlButton
+          visibility={visibility}
+          onClick={handleTakeControl}
+          compact={compact}
+        />
+      )}
     </div>
   );
 }

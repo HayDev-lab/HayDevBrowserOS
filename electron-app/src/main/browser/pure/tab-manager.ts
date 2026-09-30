@@ -25,6 +25,8 @@ export interface OpenTabOptions {
   url?: string;
   activate?: boolean;
   incognito?: boolean;
+  /** Open in the isolated Dark Web (Tor) context — see TabState.isDarkWeb. */
+  darkweb?: boolean;
   background?: boolean;
   /** Optional explicit id (for session restore). If omitted, a uuid is generated. */
   id?: string;
@@ -84,19 +86,25 @@ export class TabManager {
       canGoBack: false,
       canGoForward: false,
       isIncognito: opts.incognito === true,
+      isDarkWeb: opts.darkweb === true,
       isActive: false,
       isAudioPlaying: false,
+      unreadCount: 0,
+      isDiscarded: false,
       createdAt: now,
       lastActivatedAt: now,
     };
     this.tabs.set(id, tab);
     this.order.push(id);
 
+    // ALWAYS emit `onTabOpened` — runtime owners (BrowserCore) create the
+    // per-tab WebContentsView here. Activation is an ADDITIONAL event:
+    // `onTabActivated` fires right after when the tab opens active.
+    this.events.onTabOpened?.(tab);
+
     const shouldActivate = opts.activate !== false && opts.background !== true;
     if (shouldActivate) {
       this.activateTab(id);
-    } else {
-      this.events.onTabOpened?.(tab);
     }
     return id;
   }

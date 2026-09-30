@@ -8,8 +8,8 @@ import {
 } from '../src/main/browser/agent/pure/tool-registry';
 
 describe('tool-registry / known tools', () => {
-  it('exposes exactly 13 V1 tools (10 browser + 3 vault)', () => {
-    expect(TOOL_DEFINITIONS.length).toBe(13);
+  it('exposes exactly 15 V1 tools (11 browser + 3 vault + memory)', () => {
+    expect(TOOL_DEFINITIONS.length).toBe(15);
   });
 
   it('includes the required tool names', () => {

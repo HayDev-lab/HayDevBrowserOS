@@ -150,7 +150,7 @@ export class NavigationStack {
   }
 
   /** Restore from a snapshot (e.g. session restore on restart). */
-  restore(snapshot: NavigationStackSnapshot): void {
+  restore(snapshot: { backStack: string[]; current: string | null; forwardStack: string[] }): void {
     this.backStack = [...snapshot.backStack];
     this.current = snapshot.current;
     this.forwardStack = [...snapshot.forwardStack];

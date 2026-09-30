@@ -1,5 +1,5 @@
 /**
- * PRELOAD script — Personal Agentic Browser (Foundation + Browser Core).
+ * PRELOAD script — HayDev Browser OS (Foundation + Browser Core).
  *
  * SECURITY:
  *  Runs with `sandbox: true` (set in BrowserWindow webPreferences). Therefore
@@ -46,7 +46,11 @@ import type {
   VaultHasResult,
   VaultListResult,
   VaultDeleteResult,
+  PasswordSavePrompt,
+  WindowApi,
+  RuntimeStatus,
 } from '@shared/ipc-types';
+import type { MemorySavePrompt } from '@shared/memory-types';
 
 // Whitelist of channels the renderer may invoke through the bridge.
 // Anything NOT in this set is silently rejected at the preload boundary.
@@ -83,6 +87,7 @@ const ALLOWED_INVOKE_CHANNELS = new Set<string>([
   'agent:stop',
   'agent:status',
   'agent:timeline:list',
+  'agent:research:report',
   // Control mode (PROMPT 5)
   'control:setMode',
   'control:takeControl',
@@ -94,6 +99,10 @@ const ALLOWED_INVOKE_CHANNELS = new Set<string>([
   'vault:generateAndStore',
   'vault:fill',
   'vault:delete',
+  'vault:prompt:current',
+  'vault:prompt:resolve',
+  'memory:prompt:current',
+  'memory:prompt:resolve',
 ]);
 
 // Forward-only channels the renderer may subscribe to (push events from main).
@@ -101,6 +110,8 @@ const ALLOWED_LISTEN_CHANNELS = new Set<string>([
   'agent:state:update',
   'agent:timeline:update',
   'control:mode:update',
+  'vault:prompt:update',
+  'memory:prompt:update',
 ]);
 
 // Type-safe invoke helper. The cast through `unknown` is necessary because
@@ -174,6 +185,22 @@ const agentApi: AgentApi = {
     invoke<{ accepted: boolean }>('agent:stop', reason),
   status: () => invoke<AgentStatusSnapshot>('agent:status'),
   listTimeline: () => invoke<AgentTimelineEntry[]>('agent:timeline:list'),
+  researchReport: () =>
+    invoke<import('@shared/research-types').ResearchReport | null>('agent:research:report'),
+  pickAttachment: (kind?: 'file' | 'image') =>
+    invoke<{ attachment: import('@shared/newtab-bridge').NewTabAttachment | null }>(
+      'agent:pickAttachment',
+      kind
+    ),
+};
+
+// ---------------------------------------------------------------------------
+// Window API — frameless Matrix title bar controls (fire-and-forget sends).
+// ---------------------------------------------------------------------------
+const windowApi: WindowApi = {
+  minimize: () => ipcRenderer.send('window:minimize'),
+  toggleMaximize: () => ipcRenderer.send('window:toggleMaximize'),
+  close: () => ipcRenderer.send('window:close'),
 };
 
 // ---------------------------------------------------------------------------
@@ -202,11 +229,27 @@ const vaultApi: VaultApi = {
     invoke<VaultFillResult>('vault:fill', input),
   delete: (id: string) =>
     invoke<VaultDeleteResult>('vault:delete', id),
+  prompt: {
+    current: () =>
+      invoke<PasswordSavePrompt | null>('vault:prompt:current'),
+    resolve: (answer: { promptId: string; save: boolean }) =>
+      invoke<{ success: boolean; error?: string }>('vault:prompt:resolve', answer),
+  },
+};
+
+const memoryApi: import('@shared/ipc-types').MemoryApi = {
+  current: () => invoke<MemorySavePrompt | null>('memory:prompt:current'),
+  resolve: (answer: { promptId: string; save: boolean }) =>
+    invoke<{ success: boolean }>('memory:prompt:resolve', answer),
 };
 
 const api: ExposedApi = {
+  memory: memoryApi,
   async getVersion(): Promise<AppVersionInfo> {
     return invoke<AppVersionInfo>('app:version');
+  },
+  runtimeStatus(): Promise<RuntimeStatus> {
+    return invoke<RuntimeStatus>('app:runtimeStatus');
   },
 
   async ping(
@@ -219,6 +262,7 @@ const api: ExposedApi = {
   agent: agentApi,
   control: controlApi,
   vault: vaultApi,
+  window: windowApi,
 
   on(channel: string, listener: (data: unknown) => void): () => void {
     if (!ALLOWED_LISTEN_CHANNELS.has(channel)) {

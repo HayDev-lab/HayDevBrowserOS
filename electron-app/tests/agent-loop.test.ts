@@ -68,6 +68,8 @@ class FakeBrowserActionPort {
           const dispatched = await this.adapter.scroll(input.tabId, input.direction, input.amount ?? 400);
           return { success: true, data: { tabId: input.tabId, direction: input.direction, amount: input.amount ?? 400, dispatched }, executionId: this.execId, completedAt: Date.now() };
         }
+        case 'screenshot':
+          return { success: true, data: { tabId: input.tabId, imageBase64: 'aGVsbG8tc2NyZWVuc2hvdA==', width: 1024, height: 640, format: 'jpeg' as const }, executionId: this.execId, completedAt: Date.now() };
         case 'stop':
           return { success: true, data: { executionId: this.execId, aborted: true, cancelledCount: 0 }, executionId: this.execId, completedAt: Date.now() };
         default:
@@ -446,5 +448,94 @@ describe('agent-loop / timeline', () => {
     await runAgentLoop(deps, 'List tabs.');
     const last = timeline[timeline.length - 1];
     expect(last.kind).toBe('final_answer');
+  });
+});
+
+// ===========================================================================
+// page.screenshot — vision grounding
+// ===========================================================================
+describe('agent-loop / page.screenshot vision wiring', () => {
+  it('attaches the captured image to the next model message, not the text', async () => {
+    const { deps, ollama } = setup({
+      responses: [
+        toolCallResponse('page.screenshot', { tabId: 'tab_1' }),
+        finalAnswerResponse('I can see the page.'),
+      ],
+    });
+    const result = await runAgentLoop(deps, 'Look at the page.');
+    expect(result.state).toBe('COMPLETED');
+
+    // The second chat call (after the screenshot) carries the image on the
+    // tool message in Ollama's images format.
+    const secondCall = ollama.calls[1]!;
+    const toolMsg = [...secondCall.messages].reverse().find((m) => m.role === 'tool');
+    expect(toolMsg).toBeDefined();
+    expect(toolMsg!.images).toContain('aGVsbG8tc2NyZWVuc2hvdA==');
+    // The observation text describes the image without embedding it.
+    expect(toolMsg!.content).toContain('screenshot captured');
+    expect(toolMsg!.content).not.toContain('aGVsbG8');
+  });
+
+  it('never leaks the image into the timeline', async () => {
+    const { deps, timeline } = setup({
+      responses: [
+        toolCallResponse('page.screenshot', { tabId: 'tab_1' }),
+        finalAnswerResponse('Seen.'),
+      ],
+    });
+    await runAgentLoop(deps, 'Look.');
+    const shotEntries = timeline.filter((e) => e.kind === 'page.screenshot');
+    expect(shotEntries.length).toBeGreaterThan(0);
+    for (const e of shotEntries) {
+      expect(JSON.stringify(e)).not.toContain('aGVsbG8');
+    }
+  });
+
+  it('defaults the capture to the active tab when tabId omitted', async () => {
+    const s = setup({
+      responses: [
+        toolCallResponse('page.screenshot', {}),
+        finalAnswerResponse('Seen.'),
+      ],
+    });
+    const deps = { ...s.deps, resolveActiveTabId: async () => 'tab_1' };
+    const actions = s.actions;
+    await runAgentLoop(deps, 'Look.');
+    expect(actions.dispatched[0].kind).toBe('screenshot');
+    expect((actions.dispatched[0] as { tabId?: string }).tabId).toBe('tab_1');
+  });
+});
+
+// ===========================================================================
+// Vision fallback — text-only model rejects image input
+// ===========================================================================
+describe('agent-loop / vision fallback for text-only models', () => {
+  it('retries without images when the model rejects image input', async () => {
+    const { deps: base } = setup({
+      responses: [
+        toolCallResponse('page.screenshot', { tabId: 'tab_1' }),
+        finalAnswerResponse('Used the text instead.'),
+      ],
+    });
+    // Wrap the fake: first chat WITH images fails like a text-only model.
+    const realChat = base.ollama.chat.bind(base.ollama);
+    let sawStrippedRetry = false;
+    const ollama = Object.create(base.ollama);
+    ollama.chat = async (request: import('@shared/agent-types').OllamaChatRequest) => {
+      const hasImages = request.messages.some((m) => (m.images?.length ?? 0) > 0);
+      if (hasImages) {
+        sawStrippedRetry = true; // will be set, then the retry must NOT have images
+        throw new Error('OLLAMA_HTTP_400: this model does not support image input');
+      }
+      return realChat(request);
+    };
+    const deps = { ...base, ollama };
+    const result = await runAgentLoop(deps, 'Look at the page.');
+    expect(result.state).toBe('COMPLETED');
+    expect(result.answer).toContain('text instead');
+    // The failing call HAD images; the successful retry must NOT.
+    expect(sawStrippedRetry).toBe(true);
+    const lastCall: { messages: Array<{ images?: string[] }> } = ollama.calls[ollama.calls.length - 1];
+    expect(lastCall.messages.every((m) => !m.images)).toBe(true);
   });
 });

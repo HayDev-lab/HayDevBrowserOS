@@ -1,4 +1,8 @@
 import { defineConfig } from 'vite';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Vite build configuration for the Electron PRELOAD script.
 // Preload MUST run under `sandbox: true`, so it cannot use Node `require`.
@@ -21,7 +25,7 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      '@shared': '/src/shared',
+      '@shared': path.resolve(__dirname, 'src/shared'),
     },
   },
   // Disable PostCSS auto-discovery — preload has no CSS, but Vite still

@@ -23,6 +23,10 @@ export default defineConfig({
   resolve: {
     alias: {
       '@shared': '/src/shared',
+      // '@' → the Perplexica checkout: production-path tests import the REAL
+      // openaiLLM/researcher sources (bare deps resolve from Perplexica's
+      // own node_modules). Tests skipIf the checkout is absent.
+      '@': process.env.PAB_PERPLEXICA_SRC ?? 'D:/Projects/Perplexica/src',
     },
   },
 });

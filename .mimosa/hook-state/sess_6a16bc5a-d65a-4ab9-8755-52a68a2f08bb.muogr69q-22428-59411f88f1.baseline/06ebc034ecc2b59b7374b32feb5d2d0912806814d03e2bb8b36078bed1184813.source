@@ -1,0 +1,1542 @@
+//! DarkWeb service — Rust port of `browser/darkweb/*` (search + fetch).
+//!
+//! Ported surface (functional parity v1):
+//!   - providers: Ahmia (clearnet HTTPS, or the onion mirror via Tor when
+//!     READY) + Tor66 (onion-only, via the Tor SOCKS gateway);
+//!   - search jobs: parallel providers, per-provider timeout + report,
+//!     normalize → merge(dedup) → weighted rank → bounded availability
+//!     probe, PARTIAL_RESULTS visibility, cache, cancel;
+//!   - fetch/preview: onion-only through Tor, text/metadata modes, size
+//!     caps, untrusted-content marker;
+//!   - config: JSON at userData/darkweb-config.json, clamped patches;
+//!   - history: JSON at userData/darkweb-history.json.
+//!
+//! NOT ported (honest errors, parity report documents them): crawl jobs,
+//! local full-text index, quarantine downloads — they need the Electron
+//! DownloadItem/Session APIs and are answered with NOT_IMPLEMENTED codes.
+
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use regex::Regex;
+use serde_json::{json, Value};
+
+use crate::socks_http::{self, FetchError};
+
+// ---------------------------------------------------------------------------
+// Bounds + defaults (port of darkweb-config.ts hard bounds)
+// ---------------------------------------------------------------------------
+
+pub const DEFAULT_SOCKS_PORT: u16 = 9050;
+const SEARCH_GLOBAL_TIMEOUT_MS: u64 = 30_000;
+const SEARCH_PROVIDER_TIMEOUT_MS: u64 = 15_000;
+const SEARCH_MAX_RESULTS: usize = 50;
+const AVAILABILITY_MAX_URLS: usize = 12;
+const AVAILABILITY_CONCURRENCY: usize = 4;
+const AVAILABILITY_TIMEOUT_MS: u64 = 8_000;
+const SEARCH_CACHE_TTL_MS: u64 = 600_000;
+const FETCH_TIMEOUT_MS: u64 = 25_000;
+const FETCH_MAX_BYTES: usize = 2 * 1024 * 1024;
+const JOB_TTL_MS: u64 = 10 * 60 * 1000;
+const TOKEN_TTL_MS: u64 = 600_000;
+
+pub const AHMIA_CLEARNET_BASE: &str = "https://ahmia.fi";
+pub const AHMIA_ONION_BASE: &str =
+    "http://juhanurmihxlp77nkq76byazcldy2hlmovfu2epvl5ankdibsot4csyd.onion";
+pub const TOR66_ONION_BASE: &str =
+    "http://tor66sewebgixwhcqfnp5inzp5x5uohhyl3qcyyeiafkliegvfiogiijd.onion";
+
+// ---------------------------------------------------------------------------
+// Config (clamped subset; unknown/absent fields keep defaults)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct DarkWebConfig {
+    pub enabled: bool,
+    pub socks_host: String,
+    pub socks_port: u16,
+    pub max_results: usize,
+    pub provider_timeout_ms: u64,
+    pub global_timeout_ms: u64,
+    pub cache_ttl_ms: u64,
+    pub availability_enabled: bool,
+    pub availability_max_urls: usize,
+    pub fetch_timeout_ms: u64,
+    pub fetch_max_bytes: usize,
+    pub ahmia_enabled: bool,
+    pub tor66_enabled: bool,
+    pub store_search_history: bool,
+}
+
+impl Default for DarkWebConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            socks_host: "127.0.0.1".to_string(),
+            socks_port: DEFAULT_SOCKS_PORT,
+            max_results: SEARCH_MAX_RESULTS,
+            provider_timeout_ms: SEARCH_PROVIDER_TIMEOUT_MS,
+            global_timeout_ms: SEARCH_GLOBAL_TIMEOUT_MS,
+            cache_ttl_ms: SEARCH_CACHE_TTL_MS,
+            availability_enabled: true,
+            availability_max_urls: AVAILABILITY_MAX_URLS,
+            fetch_timeout_ms: FETCH_TIMEOUT_MS,
+            fetch_max_bytes: FETCH_MAX_BYTES,
+            ahmia_enabled: true,
+            tor66_enabled: true,
+            store_search_history: true,
+        }
+    }
+}
+
+impl DarkWebConfig {
+    pub fn load(data_dir: &std::path::Path) -> Self {
+        let path = data_dir.join("darkweb-config.json");
+        match std::fs::read_to_string(&path) {
+            Ok(text) => {
+                let raw: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+                Self::from_json(&raw)
+            }
+            Err(_) => Self::default(),
+        }
+    }
+
+    pub fn save(&self, data_dir: &std::path::Path) {
+        let path = data_dir.join("darkweb-config.json");
+        let doc = json!({
+            "enabled": self.enabled,
+            "tor": { "socksHost": self.socks_host, "socksPort": self.socks_port },
+            "search": {
+                "maxResults": self.max_results,
+                "providerTimeoutMs": self.provider_timeout_ms,
+                "globalTimeoutMs": self.global_timeout_ms,
+                "cacheTtlMs": self.cache_ttl_ms,
+                "availability": {
+                    "enabled": self.availability_enabled,
+                    "maxUrls": self.availability_max_urls,
+                },
+            },
+            "fetch": { "timeoutMs": self.fetch_timeout_ms, "maxBytes": self.fetch_max_bytes },
+            "providers": {
+                "ahmia": { "enabled": self.ahmia_enabled },
+                "tor66": { "enabled": self.tor66_enabled },
+            },
+            "storeSearchHistory": self.store_search_history,
+        });
+        let _ = std::fs::write(&path, serde_json::to_string_pretty(&doc).unwrap_or_default());
+    }
+
+    fn from_json(raw: &Value) -> Self {
+        let mut c = Self::default();
+        let get_bool = |v: &Value| v.as_bool();
+        let get_u64 = |v: &Value| v.as_u64();
+        if let Some(t) = raw.get("tor") {
+            if let Some(h) = t.get("socksHost").and_then(Value::as_str) {
+                if !h.is_empty() && h.len() <= 253 && h.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-') {
+                    c.socks_host = h.to_string();
+                }
+            }
+            if let Some(p) = t.get("socksPort").and_then(get_u64) {
+                c.socks_port = clamp_port(p);
+            }
+        }
+        if let Some(s) = raw.get("search") {
+            c.max_results = clamp(s.get("maxResults").and_then(get_u64), 1, 200, c.max_results as u64) as usize;
+            c.provider_timeout_ms = clamp(s.get("providerTimeoutMs").and_then(get_u64), 1_000, 60_000, c.provider_timeout_ms);
+            c.global_timeout_ms = clamp(s.get("globalTimeoutMs").and_then(get_u64), 3_000, 120_000, c.global_timeout_ms);
+            c.cache_ttl_ms = clamp(s.get("cacheTtlMs").and_then(get_u64), 0, 3_600_000, c.cache_ttl_ms);
+            if let Some(a) = s.get("availability") {
+                c.availability_enabled = a.get("enabled").and_then(get_bool).unwrap_or(c.availability_enabled);
+                c.availability_max_urls = clamp(a.get("maxUrls").and_then(get_u64), 0, 50, c.availability_max_urls as u64) as usize;
+            }
+        }
+        if let Some(f) = raw.get("fetch") {
+            c.fetch_timeout_ms = clamp(f.get("timeoutMs").and_then(get_u64), 1_000, 120_000, c.fetch_timeout_ms);
+            c.fetch_max_bytes = clamp(f.get("maxBytes").and_then(get_u64), 4_096, 10_485_760, c.fetch_max_bytes as u64) as usize;
+        }
+        if let Some(p) = raw.get("providers") {
+            if let Some(a) = p.get("ahmia") {
+                c.ahmia_enabled = a.get("enabled").and_then(get_bool).unwrap_or(c.ahmia_enabled);
+            }
+            if let Some(t) = p.get("tor66") {
+                c.tor66_enabled = t.get("enabled").and_then(get_bool).unwrap_or(c.tor66_enabled);
+            }
+        }
+        c.enabled = raw.get("enabled").and_then(get_bool).unwrap_or(c.enabled);
+        c.store_search_history = raw.get("storeSearchHistory").and_then(get_bool).unwrap_or(c.store_search_history);
+        c
+    }
+
+    /// Apply an untrusted settings patch (UI POST /api/settings) with clamps.
+    pub fn apply_patch(&mut self, patch: &Value) {
+        if let Some(b) = patch.get("enabled").and_then(Value::as_bool) {
+            self.enabled = b;
+        }
+        if let Some(b) = patch.get("storeSearchHistory").and_then(Value::as_bool) {
+            self.store_search_history = b;
+        }
+        if let Some(t) = patch.get("tor") {
+            if let Some(p) = t.get("socksPort").and_then(Value::as_u64) {
+                self.socks_port = clamp_port(p);
+            }
+            if let Some(h) = t.get("socksHost").and_then(Value::as_str) {
+                let h = h.trim();
+                if !h.is_empty() && h.len() <= 253 && h.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-') {
+                    self.socks_host = h.to_string();
+                }
+            }
+        }
+        if let Some(s) = patch.get("search") {
+            self.max_results = clamp(s.get("maxResults").and_then(Value::as_u64), 1, 200, self.max_results as u64) as usize;
+            self.provider_timeout_ms = clamp(s.get("providerTimeoutMs").and_then(Value::as_u64), 1_000, 60_000, self.provider_timeout_ms);
+            self.global_timeout_ms = clamp(s.get("globalTimeoutMs").and_then(Value::as_u64), 3_000, 120_000, self.global_timeout_ms);
+            self.cache_ttl_ms = clamp(s.get("cacheTtlMs").and_then(Value::as_u64), 0, 3_600_000, self.cache_ttl_ms);
+            if let Some(a) = s.get("availability") {
+                if let Some(b) = a.get("enabled").and_then(Value::as_bool) {
+                    self.availability_enabled = b;
+                }
+                self.availability_max_urls = clamp(a.get("maxUrls").and_then(Value::as_u64), 0, 50, self.availability_max_urls as u64) as usize;
+            }
+        }
+        if let Some(f) = patch.get("fetch") {
+            self.fetch_timeout_ms = clamp(f.get("timeoutMs").and_then(Value::as_u64), 1_000, 120_000, self.fetch_timeout_ms);
+            self.fetch_max_bytes = clamp(f.get("maxBytes").and_then(Value::as_u64), 4_096, 10_485_760, self.fetch_max_bytes as u64) as usize;
+        }
+        if let Some(p) = patch.get("providers") {
+            if let Some(a) = p.get("ahmia").and_then(|v| v.get("enabled")).and_then(Value::as_bool) {
+                self.ahmia_enabled = a;
+            }
+            if let Some(t) = p.get("tor66").and_then(|v| v.get("enabled")).and_then(Value::as_bool) {
+                self.tor66_enabled = t;
+            }
+        }
+    }
+
+    /// UI echo (parity: getConfig / redacted).
+    pub fn to_json(&self) -> Value {
+        json!({
+            "enabled": self.enabled,
+            "tor": { "socksHost": self.socks_host, "socksPort": self.socks_port, "binaryPath": null },
+            "search": {
+                "globalTimeoutMs": self.global_timeout_ms,
+                "providerTimeoutMs": self.provider_timeout_ms,
+                "maxResults": self.max_results,
+                "cacheTtlMs": self.cache_ttl_ms,
+                "availability": { "enabled": self.availability_enabled, "maxUrls": self.availability_max_urls },
+            },
+            "fetch": { "timeoutMs": self.fetch_timeout_ms, "maxBytes": self.fetch_max_bytes },
+            "providers": {
+                "ahmia": { "enabled": self.ahmia_enabled },
+                "tor66": { "enabled": self.tor66_enabled },
+            },
+            "storeSearchHistory": self.store_search_history,
+        })
+    }
+}
+
+fn clamp_port(p: u64) -> u16 {
+    p.clamp(1, 65_535) as u16
+}
+
+fn clamp(v: Option<u64>, min: u64, max: u64, default: u64) -> u64 {
+    v.unwrap_or(default).clamp(min, max)
+}
+
+// ---------------------------------------------------------------------------
+// Provider health (circuit breaker, port of provider-health.ts semantics)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Default, Clone)]
+pub struct ProviderHealth {
+    pub last_latency_ms: Option<u64>,
+    pub last_success_at: Option<u64>,
+    pub last_failure_at: Option<u64>,
+    pub consecutive_failures: u32,
+    pub circuit_open_until: Option<u64>,
+}
+
+const CIRCUIT_OPEN_MS: u64 = 60_000;
+const CIRCUIT_THRESHOLD: u32 = 3;
+
+impl ProviderHealth {
+    pub fn record_success(&mut self, latency: u64, now: u64) {
+        self.last_latency_ms = Some(latency);
+        self.last_success_at = Some(now);
+        self.consecutive_failures = 0;
+        self.circuit_open_until = None;
+    }
+
+    pub fn record_failure(&mut self, now: u64) {
+        self.last_failure_at = Some(now);
+        self.consecutive_failures += 1;
+        if self.consecutive_failures >= CIRCUIT_THRESHOLD {
+            self.circuit_open_until = Some(now + CIRCUIT_OPEN_MS);
+        }
+    }
+
+    pub fn allows(&self, now: u64) -> bool {
+        match self.circuit_open_until {
+            Some(until) => now >= until,
+            None => true,
+        }
+    }
+
+    /// HEALTHY | DEGRADED | OFFLINE | UNKNOWN (parity: ProviderHealth).
+    pub fn health_label(&self, now: u64) -> &'static str {
+        if self.circuit_open_until.is_some_and(|u| now < u) {
+            return "OFFLINE";
+        }
+        match (self.last_success_at, self.last_failure_at) {
+            (Some(_), None) => "HEALTHY",
+            (None, Some(_)) => "DEGRADED",
+            (Some(s), Some(f)) => {
+                if f > s {
+                    if self.consecutive_failures >= 2 {
+                        "DEGRADED"
+                    } else {
+                        "UNKNOWN"
+                    }
+                } else {
+                    "HEALTHY"
+                }
+            }
+            (None, None) => "UNKNOWN",
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Parsers (ports of ahmia-parser.ts / tor66-parser.ts)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct RawProviderResult {
+    pub title: String,
+    pub url: String,
+    pub snippet: String,
+    pub last_seen: Option<u64>,
+}
+
+fn unescape_html(s: &str) -> String {
+    let stripped = strip_tags(s);
+    stripped
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&nbsp;", " ")
+}
+
+/// Remove tags (BeautifulSoup .text-ish) + collapse whitespace.
+pub fn strip_tags(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut depth = 0usize;
+    for c in s.chars() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            _ if depth == 0 => out.push(c),
+            _ => {}
+        }
+    }
+    collapse_ws(&out)
+}
+
+pub fn collapse_ws(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Extract the hidden anti-bot token from the Ahmia homepage.
+pub fn parse_ahmia_token(homepage_html: &str) -> Option<(String, String)> {
+    let tag_re = Regex::new(r#"(?i)<input[^>]*type\s*=\s*("hidden"|'hidden'|hidden)[^>]*>"#).ok()?;
+    let name_re = Regex::new(r#"(?i)\sname\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))"#).ok()?;
+    let value_re = Regex::new(r#"(?i)\svalue\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))"#).ok()?;
+    let tag = tag_re.captures(homepage_html)?.get(0)?.as_str();
+    let grab = |re: &Regex| -> String {
+        re.captures(tag)
+            .map(|c| {
+                c.get(2)
+                    .or_else(|| c.get(3))
+                    .or_else(|| c.get(4))
+                    .map(|m| m.as_str().trim().to_string())
+                    .unwrap_or_default()
+            })
+            .unwrap_or_default()
+    };
+    let name = grab(&name_re);
+    if name.is_empty() {
+        return None;
+    }
+    Some((name, grab(&value_re)))
+}
+
+/// Parse an Ahmia results page (CAPTCHA pages parse to zero results).
+pub fn parse_ahmia_results(html: &str) -> Vec<RawProviderResult> {
+    let li_re = Regex::new(r#"(?is)<li\b[^>]*class\s*=\s*("[^"]*result[^"]*"|'[^']*result[^']*')[^>]*>(.*?)</li\s*>"#).unwrap();
+    let inner_re = |tag: &str, block: &str| -> String {
+        let re = Regex::new(&format!(r"(?is)<{tag}[^>]*>(.*?)</{tag}\s*>")).unwrap();
+        re.captures(block)
+            .and_then(|c| c.get(1))
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default()
+    };
+    let seen_re = Regex::new(r#"(?is)<span[^>]*class\s*=\s*("[^"]*lastSeen[^"]*"|'[^']*lastSeen[^']*')[^>]*>(.*?)</span\s*>"#).unwrap();
+    let ts_re = Regex::new(r#"(?i)data-timestamp\s*=\s*("([^"]*)"|'([^']*)')"#).unwrap();
+
+    let mut out = Vec::new();
+    for cap in li_re.captures_iter(html) {
+        let block = cap.get(2).map(|m| m.as_str()).unwrap_or("");
+        let url = unescape_html(&inner_re("cite", block));
+        if url.is_empty() {
+            continue;
+        }
+        let last_seen = seen_re
+            .captures(block)
+            .and_then(|m| ts_re.captures(m.get(0).map(|x| x.as_str()).unwrap_or("")))
+            .and_then(|ts| {
+                ts.get(2)
+                    .or_else(|| ts.get(3))
+                    .and_then(|v| v.as_str().parse::<u64>().ok())
+            })
+            .map(|ts| if ts < 10_000_000_000 { ts * 1000 } else { ts });
+        out.push(RawProviderResult {
+            title: unescape_html(&inner_re("h4", block)).chars().take(300).collect(),
+            url,
+            snippet: unescape_html(&inner_re("p", block)).chars().take(2000).collect(),
+            last_seen,
+        });
+    }
+    out
+}
+
+/// Internal-navigation paths on the engine host itself (compiled once).
+fn nav_path_re() -> &'static Regex {
+    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?i)/(search|category|submit|about)").unwrap())
+}
+
+/// Parse a Tor66 results page (anchors referencing 56-char onion hosts).
+pub fn parse_tor66_results(html: &str) -> Vec<RawProviderResult> {
+    let a_re = Regex::new(r#"(?is)<a\b[^>]*?\shref\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))[^>]*>(.*?)</a\s*>"#).unwrap();
+    let onion_re = Regex::new(r"(?i)(?:https?://)?([a-z2-7]{56}\.onion)").unwrap();
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for cap in a_re.captures_iter(html) {
+        let href = cap
+            .get(2)
+            .or_else(|| cap.get(3))
+            .or_else(|| cap.get(4))
+            .map(|m| m.as_str().trim().to_string())
+            .unwrap_or_default();
+        if href.is_empty() {
+            continue;
+        }
+        let Some(host) = onion_re.captures(&href).and_then(|c| c.get(1)) else {
+            continue;
+        };
+        let host = host.as_str().to_lowercase();
+        if href.to_lowercase().starts_with("http") && nav_path_re().is_match(&href) {
+            continue;
+        }
+        let url = if href.to_lowercase().starts_with("http") {
+            href
+        } else {
+            format!("http://{host}")
+        };
+        if !seen.insert(url.clone()) {
+            continue;
+        }
+        let title = strip_tags(cap.get(5).map(|m| m.as_str()).unwrap_or(""));
+        out.push(RawProviderResult {
+            title: if title.is_empty() { host.clone() } else { title }
+                .chars()
+                .take(300)
+                .collect(),
+            url,
+            snippet: String::new(),
+            last_seen: None,
+        });
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// Normalize → merge → rank (ports of normalize.ts / rank.ts)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct NormalizedResult {
+    pub title: String,
+    pub url: String,
+    pub hostname: String,
+    pub snippet: String,
+    pub provider: String,
+    pub last_seen: Option<u64>,
+    pub key: String,
+}
+
+pub fn normalize_provider_result(raw: RawProviderResult, provider: &str) -> Option<NormalizedResult> {
+    let mut url = raw.url.trim().to_string();
+    if url.is_empty() || url.len() > 2048 {
+        return None;
+    }
+    // Ahmia's cite field carries a bare onion address without a scheme.
+    let has_scheme = {
+        let lower = url.to_lowercase();
+        lower.contains("://")
+    };
+    if !has_scheme {
+        url = format!("http://{url}");
+    }
+    let parsed = url::Url::parse(&url).ok()?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return None;
+    }
+    let hostname = parsed.host_str()?.to_lowercase();
+    if !hostname.ends_with(".onion") {
+        return None;
+    }
+    // Result URLs are metadata, not navigation targets — strip creds+hash.
+    let mut cleaned = parsed.clone();
+    cleaned.set_username("").ok();
+    cleaned.set_password(None).ok();
+    cleaned.set_fragment(None);
+    let key = result_key(&cleaned)?;
+    Some(NormalizedResult {
+        title: collapse_ws(&raw.title).chars().take(300).collect(),
+        url: cleaned.to_string(),
+        hostname,
+        snippet: collapse_ws(&raw.snippet).chars().take(2000).collect(),
+        provider: provider.to_string(),
+        last_seen: raw.last_seen,
+        key,
+    })
+}
+
+fn result_key(u: &url::Url) -> Option<String> {
+    let mut params: Vec<(String, String)> = u
+        .query_pairs()
+        .filter(|(k, _)| !k.to_lowercase().starts_with("utm_"))
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    params.sort();
+    let search = serde_urlencoded(&params);
+    let path = u.path().to_string();
+    let path = if path.is_empty() { "/".to_string() } else { path.trim_end_matches('/').to_string() };
+    let path = if path.is_empty() { "/".to_string() } else { path };
+    Some(format!(
+        "{}{}{}",
+        u.host_str().unwrap_or_default(),
+        path,
+        if search.is_empty() { String::new() } else { format!("?{search}") }
+    ))
+}
+
+/// Minimal application/x-www-form-urlencoded serializer (sorted params).
+fn serde_urlencoded(params: &[(String, String)]) -> String {
+    params
+        .iter()
+        .map(|(k, v)| format!("{}={}", urlencode(k), urlencode(v)))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+fn urlencode(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*b as char)
+            }
+            b' ' => out.push_str("%20"),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+#[derive(Debug, Clone)]
+pub struct MergedResult {
+    pub title: String,
+    pub url: String,
+    pub hostname: String,
+    pub snippet: String,
+    pub providers: Vec<String>,
+    pub last_seen: Option<u64>,
+    pub key: String,
+}
+
+/// Merge by canonical key; longest title/snippet wins (parity: mergeResults).
+pub fn merge_results(entries: Vec<NormalizedResult>) -> Vec<MergedResult> {
+    let mut order: Vec<String> = Vec::new();
+    let mut by_key: HashMap<String, MergedResult> = HashMap::new();
+    for e in entries {
+        let entry = by_key.entry(e.key.clone()).or_insert_with(|| {
+            order.push(e.key.clone());
+            MergedResult {
+                title: e.title.clone(),
+                url: e.url.clone(),
+                hostname: e.hostname.clone(),
+                snippet: e.snippet.clone(),
+                providers: vec![e.provider.clone()],
+                last_seen: e.last_seen,
+                key: e.key.clone(),
+            }
+        });
+        if !entry.providers.contains(&e.provider) {
+            entry.providers.push(e.provider.clone());
+        }
+        if e.title.len() > entry.title.len() {
+            entry.title = e.title;
+        }
+        if e.snippet.len() > entry.snippet.len() {
+            entry.snippet = e.snippet;
+        }
+        if let Some(ls) = e.last_seen {
+            if entry.last_seen.map(|cur| ls > cur).unwrap_or(true) {
+                entry.last_seen = Some(ls);
+            }
+        }
+    }
+    order.into_iter().filter_map(|k| by_key.remove(&k)).collect()
+}
+
+/// Weighted deterministic ranking (parity: rank.ts defaults).
+pub fn rank_results(
+    merged: Vec<MergedResult>,
+    query: &str,
+    reachability: &HashMap<String, (&'static str, Option<u64>)>,
+    now: u64,
+) -> Vec<Value> {
+    // Default weights from DARKWEB_HARD_BOUNDS.ranking.
+    let (w_provider, w_title, w_snippet, w_url, w_reach, w_fresh) =
+        (2.0f64, 2.0, 0.5, 1.0, 1.5, 0.5);
+    let terms = extract_query_terms(query);
+    let mut scored: Vec<(f64, MergedResult, &'static str, Option<u64>)> = merged
+        .into_iter()
+        .map(|m| {
+            let (reach, checked_at) = reachability
+                .get(&m.key)
+                .map(|(r, t)| (*r, *t))
+                .unwrap_or(("unknown", None));
+            let provider_score = m.providers.len().min(5) as f64 * w_provider;
+            let title_score = coverage(&terms, &m.title) * w_title;
+            let snippet_score = coverage(&terms, &m.snippet) * w_snippet;
+            let url_score = coverage(&terms, &m.url) * w_url;
+            let reach_factor = match reach {
+                "yes" => 1.0,
+                "unknown" => 0.4,
+                _ => 0.0,
+            };
+            let reach_score = reach_factor * w_reach;
+            let fresh = match m.last_seen {
+                Some(ls) if ls > 0 => {
+                    let age_days = (now.saturating_sub(ls)) as f64 / 86_400_000.0;
+                    0.5f64.powf(age_days / 30.0)
+                }
+                _ => 0.0,
+            };
+            let score =
+                ((provider_score + title_score + snippet_score + url_score + reach_score + fresh * w_fresh) * 100.0).round() / 100.0;
+            (score, m, reach, checked_at)
+        })
+        .collect();
+    scored.sort_by(|a, b| {
+        b.0.partial_cmp(&a.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.1.url.cmp(&b.1.url))
+    });
+    scored
+        .into_iter()
+        .map(|(score, m, reach, checked_at)| {
+            json!({
+                "title": m.title,
+                "url": m.url,
+                "hostname": m.hostname,
+                "snippet": m.snippet,
+                "providers": m.providers,
+                "score": score,
+                "reachable": reach,
+                "checkedAt": checked_at,
+                "lastSeen": m.last_seen,
+            })
+        })
+        .collect()
+}
+
+pub fn extract_query_terms(query: &str) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for raw in query.to_lowercase().split(|c: char| {
+        matches!(c, ' ' | ',' | '.' | ';' | ':' | '!' | '?' | '(' | ')' | '"' | '\'')
+    }) {
+        let t = raw.trim();
+        if t.len() >= 2 && seen.insert(t.to_string()) {
+            out.push(t.to_string());
+        }
+    }
+    out
+}
+
+fn coverage(terms: &[String], text: &str) -> f64 {
+    if terms.is_empty() {
+        return 0.0;
+    }
+    let lower = text.to_lowercase();
+    let hits = terms.iter().filter(|t| lower.contains(t.as_str())).count();
+    hits as f64 / terms.len() as f64
+}
+
+// ---------------------------------------------------------------------------
+// Tor gateway resolution
+// ---------------------------------------------------------------------------
+
+/// The managed Tor endpoint wins (runtime_manager READY state); the config
+/// host:port is the manual fallback.
+pub fn tor_endpoint(app: &tauri::AppHandle<tauri::Wry>, config: &DarkWebConfig) -> Option<(String, u16)> {
+    if let Some(ep) = crate::runtime_manager::with_manager(app, |s| s.tor_socks_endpoint()).flatten() {
+        if let Some((h, p)) = parse_socks_endpoint(&ep) {
+            return Some((h, p));
+        }
+    }
+    if socks_probe(&config.socks_host, config.socks_port) {
+        return Some((config.socks_host.clone(), config.socks_port));
+    }
+    None
+}
+
+fn parse_socks_endpoint(ep: &str) -> Option<(String, u16)> {
+    let rest = ep.strip_prefix("socks5://")?;
+    let (host, port) = rest.rsplit_once(':')?;
+    Some((host.to_string(), port.parse().ok()?))
+}
+
+pub fn socks_probe(host: &str, port: u16) -> bool {
+    std::net::TcpStream::connect_timeout(
+        &format!("{host}:{port}")
+            .to_socket_addrs_first()
+            .unwrap_or_else(|| std::net::SocketAddr::from(([127, 0, 0, 1], port))),
+        Duration::from_millis(400),
+    )
+    .is_ok()
+}
+
+trait ToSocketAddrsFirst {
+    fn to_socket_addrs_first(&self) -> Option<std::net::SocketAddr>;
+}
+
+impl ToSocketAddrsFirst for String {
+    fn to_socket_addrs_first(&self) -> Option<std::net::SocketAddr> {
+        use std::net::ToSocketAddrs;
+        self.to_socket_addrs().ok()?.next()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Fetch + text extraction
+// ---------------------------------------------------------------------------
+
+pub fn is_onion_url(url: &str) -> bool {
+    url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_lowercase().ends_with(".onion")))
+        .unwrap_or(false)
+}
+
+fn extract_title(html: &str) -> Option<String> {
+    let re = Regex::new(r"(?is)<title[^>]*>(.*?)</title\s*>").ok()?;
+    re.captures(html)
+        .and_then(|c| c.get(1))
+        .map(|m| unescape_html(m.as_str()).chars().take(300).collect())
+}
+
+/// onion-only fetch through the Tor gateway (parity: fetcher.ts bounds).
+pub fn fetch_page(
+    app: &tauri::AppHandle<tauri::Wry>,
+    config: &DarkWebConfig,
+    url: &str,
+    mode: &str,
+) -> Result<Value, String> {
+    if !is_onion_url(url) {
+        return Err("ONION_ONLY".to_string());
+    }
+    let Some((host, port)) = tor_endpoint(app, config) else {
+        return Err("TOR_UNAVAILABLE".to_string());
+    };
+    let started = now_ms();
+    let resp = socks_http::get_via_socks5(&host, port, url, config.fetch_timeout_ms, config.fetch_max_bytes)
+        .map_err(|e: FetchError| e.code().to_string())?;
+    let truncated = resp.text.len() >= config.fetch_max_bytes;
+    let bytes = resp.text.len();
+    Ok(json!({
+        "url": url,
+        "finalUrl": resp.final_url,
+        "status": resp.status,
+        "contentType": resp.content_type,
+        "text": if mode == "metadata" { Value::Null } else { json!(resp.text.chars().take(100_000).collect::<String>()) },
+        "title": extract_title(&resp.text),
+        "bytes": bytes,
+        "durationMs": now_ms().saturating_sub(started),
+        "truncated": truncated,
+        "untrustedContent": true,
+    }))
+}
+
+/// Bounded availability probe ('yes' | 'no' | 'unknown' — an offline Tor
+/// gateway proves NOTHING, so it reports 'unknown', never a false 'no').
+pub fn check_reachable(
+    app: &tauri::AppHandle<tauri::Wry>,
+    config: &DarkWebConfig,
+    url: &str,
+) -> (&'static str, Option<u64>) {
+    if !is_onion_url(url) {
+        return ("unknown", None);
+    }
+    let Some((host, port)) = tor_endpoint(app, config) else {
+        return ("unknown", None);
+    };
+    match socks_http::get_via_socks5(&host, port, url, AVAILABILITY_TIMEOUT_MS, 1024) {
+        Ok(resp) if resp.status < 400 => ("yes", Some(now_ms())),
+        Ok(_) => ("no", Some(now_ms())),
+        Err(FetchError::TorUnavailable(_)) => ("unknown", None),
+        Err(_) => ("no", Some(now_ms())),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Search service (jobs + cache + history)
+// ---------------------------------------------------------------------------
+
+pub struct SearchJob {
+    pub id: String,
+    pub query: String,
+    pub state: &'static str,
+    pub results: Vec<Value>,
+    pub providers: HashMap<String, Value>,
+    /// Raw provider results parked between settlement and finalize.
+    pub raw: Vec<NormalizedResult>,
+    pub started_at: u64,
+    pub ended_at: Option<u64>,
+    pub error_code: Option<String>,
+    pub cancelled: bool,
+    pub settled: usize,
+    pub registered: usize,
+}
+
+impl SearchJob {
+    pub fn snapshot(&self, now: u64) -> Value {
+        json!({
+            "searchId": self.id,
+            "query": self.query,
+            "state": self.state,
+            "results": self.results,
+            "providers": self.providers,
+            "total": self.results.len(),
+            "durationMs": (self.ended_at.unwrap_or(now)).saturating_sub(self.started_at),
+            "errorCode": self.error_code,
+        })
+    }
+
+    fn pending_raw(&mut self, raw: Vec<NormalizedResult>) {
+        self.raw.extend(raw);
+    }
+
+    fn take_raw(&mut self) -> Vec<NormalizedResult> {
+        std::mem::take(&mut self.raw)
+    }
+}
+
+pub struct DarkWebService {
+    pub data_dir: std::path::PathBuf,
+    pub config: Mutex<DarkWebConfig>,
+    pub health: Mutex<HashMap<String, ProviderHealth>>,
+    pub jobs: Mutex<HashMap<String, Arc<Mutex<SearchJob>>>>,
+    pub cache: Mutex<HashMap<String, (Value, u64)>>,
+    pub ahmia_token: Mutex<Option<(String, String, u64)>>,
+    pub history: Mutex<Vec<Value>>,
+    pub job_seq: AtomicU64,
+}
+
+const MAX_JOBS: usize = 24;
+const MAX_CACHE: usize = 50;
+const MAX_HISTORY: usize = 100;
+
+impl DarkWebService {
+    pub fn new(data_dir: &std::path::Path) -> Self {
+        let config = DarkWebConfig::load(data_dir);
+        let history = std::fs::read_to_string(data_dir.join("darkweb-history.json"))
+            .ok()
+            .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+            .and_then(|v| {
+                v.get("entries")
+                    .and_then(Value::as_array)
+                    .cloned()
+            })
+            .unwrap_or_default();
+        Self {
+            data_dir: data_dir.to_path_buf(),
+            config: Mutex::new(config),
+            health: Mutex::new(HashMap::new()),
+            jobs: Mutex::new(HashMap::new()),
+            cache: Mutex::new(HashMap::new()),
+            ahmia_token: Mutex::new(None),
+            history: Mutex::new(history),
+            job_seq: AtomicU64::new(1),
+        }
+    }
+
+    pub fn config(&self) -> DarkWebConfig {
+        self.config.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
+    /// Start a search — returns the initial job snapshot; providers run on
+    /// worker threads and the page polls GET /api/search/:id (parity with
+    /// the Electron flow).
+    pub fn search(
+        self: &Arc<Self>,
+        app: &tauri::AppHandle<tauri::Wry>,
+        query: &str,
+        providers_filter: Option<Vec<String>>,
+    ) -> Result<Value, String> {
+        let config = self.config();
+        if !config.enabled {
+            return Err("DARKWEB_DISABLED".to_string());
+        }
+        let query = query.trim().to_string();
+        if query.is_empty() {
+            return Err("EMPTY_QUERY".to_string());
+        }
+        if query.len() > 512 {
+            return Err("QUERY_TOO_LONG".to_string());
+        }
+
+        let now = now_ms();
+        let cache_key = format!("{}|", query.to_lowercase());
+        if config.cache_ttl_ms > 0 {
+            let cache = self.cache.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some((snap, expires)) = cache.get(&cache_key) {
+                if now < *expires {
+                    return Ok(snap.clone());
+                }
+            }
+        }
+
+        // Which providers run?
+        let tor = tor_endpoint(app, &config);
+        let mut runnable: Vec<(&str, bool)> = Vec::new(); // (id, requires_tor)
+        if config.ahmia_enabled {
+            runnable.push(("ahmia", false));
+        }
+        if config.tor66_enabled {
+            runnable.push(("tor66", true));
+        }
+        runnable.retain(|(id, requires_tor)| {
+            if let Some(filter) = &providers_filter {
+                if !filter.iter().any(|f| f == id) {
+                    return false;
+                }
+            }
+            if *requires_tor && tor.is_none() {
+                return false;
+            }
+            let health = self
+                .health
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            health
+                .get(*id)
+                .map(|h| h.allows(now))
+                .unwrap_or(true)
+        });
+
+        let job_id = format!("s_{}_{}", now, self.job_seq.fetch_add(1, Ordering::Relaxed));
+        let job = Arc::new(Mutex::new(SearchJob {
+            id: job_id.clone(),
+            query: query.clone(),
+            state: "SEARCHING",
+            results: Vec::new(),
+            providers: HashMap::new(),
+            raw: Vec::new(),
+            started_at: now,
+            ended_at: None,
+            error_code: None,
+            cancelled: false,
+            settled: 0,
+            registered: runnable.len(),
+        }));
+        {
+            let mut jobs = self.jobs.lock().unwrap_or_else(|p| p.into_inner());
+            jobs.retain(|_, j| {
+                let j = j.lock().unwrap_or_else(|p| p.into_inner());
+                !matches!(j.state, "DONE" | "ERROR" | "CANCELLED")
+                    || j.ended_at.map(|e| now.saturating_sub(e) < JOB_TTL_MS).unwrap_or(true)
+            });
+            while jobs.len() >= MAX_JOBS {
+                let oldest = jobs.keys().next().cloned();
+                match oldest {
+                    Some(k) => {
+                        jobs.remove(&k);
+                    }
+                    None => break,
+                }
+            }
+            jobs.insert(job_id.clone(), job.clone());
+        }
+
+        if runnable.is_empty() {
+            {
+                let mut j = job.lock().unwrap_or_else(|p| p.into_inner());
+                j.state = "DONE";
+                j.ended_at = Some(now);
+                j.error_code = Some("NO_PROVIDERS_ENABLED".to_string());
+            }
+            return Ok(job.lock().unwrap_or_else(|p| p.into_inner()).snapshot(now));
+        }
+
+        // Fire the workers; each records its own report, the LAST settler
+        // finalizes (merge → rank → availability → cache → history).
+        for (id, _requires_tor) in runnable {
+            let job_ref = job.clone();
+            let service = self.clone();
+            let app_w = app.clone();
+            let cfg_w = config.clone();
+            let query_w = query.clone();
+            let provider_id = id.to_string();
+            std::thread::spawn(move || {
+                let started = now_ms();
+                let result: Result<Vec<RawProviderResult>, String> = match provider_id.as_str() {
+                    "ahmia" => service.ahmia_search(&app_w, &cfg_w, &query_w),
+                    "tor66" => service.tor66_search(&app_w, &cfg_w, &query_w),
+                    _ => Err("UNKNOWN_PROVIDER".to_string()),
+                };
+                let duration = now_ms().saturating_sub(started);
+                // Budget: provider work beyond providerTimeoutMs abandons its
+                // results (the thread may still be blocked in the socket read;
+                // its output is then ignored).
+                let on_time = duration <= cfg_w.provider_timeout_ms;
+                match result {
+                    Ok(raw) if on_time => {
+                        let count = raw.len();
+                        service.record_provider(&job_ref, &provider_id, "ok", duration, count, None);
+                        if !job_ref.lock().unwrap_or_else(|p| p.into_inner()).cancelled {
+                            service.push_raw(&job_ref, &provider_id, raw);
+                        }
+                    }
+                    Ok(_) => {
+                        service.record_provider(&job_ref, &provider_id, "timeout", duration, 0, Some("PROVIDER_TIMEOUT".to_string()));
+                    }
+                    Err(code) => {
+                        let status = if code == "NO_TOR" { "no_tor" } else if on_time { "error" } else { "timeout" };
+                        service.record_provider(&job_ref, &provider_id, status, duration, 0, Some(code));
+                    }
+                }
+                service.maybe_finalize(&app_w, &cfg_w, &job_ref);
+            });
+        }
+
+        let initial = job.lock().unwrap_or_else(|p| p.into_inner()).snapshot(now);
+        Ok(initial)
+    }
+
+    fn record_provider(
+        &self,
+        job: &Arc<Mutex<SearchJob>>,
+        id: &str,
+        status: &str,
+        duration_ms: u64,
+        count: usize,
+        error_code: Option<String>,
+    ) {
+        {
+            let mut j = job.lock().unwrap_or_else(|p| p.into_inner());
+            j.providers.insert(
+                id.to_string(),
+                json!({
+                    "id": id,
+                    "status": status,
+                    "durationMs": duration_ms,
+                    "resultCount": count,
+                    "errorCode": error_code,
+                }),
+            );
+            j.settled += 1;
+            if !j.cancelled && j.settled < j.registered && j.state == "SEARCHING" {
+                j.state = "PARTIAL_RESULTS";
+            }
+        }
+        let mut health = self.health.lock().unwrap_or_else(|p| p.into_inner());
+        let h = health.entry(id.to_string()).or_default();
+        let now = now_ms();
+        if status == "ok" {
+            h.record_success(duration_ms, now);
+        } else {
+            h.record_failure(now);
+        }
+    }
+
+    fn push_raw(&self, job: &Arc<Mutex<SearchJob>>, provider: &str, raw: Vec<RawProviderResult>) {
+        let normalized: Vec<NormalizedResult> = raw
+            .into_iter()
+            .filter_map(|r| normalize_provider_result(r, provider))
+            .collect();
+        let mut j = job.lock().unwrap_or_else(|p| p.into_inner());
+        j.pending_raw(normalized);
+    }
+
+    /// Finalize when every provider settled: merge → rank → availability →
+    /// cache → history.
+    fn maybe_finalize(&self, app: &tauri::AppHandle<tauri::Wry>, config: &DarkWebConfig, job: &Arc<Mutex<SearchJob>>) {
+        let (settled, registered, cancelled) = {
+            let j = job.lock().unwrap_or_else(|p| p.into_inner());
+            (j.settled, j.registered, j.cancelled)
+        };
+        if settled < registered {
+            return;
+        }
+        let now = now_ms();
+        let (merged, query, search_id) = {
+            let mut j = job.lock().unwrap_or_else(|p| p.into_inner());
+            if cancelled {
+                j.state = "CANCELLED";
+                j.ended_at = Some(now);
+                return;
+            }
+            let merged = merge_results(j.take_raw());
+            (merged, j.query.clone(), j.id.clone())
+        };
+
+        // Bounded availability check (concurrent, capped). Precompute the
+        // (key, url) pairs so worker threads own their data; the queue must
+        // outlive thread::scope (created OUTSIDE the scope closure).
+        let mut reachability: HashMap<String, (&'static str, Option<u64>)> = HashMap::new();
+        if config.availability_enabled && config.availability_max_urls > 0 {
+            let pairs: Vec<(String, String)> = merged
+                .iter()
+                .take(config.availability_max_urls)
+                .map(|m| (m.key.clone(), m.url.clone()))
+                .collect();
+            let checked: Mutex<HashMap<String, (&'static str, Option<u64>)>> =
+                Mutex::new(HashMap::new());
+            let queue = Mutex::new(pairs.into_iter());
+            std::thread::scope(|scope| {
+                let mut handles = Vec::new();
+                for _ in 0..AVAILABILITY_CONCURRENCY {
+                    let queue = &queue;
+                    let checked = &checked;
+                    let app = &app;
+                    let cfg = &config;
+                    handles.push(scope.spawn(move || loop {
+                        let Some((key, url)) = queue.lock().unwrap_or_else(|p| p.into_inner()).next()
+                        else {
+                            return;
+                        };
+                        let r = check_reachable(app, cfg, &url);
+                        checked.lock().unwrap_or_else(|p| p.into_inner()).insert(key, r);
+                    }));
+                }
+                for h in handles {
+                    let _ = h.join();
+                }
+            });
+            reachability = checked.into_inner().unwrap_or_default();
+        }
+
+        let ranked = rank_results(merged, &query, &reachability, now);
+        let results: Vec<Value> = ranked
+            .into_iter()
+            .take(config.max_results)
+            .enumerate()
+            .map(|(i, mut r)| {
+                if let Some(obj) = r.as_object_mut() {
+                    obj.insert("id".to_string(), json!(format!("{search_id}_{i}")));
+                }
+                r
+            })
+            .collect();
+
+        let cache_key = format!("{}|", query.to_lowercase());
+        {
+            let mut j = job.lock().unwrap_or_else(|p| p.into_inner());
+            j.results = results;
+            j.state = "DONE";
+            j.ended_at = Some(now);
+        }
+        if config.cache_ttl_ms > 0 {
+            let mut cache = self.cache.lock().unwrap_or_else(|p| p.into_inner());
+            if cache.len() >= MAX_CACHE {
+                cache.clear();
+            }
+            cache.insert(
+                cache_key,
+                (job.lock().unwrap_or_else(|p| p.into_inner()).snapshot(now), now + config.cache_ttl_ms),
+            );
+        }
+        if config.store_search_history {
+            self.history_add(&query);
+        }
+    }
+
+    pub fn get_search(&self, id: &str) -> Option<Value> {
+        let jobs = self.jobs.lock().unwrap_or_else(|p| p.into_inner());
+        let job = jobs.get(id)?;
+        let job = job.lock().unwrap_or_else(|p| p.into_inner());
+        Some(job.snapshot(now_ms()))
+    }
+
+    pub fn cancel_search(&self, id: &str) -> bool {
+        let jobs = self.jobs.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(job) = jobs.get(id) else {
+            return false;
+        };
+        let mut j = job.lock().unwrap_or_else(|p| p.into_inner());
+        if matches!(j.state, "DONE" | "ERROR" | "CANCELLED") {
+            return true;
+        }
+        j.cancelled = true;
+        j.state = "CANCELLED";
+        j.ended_at = Some(now_ms());
+        true
+    }
+
+    // -- providers -----------------------------------------------------------
+
+    fn ensure_ahmia_token(&self, app: &tauri::AppHandle<tauri::Wry>, config: &DarkWebConfig, use_tor: bool) -> Option<(String, String)> {
+        let now = now_ms();
+        {
+            let tok = self.ahmia_token.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some((name, value, at)) = tok.as_ref() {
+                if now.saturating_sub(*at) < TOKEN_TTL_MS {
+                    return Some((name.clone(), value.clone()));
+                }
+            }
+        }
+        let base = if use_tor { AHMIA_ONION_BASE } else { AHMIA_CLEARNET_BASE };
+        let home = if use_tor {
+            let (host, port) = tor_endpoint(app, config)?;
+            socks_http::get_via_socks5(&host, port, &format!("{base}/"), config.fetch_timeout_ms, config.fetch_max_bytes)
+        } else {
+            socks_http::get_clearnet(&format!("{base}/"), config.fetch_timeout_ms, config.fetch_max_bytes)
+        }
+        .ok()?;
+        let token = parse_ahmia_token(&home.text);
+        if let Some((name, value)) = &token {
+            *self.ahmia_token.lock().unwrap_or_else(|p| p.into_inner()) =
+                Some((name.clone(), value.clone(), now));
+        }
+        token
+    }
+
+    fn ahmia_search(&self, app: &tauri::AppHandle<tauri::Wry>, config: &DarkWebConfig, query: &str) -> Result<Vec<RawProviderResult>, String> {
+        let use_tor = tor_endpoint(app, config).is_some();
+        let base = if use_tor { AHMIA_ONION_BASE } else { AHMIA_CLEARNET_BASE };
+        let token = self.ensure_ahmia_token(app, config, use_tor);
+        let mut url = format!("{base}/search?q={}", urlencode_query(query));
+        if let Some((name, value)) = &token {
+            url.push_str(&format!("&{}={}", urlencode_query(name), urlencode_query(value)));
+        }
+        let resp = if use_tor {
+            let (host, port) = tor_endpoint(app, config).ok_or("NO_TOR")?;
+            socks_http::get_via_socks5(&host, port, &url, config.provider_timeout_ms, config.fetch_max_bytes)
+        } else {
+            socks_http::get_clearnet(&url, config.provider_timeout_ms, config.fetch_max_bytes)
+        }
+        .map_err(|e: FetchError| e.code().to_string())?;
+        if resp.status >= 400 {
+            return Err("EXTERNAL_PROVIDER_UNAVAILABLE".to_string());
+        }
+        Ok(parse_ahmia_results(&resp.text).into_iter().take(config.max_results).collect())
+    }
+
+    fn tor66_search(&self, app: &tauri::AppHandle<tauri::Wry>, config: &DarkWebConfig, query: &str) -> Result<Vec<RawProviderResult>, String> {
+        let (host, port) = tor_endpoint(app, config).ok_or("NO_TOR")?;
+        let url = format!("{TOR66_ONION_BASE}/search?q={}", urlencode_query(query));
+        let resp = socks_http::get_via_socks5(&host, port, &url, config.provider_timeout_ms, config.fetch_max_bytes)
+            .map_err(|e: FetchError| e.code().to_string())?;
+        if resp.status >= 400 {
+            return Err("EXTERNAL_PROVIDER_UNAVAILABLE".to_string());
+        }
+        Ok(parse_tor66_results(&resp.text).into_iter().take(config.max_results).collect())
+    }
+
+    // -- history --------------------------------------------------------------
+
+    fn history_add(&self, query: &str) {
+        let mut history = self.history.lock().unwrap_or_else(|p| p.into_inner());
+        history.insert(
+            0,
+            json!({ "query": query, "providers": ["ahmia", "tor66"], "at": now_ms() }),
+        );
+        history.truncate(MAX_HISTORY);
+        let doc = json!({ "entries": history.clone() });
+        let _ = std::fs::write(
+            self.data_dir.join("darkweb-history.json"),
+            serde_json::to_string(&doc).unwrap_or_default(),
+        );
+    }
+
+    // -- status ---------------------------------------------------------------
+
+    pub fn ui_status(&self, app: &tauri::AppHandle<tauri::Wry>) -> Value {
+        let config = self.config();
+        let now = now_ms();
+        let tor_state = crate::runtime_manager::with_manager(app, |s| s.service_state("tor")).flatten();
+        let (tor_label, endpoint) = match tor_state {
+            Some(crate::runtime_manager::ServiceState::Ready) => {
+                let ep = crate::runtime_manager::with_manager(app, |s| s.tor_socks_endpoint()).flatten();
+                ("READY", ep)
+            }
+            Some(crate::runtime_manager::ServiceState::Starting)
+            | Some(crate::runtime_manager::ServiceState::Bootstrapping) => ("STARTING", None),
+            Some(crate::runtime_manager::ServiceState::Failed) => ("FAILED", None),
+            _ => ("STOPPED", None),
+        };
+        let socks_port = endpoint
+            .as_ref()
+            .and_then(|e| parse_socks_endpoint(e))
+            .map(|(_, p)| p)
+            .unwrap_or(config.socks_port);
+        let health = self.health.lock().unwrap_or_else(|p| p.into_inner());
+        let provider_status = |id: &str, name: &str, enabled: bool, requires_tor: bool| {
+            let h = health.get(id);
+            json!({
+                "id": id,
+                "name": name,
+                "enabled": enabled,
+                "requiresTor": requires_tor,
+                "health": h.map(|h| h.health_label(now)).unwrap_or("UNKNOWN"),
+                "lastLatencyMs": h.and_then(|h| h.last_latency_ms),
+                "lastSuccessAt": h.and_then(|h| h.last_success_at),
+                "lastFailureAt": h.and_then(|h| h.last_failure_at),
+                "circuitOpenUntil": h.and_then(|h| h.circuit_open_until),
+            })
+        };
+        let history_count = self.history.lock().unwrap_or_else(|p| p.into_inner()).len();
+        json!({
+            "enabled": config.enabled,
+            "tor": {
+                "state": tor_label,
+                "socksHost": config.socks_host,
+                "socksPort": socks_port,
+                "detail": endpoint,
+                "latencyMs": null,
+                "lastCheckAt": now,
+            },
+            "providers": [
+                provider_status("ahmia", "Ahmia", config.ahmia_enabled, false),
+                provider_status("tor66", "Tor66", config.tor66_enabled, true),
+            ],
+            "historyCount": history_count,
+            "indexCount": 0,
+        })
+    }
+
+    pub fn history_entries(&self) -> Value {
+        json!({ "entries": self.history.lock().unwrap_or_else(|p| p.into_inner()).clone() })
+    }
+
+    pub fn clear_history(&self) {
+        self.history.lock().unwrap_or_else(|p| p.into_inner()).clear();
+        let _ = std::fs::write(self.data_dir.join("darkweb-history.json"), "{\"entries\":[]}");
+    }
+}
+
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Managed Tauri state handle for the service.
+pub type SharedDarkWeb = Arc<DarkWebService>;
+
+/// Config snapshot from the managed service (consumed by core.rs when a
+/// darkweb tab resolves its Tor endpoint).
+pub fn config_of(app: &tauri::AppHandle<tauri::Wry>) -> DarkWebConfig {
+    use tauri::Manager;
+    app.try_state::<SharedDarkWeb>()
+        .map(|s| s.config())
+        .unwrap_or_default()
+}
+
+fn urlencode_query(s: &str) -> String {
+    urlencode(s)
+}
+
+// ---------------------------------------------------------------------------
+// Tests (pure logic — parsers, normalize, merge, rank, config, health)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ahmia_token_extraction() {
+        let html = r#"<form><input type="hidden" name="gqfxw" value="7f3a"><input type="text" name="q"></form>"#;
+        let token = parse_ahmia_token(html).unwrap();
+        assert_eq!(token.0, "gqfxw");
+        assert_eq!(token.1, "7f3a");
+        assert!(parse_ahmia_token("<form><input type=\"text\" name=\"q\"></form>").is_none());
+    }
+
+    #[test]
+    fn ahmia_results_parsing() {
+        let html = r#"
+        <li class="result">
+          <h4>Torch <b>Search</b></h4>
+          <p>Search &amp; explore the darknet</p>
+          <cite>xmh57jzhnwlpyoah.onion</cite>
+          <span class="lastSeen" data-timestamp="1700000000">2d</span>
+        </li>
+        <li class="result">
+          <h4>Onionland</h4>
+          <p>Another engine</p>
+          <cite>http://onionlandmyf6bl2whtf6zhmahdam6d34h7gs4sirzemafpwmsitd.onion/</cite>
+        </li>"#;
+        let results = parse_ahmia_results(html);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].url, "xmh57jzhnwlpyoah.onion");
+        assert_eq!(results[0].title, "Torch Search");
+        assert_eq!(results[0].snippet, "Search & explore the darknet");
+        assert_eq!(results[0].last_seen, Some(1_700_000_000_000));
+    }
+
+    #[test]
+    fn tor66_results_parsing() {
+        // 56-char base32 hosts (v3 onion length matters: the regex gates on it).
+        let h1 = "abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrstuvwx";
+        let h2 = "zyxwvutsrqponmlkjihgfedcbazyxwvutsrqponmlkjihgfedcba2345";
+        assert_eq!(h1.len(), 56);
+        assert_eq!(h2.len(), 56);
+        let html = format!(
+            r#"
+        <a href="http://{h1}.onion/wiki">The Hidden <i>Wiki</i></a>
+        <a href="{h2}.onion">Plain host link</a>
+        <a href="/search?q=next">Internal nav</a>
+        <a href="http://tor66sewebgixwhcqfnp5inzp5x5uohhyl3qcyyeiafkliegvfiogiijd.onion/about">About</a>"#
+        );
+        let results = parse_tor66_results(&html);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].title, "The Hidden Wiki");
+        assert_eq!(results[1].url, format!("http://{h2}.onion"));
+    }
+
+    #[test]
+    fn normalize_adds_scheme_and_dedups() {
+        let raw = RawProviderResult {
+            title: "  Wiki   Title ".to_string(),
+            url: "abc.onion".to_string(),
+            snippet: "s".to_string(),
+            last_seen: None,
+        };
+        let n = normalize_provider_result(raw, "ahmia").unwrap();
+        assert_eq!(n.url, "http://abc.onion/");
+        assert_eq!(n.title, "Wiki Title");
+        // Non-onion rejected.
+        let bad = normalize_provider_result(
+            RawProviderResult { title: "t".into(), url: "http://example.com/".into(), snippet: String::new(), last_seen: None },
+            "ahmia",
+        );
+        assert!(bad.is_none());
+        // Credentials stripped.
+        let creds = normalize_provider_result(
+            RawProviderResult { title: "t".into(), url: "http://u:p@abc.onion/x".into(), snippet: String::new(), last_seen: None },
+            "tor66",
+        )
+        .unwrap();
+        assert!(!creds.url.contains("u:p@"));
+    }
+
+    #[test]
+    fn merge_unifies_providers_and_keeps_longest_text() {
+        let a = normalize_provider_result(
+            RawProviderResult { title: "Short".into(), url: "http://abc.onion/".into(), snippet: "hi".into(), last_seen: None },
+            "ahmia",
+        )
+        .unwrap();
+        let b = normalize_provider_result(
+            RawProviderResult { title: "The Longer Title".into(), url: "abc.onion".into(), snippet: "longer snippet".into(), last_seen: Some(5) },
+            "tor66",
+        )
+        .unwrap();
+        let merged = merge_results(vec![a, b]);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].providers, vec!["ahmia", "tor66"]);
+        assert_eq!(merged[0].title, "The Longer Title");
+        assert_eq!(merged[0].snippet, "longer snippet");
+        assert_eq!(merged[0].last_seen, Some(5));
+    }
+
+    #[test]
+    fn ranking_prefers_multi_provider_and_term_coverage() {
+        let make = |url: &str, providers: usize, title: &str| MergedResult {
+            title: title.to_string(),
+            url: url.to_string(),
+            hostname: "x.onion".into(),
+            snippet: String::new(),
+            providers: (0..providers).map(|i| format!("p{i}")).collect(),
+            last_seen: None,
+            key: url.to_string(),
+        };
+        let merged = vec![
+            make("http://weak.onion/", 1, "unrelated text"),
+            make("http://strong.onion/", 3, "bitcoin wallet guide"),
+        ];
+        let ranked = rank_results(merged, "bitcoin wallet", &HashMap::new(), 0);
+        assert_eq!(ranked[0]["url"], "http://strong.onion/");
+        assert!(ranked[0]["score"].as_f64().unwrap() > ranked[1]["score"].as_f64().unwrap());
+    }
+
+    #[test]
+    fn health_circuit_opens_and_recovers() {
+        let mut h = ProviderHealth::default();
+        h.record_failure(1);
+        h.record_failure(2);
+        assert!(h.allows(3));
+        h.record_failure(3);
+        assert!(!h.allows(4));
+        assert_eq!(h.health_label(4), "OFFLINE");
+        assert!(h.allows(4 + CIRCUIT_OPEN_MS));
+        h.record_success(50, 4 + CIRCUIT_OPEN_MS + 1);
+        assert!(h.allows(9_999_999));
+        assert_eq!(h.health_label(9_999_999), "HEALTHY");
+    }
+
+    #[test]
+    fn config_patch_clamps_and_persists_roundtrip() {
+        let mut c = DarkWebConfig::default();
+        c.apply_patch(&json!({
+            "enabled": false,
+            "search": { "maxResults": 99_999, "cacheTtlMs": -5 },
+            "tor": { "socksPort": 99_999 },
+            "providers": { "tor66": { "enabled": false } },
+        }));
+        assert!(!c.enabled);
+        assert_eq!(c.max_results, 200);
+        assert_eq!(c.socks_port, 65_535);
+        assert!(!c.tor66_enabled);
+        let tmp = std::env::temp_dir().join(format!("hd-dw-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        c.save(&tmp);
+        let loaded = DarkWebConfig::load(&tmp);
+        assert_eq!(loaded.max_results, 200);
+        assert!(!loaded.tor66_enabled);
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn onion_url_validation() {
+        assert!(is_onion_url("http://abcxyz56charonionaddress0000000000000000000000000000000.onion/x"));
+        assert!(!is_onion_url("https://ahmia.fi/search"));
+        assert!(!is_onion_url("notaurl"));
+    }
+
+    #[test]
+    fn title_extraction() {
+        assert_eq!(extract_title("<html><title>Hello &amp; World</title></html>").as_deref(), Some("Hello & World"));
+    }
+}

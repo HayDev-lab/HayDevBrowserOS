@@ -31,6 +31,7 @@ import type {
   BrowserActionPort,
   ModelOutput,
   OllamaChatMessage,
+  OllamaChatResponse,
   OllamaClientPort,
   ToolCall,
   ToolResult,
@@ -38,6 +39,11 @@ import type {
 } from '@shared/agent-types';
 import { AGENT_LOOP_BOUNDS } from '@shared/agent-types';
 import type { VaultPort } from '@shared/vault-types';
+
+/** Runtime port for memory.save — proposes a fact for user confirmation. */
+export interface MemoryPort {
+  propose(fact: string): Promise<void>;
+}
 import type { ActionResult, PageSnapshot } from '@shared/browser-actions-types';
 import { isVaultGenerateAllowed } from '../../incognito/pure/incognito-policy';
 import { AgentStateMachine } from './agent-state-machine';
@@ -65,6 +71,19 @@ export interface AgentLoopDeps {
   actions: BrowserActionPort;
   /** Optional vault port for vault.* tool calls (PROMPT 6). */
   vault?: VaultPort;
+  /**
+   * Memory port for the memory.save tool — the implementation proposes the
+   * fact to the USER (confirmation prompt); storage happens only on accept.
+   */
+  memory?: MemoryPort;
+  /** Confirmed user facts injected into the system prompt. */
+  memoryFacts?: string[];
+  /**
+   * Resolves the user's active tab for tab-scoped tools when the model
+   * omits `tabId`. Without it, every tab-scoped call without an explicit
+   * id fails validation and the model burns steps retrying.
+   */
+  resolveActiveTabId?: () => Promise<string | null>;
   /** Whether the current context is incognito (PROMPT 7). */
   incognitoContext?: boolean;
   /** Initial control state (HUMAN or AGENT). */
@@ -81,6 +100,11 @@ export interface AgentLoopDeps {
   maxSteps?: number;
   /** Timeout in ms (clamped to HARD_TIMEOUT_MS). */
   timeoutMs?: number;
+  /**
+   * Optional profile instructions appended to the system prompt (PROMPT 9:
+   * the DEEP_RESEARCH overlay). No other loop behavior changes.
+   */
+  systemPromptOverlay?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -99,7 +123,9 @@ export interface AbortSignal {
 export async function runAgentLoop(
   deps: AgentLoopDeps,
   command: string,
-  abortSignal: AbortSignal = { aborted: false, reason: '' }
+  abortSignal: AbortSignal = { aborted: false, reason: '' },
+  /** Base64 images attached to the initial user message (vision runs). */
+  initialImages: string[] = []
 ): Promise<AgentRunResult> {
   const maxSteps = clamp(
     deps.maxSteps ?? AGENT_LOOP_BOUNDS.DEFAULT_MAX_STEPS,
@@ -156,10 +182,19 @@ export async function runAgentLoop(
   const systemPrompt = buildSystemPrompt({
     toolDescriptions,
     maxSteps,
+    profileInstructions: deps.systemPromptOverlay,
+    memoryFacts: deps.memoryFacts,
   });
   const history: OllamaChatMessage[] = [
     { role: 'system', content: systemPrompt },
-    { role: 'user', content: command },
+    // Seeded vision attachments (e.g. New Tab image uploads) ride the
+    // standard Ollama images channel — the non-vision fallback below
+    // strips them if the model rejects image input.
+    {
+      role: 'user',
+      content: command,
+      ...(initialImages.length > 0 ? { images: initialImages } : {}),
+    },
   ];
 
   let stepCount = 0;
@@ -169,7 +204,7 @@ export async function runAgentLoop(
 
   // Emit the user_command as a timeline entry.
   pushTimeline(deps, () =>
-    createEventTimelineEntry(0, 'user_command', truncate(command, 200), 'completed', now)
+    createEventTimelineEntry(0, 'user_command', truncate(command, 200), 'completed', now, command)
   );
 
   // Main loop.
@@ -202,12 +237,42 @@ export async function runAgentLoop(
     // DECIDE — call the model.
     let modelOutput: ModelOutput;
     try {
-      const response = await deps.ollama.chat({
-        model: deps.ollama.config.model,
-        messages: history,
-        tools: listToolsForRequest(),
-        temperature: 0.2,
-      });
+      let response: OllamaChatResponse;
+      try {
+        response = await deps.ollama.chat({
+          model: deps.ollama.config.model,
+          messages: history,
+          tools: listToolsForRequest(),
+          temperature: 0.2,
+        });
+      } catch (visionErr) {
+        // Vision fallback: page.screenshot attached an image, but the
+        // configured model is text-only (e.g. HTTP 400 "does not support
+        // image input"). Retry once WITHOUT images so a text-only model
+        // still completes the run instead of failing it.
+        if (
+          history.some((m) => (m.images?.length ?? 0) > 0) &&
+          /image input|vision|multimodal|image/i.test(safeErr(visionErr))
+        ) {
+          const stripped: OllamaChatMessage[] = history.map((m) =>
+            (m.images?.length ?? 0) > 0
+              ? {
+                  ...m,
+                  images: undefined,
+                  content: `${m.content}\n[note: the screenshot image could not be delivered — the configured model does not support vision input. Rely on browser.read instead.]`,
+                }
+              : m
+          );
+          response = await deps.ollama.chat({
+            model: deps.ollama.config.model,
+            messages: stripped,
+            tools: listToolsForRequest(),
+            temperature: 0.2,
+          });
+        } else {
+          throw visionErr;
+        }
+      }
       modelOutput = parseModelOutput(response.content);
     } catch (err) {
       return failRun(
@@ -255,7 +320,7 @@ export async function runAgentLoop(
     // Handle final answer.
     if (modelOutput.kind === 'final_answer') {
       pushTimeline(deps, () =>
-        createEventTimelineEntry(stepCount + 1, 'final_answer', truncate(modelOutput.answer, 200), 'completed', now)
+        createEventTimelineEntry(stepCount + 1, 'final_answer', truncate(modelOutput.answer, 200), 'completed', now, modelOutput.answer)
       );
       stateMachine.markCompleted('final_answer');
       emitControl(markAgentRunEnded(control));
@@ -307,8 +372,9 @@ export async function runAgentLoop(
       continue;
     }
 
-    // VALIDATE — schema + action validation.
-    const activeTabId = resolveActiveTabId(lastToolResult);
+    // VALIDATE — schema + action validation. Tab-scoped tools fall back to
+    // the resolved active tab when the model omits `tabId`.
+    const activeTabId = (await deps.resolveActiveTabId?.()) ?? resolveActiveTabId(lastToolResult);
     const validation = validateToolCall(call, activeTabId);
     if (!validation.valid) {
       const invalidResult: ToolResult = {
@@ -334,7 +400,9 @@ export async function runAgentLoop(
     );
 
     let toolResult: ToolResult;
-    if (tool.startsWith('vault.')) {
+    if (tool === 'memory.save') {
+      toolResult = await executeMemoryTool(deps, call);
+    } else if (tool.startsWith('vault.')) {
       // Vault tools go through the VaultPort (not BrowserActionService).
       toolResult = await executeVaultTool(deps, call);
     } else {
@@ -373,6 +441,11 @@ export async function runAgentLoop(
     history.push({
       role: 'tool',
       content: toolResult.observation,
+      // Vision grounding: the screenshot rides along on the tool message
+      // (Ollama images format). Keep the payload out of `content`.
+      ...(toolResult.imageBase64
+        ? { images: [toolResult.imageBase64] }
+        : {}),
     });
   }
 
@@ -425,10 +498,12 @@ function listToolsForRequest(): ToolName[] {
     'page.click',
     'page.type',
     'page.scroll',
+    'page.screenshot',
     'agent.stop',
     'vault.has',
     'vault.fill',
     'vault.generate_and_store',
+    'memory.save',
   ];
 }
 
@@ -483,7 +558,18 @@ function buildToolResult(
     result.error = actionResult.error;
   }
   if (actionResult.data !== undefined) {
-    result.data = actionResult.data;
+    // The screenshot image is attached to the model message separately —
+    // never duplicated into `data` (which could reach logs/timelines).
+    const kind = (actionResult.data as { format?: string } | null)?.format;
+    if (tool === 'page.screenshot' && kind === 'jpeg') {
+      const shot = actionResult.data as { imageBase64?: string };
+      if (shot.imageBase64) {
+        result.imageBase64 = shot.imageBase64;
+      }
+      result.data = undefined;
+    } else {
+      result.data = actionResult.data;
+    }
   }
   // Detect password field for page.type.
   if (tool === 'page.type' && success) {
@@ -542,6 +628,11 @@ function buildObservation(
       const data = actionResult.data as { direction?: string; amount?: number } | undefined;
       return `scrolled ${data?.direction ?? ''} ${data?.amount ?? 0}px`;
     }
+    case 'page.screenshot': {
+      const data = actionResult.data as { width?: number; height?: number } | undefined;
+      // The image itself is attached to the message, not the observation.
+      return `screenshot captured (${data?.width ?? '?'}x${data?.height ?? '?'} JPEG image attached to this message)`;
+    }
     case 'agent.stop':
       return 'stop requested';
     default:
@@ -574,6 +665,54 @@ function sanitizeArgsForHistory(call: ToolCall): Record<string, unknown> {
 // ---------------------------------------------------------------------------
 // Vault tool execution — routes vault.* tools to VaultPort
 // ---------------------------------------------------------------------------
+
+async function executeMemoryTool(
+  deps: AgentLoopDeps,
+  call: ToolCall
+): Promise<ToolResult> {
+  const fact = String(call.args?.fact ?? '').trim();
+  if (!fact) {
+    return {
+      tool: 'memory.save',
+      success: false,
+      observation: 'error:empty_fact',
+      error: 'empty_fact',
+    };
+  }
+  // Incognito runs never write memory — policy, not a failure of the task.
+  if (deps.incognitoContext) {
+    return {
+      tool: 'memory.save',
+      success: false,
+      observation: 'memory is disabled in incognito; fact NOT stored',
+      error: 'memory_disabled_incognito',
+    };
+  }
+  if (!deps.memory) {
+    return {
+      tool: 'memory.save',
+      success: false,
+      observation: 'memory store unavailable',
+      error: 'memory_unavailable',
+    };
+  }
+  try {
+    await deps.memory.propose(fact);
+    return {
+      tool: 'memory.save',
+      success: true,
+      observation:
+        'fact proposed — the user has been asked to confirm; it is stored only after confirmation',
+    };
+  } catch (err) {
+    return {
+      tool: 'memory.save',
+      success: false,
+      observation: `error:${safeErr(err)}`,
+      error: 'memory_propose_failed',
+    };
+  }
+}
 
 async function executeVaultTool(
   deps: AgentLoopDeps,

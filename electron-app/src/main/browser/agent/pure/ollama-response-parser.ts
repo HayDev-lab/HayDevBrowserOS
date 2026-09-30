@@ -155,8 +155,12 @@ function truncateForError(s: string): string {
 export function buildSystemPrompt(opts: {
   toolDescriptions: string;
   maxSteps: number;
+  /** Optional profile overlay appended after the boundary (PROMPT 9). */
+  profileInstructions?: string;
+  /** Confirmed user facts (agent memory) — injected as known preferences. */
+  memoryFacts?: string[];
 }): string {
-  return `You are the Personal Agentic Browser V1 agent. You control a browser via a strict tool-call protocol.
+  const base = `You are the HayDev Browser OS agent. You control a browser via a strict tool-call protocol.
 
 ## SECURITY RULES (NON-NEGOTIABLE)
 
@@ -184,4 +188,12 @@ ${opts.toolDescriptions}
 ## BOUNDARY
 
 The browser, its tabs, and its sessions are shared with the human user. Do not close tabs you did not open. Do not navigate the active tab away from a page the user is reading unless the task requires it. Prefer opening a new tab over reusing the active tab.`;
+  const memoryBlock =
+    opts.memoryFacts && opts.memoryFacts.length > 0
+      ? `\n\n## KNOWN FACTS ABOUT THE USER (confirmed by the user)\n\n${opts.memoryFacts
+          .map((f) => `- ${f}`)
+          .join('\n')}\nUse these to personalize answers and default choices.`
+      : '';
+  const withMemory = `${base}${memoryBlock}`;
+  return opts.profileInstructions ? `${withMemory}${opts.profileInstructions}` : withMemory;
 }

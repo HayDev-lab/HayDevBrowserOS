@@ -81,6 +81,7 @@ export function CommandBar({
     isLoading,
     hasUrl: !!(tab?.url),
     isHttps: !!(tab?.url?.startsWith('https://')),
+    isWebUrl: /^(https?):\/\//.test(tab?.url ?? ''),
     isIncognito: !!tab?.isIncognito,
     input,
   });

@@ -7,6 +7,7 @@
  * from PROMPT 4 for the final action-input validation.
  */
 import type { ToolCall, ToolName, AuthorizationDecision } from '@shared/agent-types';
+import { MEMORY_BOUNDS } from '@shared/memory-types';
 import type { ActionInput } from '@shared/browser-actions-types';
 import { isKnownTool, getToolDefinition } from './tool-registry';
 import { validateAction } from '../../actions/pure/action-validator';
@@ -87,6 +88,18 @@ export function validateToolCall(
   // (not BrowserActionService). Validate args only; the agent-loop routes
   // vault.* tools to the vault port.
   if (call.tool.startsWith('vault.')) {
+    return { valid: true, actionInput: undefined, errors: [] };
+  }
+
+  // memory.save goes through the MemoryPort (pending confirmation flow).
+  if (call.tool === 'memory.save') {
+    const fact = call.args?.fact;
+    if (typeof fact !== 'string' || fact.trim().length === 0) {
+      return { valid: false, errors: ['missing_parameter:fact'] };
+    }
+    if (fact.length > MEMORY_BOUNDS.MAX_FACT_LENGTH) {
+      return { valid: false, errors: [`parameter_too_long:fact:${fact.length}`] };
+    }
     return { valid: true, actionInput: undefined, errors: [] };
   }
 
@@ -181,6 +194,14 @@ function buildActionInput(
         tabId,
         direction: String(args.direction ?? 'down') as 'up' | 'down' | 'left' | 'right',
         amount: typeof args.amount === 'number' ? args.amount : undefined,
+      };
+
+    case 'page.screenshot':
+      if (!tabId) return null;
+      return {
+        kind: 'screenshot',
+        tabId,
+        maxWidth: typeof args.maxWidth === 'number' ? args.maxWidth : undefined,
       };
 
     case 'agent.stop':

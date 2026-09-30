@@ -35,6 +35,8 @@ export class FakeTabManagement implements TabManagementPort {
       isIncognito: !!opts.incognito,
       isActive: !!opts.activate,
       isAudioPlaying: false,
+      unreadCount: 0,
+      isDiscarded: false,
       createdAt: Date.now(),
       lastActivatedAt: Date.now(),
     };
@@ -84,6 +86,8 @@ export function makeFakeTab(overrides: Partial<TabState> = {}): TabState {
     isIncognito: false,
     isActive: true,
     isAudioPlaying: false,
+      unreadCount: 0,
+      isDiscarded: false,
     createdAt: 1_000_000,
     lastActivatedAt: 1_000_000,
     ...overrides,

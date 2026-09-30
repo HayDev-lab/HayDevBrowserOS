@@ -322,7 +322,7 @@ describe('webcontents-resolver / security boundary', () => {
     for (const name of forbidden) {
       expect(isKnownTool(name)).toBe(false);
     }
-    expect(TOOL_DEFINITIONS.length).toBe(13);
+    expect(TOOL_DEFINITIONS.length).toBe(15);
   });
 
   it('tool validator rejects arbitrary JS execution attempts', () => {

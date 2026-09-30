@@ -1,5 +1,9 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Vite build configuration for the Electron RENDERER process.
 // Renderer is loaded with nodeIntegration:false, contextIsolation:true, sandbox:true.
@@ -14,7 +18,7 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      '@shared': '/src/shared',
+      '@shared': path.resolve(__dirname, 'src/shared'),
     },
   },
   // Disable PostCSS auto-discovery — the parent Next.js project at

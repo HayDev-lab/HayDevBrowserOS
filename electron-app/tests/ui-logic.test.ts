@@ -28,9 +28,12 @@ import {
   pickLayoutKind,
   getLayoutModifier,
   isPanelActive,
+  findWebAppTabId,
+  isWebAppTabActive,
   type ControlState,
 } from '../src/renderer/src/store/ui-logic';
 import type { TabState, TabLoadState, DownloadStateName } from '@shared/browser-types';
+import { WEB_APP_PINS } from '@shared/browser-types';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -48,6 +51,8 @@ function makeTab(overrides: Partial<TabState> = {}): TabState {
     isIncognito: false,
     isActive: true,
     isAudioPlaying: false,
+      unreadCount: 0,
+      isDiscarded: false,
     createdAt: 1_000_000,
     lastActivatedAt: 1_000_000,
     ...overrides,
@@ -462,6 +467,20 @@ describe('ui-logic / getCommandBarState', () => {
     ).toBe('insecure');
   });
 
+  it('returns idle for internal pages (about:blank) instead of insecure', () => {
+    expect(
+      getCommandBarState({
+        isFocused: false,
+        isLoading: false,
+        hasUrl: true,
+        isHttps: false,
+        isWebUrl: false,
+        isIncognito: false,
+        input: 'about:blank',
+      })
+    ).toBe('idle');
+  });
+
   it('is case-insensitive for protocol detection', () => {
     expect(
       getCommandBarState({
@@ -712,7 +731,16 @@ describe('ui-logic / formatRelativeTime', () => {
   });
 
   it('returns a YYYY-MM-DD date for older than a week', () => {
-    const old = NOW - 10 * 86_400_000;
+    // Anchor to 12:00 UTC so the local date and the UTC date are the same
+    // calendar day in any timezone (the formatter uses local components).
+    const raw = NOW - 10 * 86_400_000;
+    const shifted = new Date(raw);
+    const old = Date.UTC(
+      shifted.getUTCFullYear(),
+      shifted.getUTCMonth(),
+      shifted.getUTCDate(),
+      12
+    );
     const expected = new Date(old).toISOString().slice(0, 10);
     expect(formatRelativeTime(old, NOW)).toBe(expected);
   });
@@ -744,5 +772,48 @@ describe('ui-logic / getLayoutModifier', () => {
     expect(getLayoutModifier('narrow')).toBe('app--narrow');
     expect(getLayoutModifier('normal')).toBe('app--normal');
     expect(getLayoutModifier('wide')).toBe('app--wide');
+  });
+});
+
+describe('ui-logic / web app pins', () => {
+  const whatsapp = WEB_APP_PINS.find((p) => p.id === 'whatsapp')!;
+  const telegram = WEB_APP_PINS.find((p) => p.id === 'telegram')!;
+
+  it('WEB_APP_PINS declares WhatsApp and Telegram with https origins', () => {
+    expect(whatsapp.url).toBe('https://web.whatsapp.com/');
+    expect(telegram.url).toBe('https://web.telegram.org/');
+  });
+
+  it('findWebAppTabId matches a committed app tab (any path under the origin)', () => {
+    const tabs = [
+      makeTab({ id: 'tab_a', url: 'https://example.com/' }),
+      makeTab({ id: 'tab_b', url: 'https://web.whatsapp.com/' }),
+    ];
+    expect(findWebAppTabId(tabs, whatsapp)).toBe('tab_b');
+  });
+
+  it('findWebAppTabId matches a still-loading tab via pendingUrl', () => {
+    const tabs = [
+      makeTab({
+        id: 'tab_c',
+        url: 'about:blank',
+        pendingUrl: 'https://web.telegram.org/k/',
+        loadState: 'loading',
+      }),
+    ];
+    expect(findWebAppTabId(tabs, telegram)).toBe('tab_c');
+  });
+
+  it('findWebAppTabId returns null when the app has no tab', () => {
+    const tabs = [makeTab({ id: 'tab_a', url: 'https://example.com/' })];
+    expect(findWebAppTabId(tabs, whatsapp)).toBeNull();
+    expect(findWebAppTabId([], telegram)).toBeNull();
+  });
+
+  it('isWebAppTabActive is true only for the matching origin', () => {
+    expect(isWebAppTabActive('https://web.whatsapp.com/', whatsapp)).toBe(true);
+    expect(isWebAppTabActive('https://web.whatsapp.com/send', whatsapp)).toBe(true);
+    expect(isWebAppTabActive('https://web.telegram.org/', whatsapp)).toBe(false);
+    expect(isWebAppTabActive('', telegram)).toBe(false);
   });
 });

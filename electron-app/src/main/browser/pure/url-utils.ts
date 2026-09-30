@@ -13,12 +13,36 @@
  *     ALWAYS rejected (security — never let a user paste script URLs).
  */
 
-const SEARCH_BASE = 'https://duckduckgo.com/?q=';
+/**
+ * Default search URL. Configurable via PAB_SEARCH_URL (main-process env,
+ * loaded from .env) — used to point the address-bar search at a local
+ * Perplexica instance: `PAB_SEARCH_URL=http://127.0.0.1:3000/?q=%s`.
+ * The template may contain `%s` (replaced with the encoded query);
+ * otherwise the query is appended as a `q=` parameter.
+ */
+export function getSearchUrl(query: string): string {
+  // AI-search mode: a local Perplexica instance turns the query into a
+  // full answered page served by our own pab://search internal page.
+  if (process.env.PAB_PERPLEXICA_URL?.trim()) {
+    return `pab://search?q=${encodeURIComponent(query)}`;
+  }
+  const template =
+    process.env.PAB_SEARCH_URL?.trim() || 'https://duckduckgo.com/?q=';
+  const encoded = encodeURIComponent(query);
+  if (template.includes('%s')) {
+    return template.replace('%s', encoded);
+  }
+  if (/[?&]q=$/.test(template)) {
+    return template + encoded;
+  }
+  return template + (template.includes('?') ? '&' : '?') + 'q=' + encoded;
+}
 
 const ALLOWED_PROTOCOLS = new Set([
   'http:',
   'https:',
   'about:',
+  'pab:',
   'file:',
 ]);
 
@@ -147,7 +171,7 @@ export function normalizeAddressBarInput(raw: string): NormalizedUrl {
   // Step 2 — search query?
   if (looksLikeSearchQuery(trimmed)) {
     result.isSearch = true;
-    result.url = SEARCH_BASE + encodeURIComponent(trimmed);
+    result.url = getSearchUrl(trimmed);
     return result;
   }
 

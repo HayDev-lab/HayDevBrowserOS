@@ -66,10 +66,12 @@ export type ToolName =
   | 'page.click'
   | 'page.type'
   | 'page.scroll'
+  | 'page.screenshot'
   | 'agent.stop'
   | 'vault.has'
   | 'vault.fill'
-  | 'vault.generate_and_store';
+  | 'vault.generate_and_store'
+  | 'memory.save';
 
 /**
  * A tool call from the model. The `args` shape depends on `tool` — see
@@ -104,6 +106,12 @@ export interface ToolResult {
   error?: string;
   /** True if the tool was `page.type` and the target was a password field. */
   wasPasswordField?: boolean;
+  /**
+   * Base64 JPEG of the captured viewport — `page.screenshot` only. Attached
+   * to the next model message as a vision input; NEVER stored in the
+   * timeline or logs.
+   */
+  imageBase64?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -128,6 +136,11 @@ export type ModelOutput =
 export interface OllamaChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
+  /**
+   * Base64-encoded images attached to this message (Ollama vision format,
+   * no data-URI prefix). Used by `page.screenshot` to ground the model.
+   */
+  images?: string[];
 }
 
 export interface OllamaChatRequest {
@@ -215,6 +228,12 @@ export interface AgentTimelineEntry {
   state: TimelineEntryState;
   /** Safe result summary (≤200 chars). No secrets. */
   summary: string;
+  /**
+   * Full untruncated text for chat-bearing entries (user_command,
+   * final_answer). Used by the agent chat panel; never set for tool
+   * entries (their summaries stay compact).
+   */
+  fullText?: string;
   /** Epoch ms. */
   timestamp: number;
 }
@@ -228,7 +247,28 @@ export interface AgentRunRequest {
   command: string;
   /** Optional max-step override (bounded by the loop's hard cap). */
   maxSteps?: number;
+  /**
+   * Execution profile (PROMPT 9). STANDARD = normal run; DEEP_RESEARCH =
+   * research prompt overlay + deterministic source-ledger recording +
+   * structured report completion. Same runtime either way.
+   */
+  profile?: import('./research-types').AgentRunProfile;
+  /**
+   * Base64 images (Ollama vision format) attached to the initial user
+   * message — e.g. New Tab image uploads. Bounded by
+   * AGENT_RUN_MAX_IMAGES; stripped automatically for non-vision models.
+   */
+  images?: string[];
+  /**
+   * Ids of pending attachments in the MAIN-process registry (picked via
+   * the newtab/agent pickAttachment channels). Resolved to bounded text
+   * digests + vision images before the loop starts.
+   */
+  attachmentIds?: string[];
 }
+
+/** Hard cap on run-request images (enforced by the controller). */
+export const AGENT_RUN_MAX_IMAGES = 4;
 
 export interface AgentStatusSnapshot {
   state: AgentStateName;
@@ -277,6 +317,8 @@ export const AGENT_LOOP_BOUNDS = {
   MAX_OBSERVATION_LENGTH: 500,
   /** Max timeline summary length. */
   MAX_SUMMARY_LENGTH: 200,
+  /** Max full text length for chat entries (user_command / final_answer). */
+  MAX_CHAT_TEXT: 4000,
 } as const;
 
 // ---------------------------------------------------------------------------

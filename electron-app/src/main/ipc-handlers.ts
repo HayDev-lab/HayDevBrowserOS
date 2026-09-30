@@ -7,7 +7,7 @@
  * PROMPT 2: extends the foundation handlers with Browser Core handlers that
  * delegate to a shared `BrowserCore` instance.
  */
-import { ipcMain, app, BrowserWindow } from 'electron';
+import { ipcMain, app, BrowserWindow, net } from 'electron';
 import type {
   AppVersionInfo,
   FoundationPingPayload,
@@ -18,12 +18,42 @@ import type {
   HistoryQuery,
   HistoryAddRequest,
   BookmarkAddRequest,
+  RuntimeStatus,
 } from '@shared/ipc-types';
 import type { BrowserCore } from './browser/runtime/browser-core';
 
 const ALLOWED_SEND_CHANNELS = new Set<string>([
   // Reserved for future forward-only notifications from main to renderer.
 ]);
+
+// ---------------------------------------------------------------------------
+// Managed runtime health (chrome footer) — cheap HEAD probe, 20s cache.
+// ---------------------------------------------------------------------------
+let runtimeEndpointProvider: () => string | null = () => null;
+let statusCache: { at: number; value: RuntimeStatus } | null = null;
+
+export function setRuntimeEndpointProvider(provider: () => string | null): void {
+  runtimeEndpointProvider = provider;
+}
+
+async function probeRuntimeStatus(): Promise<RuntimeStatus> {
+  const now = Date.now();
+  if (statusCache && now - statusCache.at < 20_000) return statusCache.value;
+  const endpoint = runtimeEndpointProvider() ?? 'http://127.0.0.1:3000';
+  let reachable = false;
+  try {
+    const res = await Promise.race([
+      net.fetch(endpoint.replace(/\/$/, '') + '/health', { method: 'GET' }),
+      new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), 1500)),
+    ]);
+    reachable = (res as Response).status < 500;
+  } catch {
+    reachable = false;
+  }
+  const value: RuntimeStatus = { endpoint, reachable };
+  statusCache = { at: now, value };
+  return value;
+}
 
 // ---------------------------------------------------------------------------
 // Foundation handlers
@@ -115,6 +145,7 @@ function registerBrowserHandlers(core: BrowserCore): void {
 
 export function registerIpcHandlers(core?: BrowserCore): void {
   registerFoundationHandlers();
+  ipcMain.handle('app:runtimeStatus', (): Promise<RuntimeStatus> => probeRuntimeStatus());
   if (core) {
     registerBrowserHandlers(core);
   }

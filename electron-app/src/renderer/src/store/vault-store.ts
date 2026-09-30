@@ -1,7 +1,8 @@
+import { platformApi } from '../platform';
 /**
  * Vault store — renderer-side React hook for the Credential Vault.
  *
- * Calls window.api.vault.* (IPC) and manages local state.
+ * Calls platformApi.vault.* (IPC) and manages local state.
  *
  * SECURITY:
  *   - The `password` field from manual-save is cleared from local state
@@ -11,6 +12,7 @@
  */
 import { useState, useEffect, useCallback } from 'react';
 import type { CredentialMetadata } from '@shared/ipc-types';
+import type { PasswordSavePrompt } from '@shared/vault-types';
 
 export interface UseVaultStore {
   credentials: CredentialMetadata[];
@@ -31,7 +33,7 @@ export function useVaultStore(): UseVaultStore {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const result = await window.api.vault.list();
+      const result = await platformApi.vault.list();
       setCredentials(result.credentials);
       setError(null);
     } catch (e) {
@@ -47,7 +49,7 @@ export function useVaultStore(): UseVaultStore {
 
   const save = useCallback(async (domain: string, username: string, password: string) => {
     try {
-      const result = await window.api.vault.save({ domain, username, password });
+      const result = await platformApi.vault.save({ domain, username, password });
       if (result.success) {
         await refresh();
         return { success: true };
@@ -60,7 +62,7 @@ export function useVaultStore(): UseVaultStore {
 
   const generateAndStore = useCallback(async (domain: string, username: string) => {
     try {
-      const result = await window.api.vault.generateAndStore({ domain, username });
+      const result = await platformApi.vault.generateAndStore({ domain, username });
       if (result.success) {
         await refresh();
         return { success: true };
@@ -73,7 +75,7 @@ export function useVaultStore(): UseVaultStore {
 
   const del = useCallback(async (id: string) => {
     try {
-      const result = await window.api.vault.delete(id);
+      const result = await platformApi.vault.delete(id);
       if (result.success) {
         await refresh();
         return { success: true };
@@ -86,7 +88,7 @@ export function useVaultStore(): UseVaultStore {
 
   const fill = useCallback(async (tabId: string, domain: string) => {
     try {
-      const result = await window.api.vault.fill({ tabId, domain });
+      const result = await platformApi.vault.fill({ tabId, domain });
       return { success: result.success, error: result.error };
     } catch (e) {
       return { success: false, error: String(e) };
@@ -103,4 +105,59 @@ export function useVaultStore(): UseVaultStore {
     delete: del,
     fill,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Save-password prompt (login capture)
+// ---------------------------------------------------------------------------
+
+export interface UsePasswordPrompt {
+  /** The pending prompt (null = nothing pending). Never carries a password. */
+  prompt: PasswordSavePrompt | null;
+  /** True while the resolve call is in flight. */
+  resolving: boolean;
+  resolve: (save: boolean) => Promise<void>;
+}
+
+/**
+ * Subscribes to `vault:prompt:update` pushes and fetches the current prompt
+ * on mount. Deliberately NO `initialized` ref guard — React 18 StrictMode
+ * remounts effects and the cleanup would otherwise kill the subscription.
+ */
+export function usePasswordPrompt(): UsePasswordPrompt {
+  const [prompt, setPrompt] = useState<PasswordSavePrompt | null>(null);
+  const [resolving, setResolving] = useState(false);
+
+  useEffect(() => {
+    void platformApi.vault.prompt
+      .current()
+      .then(setPrompt)
+      .catch(() => {});
+
+    const off = platformApi.on('vault:prompt:update', (data) => {
+      const update = data as
+        | { kind: 'set'; prompt: PasswordSavePrompt }
+        | { kind: 'clear' };
+      setPrompt(update.kind === 'set' ? update.prompt : null);
+    });
+    return () => {
+      off?.();
+    };
+  }, []);
+
+  const resolve = useCallback(
+    async (save: boolean) => {
+      if (!prompt) return;
+      setResolving(true);
+      try {
+        await platformApi.vault.prompt.resolve({ promptId: prompt.id, save });
+      } finally {
+        setResolving(false);
+        setPrompt(null);
+      }
+    },
+    [prompt]
+  );
+
+  return { prompt, resolving, resolve };
 }

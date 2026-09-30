@@ -37,7 +37,9 @@ describe('TabManager / open and activate', () => {
     expect(tab!.isActive).toBe(true);
     expect(tab!.isIncognito).toBe(false);
 
-    expect(ev.opens).toBe(0); // activated path skips onTabOpened
+    // Lifecycle contract: onTabOpened ALWAYS fires (BrowserCore creates the
+    // WebContentsView there); activation is an additional onTabActivated.
+    expect(ev.opens).toBe(1);
     expect(ev.activates).toBe(1);
   });
 
@@ -49,7 +51,7 @@ describe('TabManager / open and activate', () => {
 
     expect(tm.getActiveId()).toBe('t_1');
     expect(tm.getTab(id2)!.isActive).toBe(false);
-    expect(ev.opens).toBe(1); // onTabOpened fired for the background tab
+    expect(ev.opens).toBe(2); // one per opened tab (t_1 active + t_2 background)
   });
 
   it('activates the explicit activate:false tab as background', () => {

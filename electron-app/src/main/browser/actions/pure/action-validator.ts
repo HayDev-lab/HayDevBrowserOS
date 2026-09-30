@@ -25,6 +25,7 @@ import type {
   ClickActionInput,
   TypeActionInput,
   ScrollActionInput,
+  ScreenshotActionInput,
   StopActionInput,
 } from '@shared/browser-actions-types';
 import { isValidUrl, isAddressBarSafe } from '../../pure/url-utils';
@@ -66,6 +67,8 @@ export function validateAction(input: ActionInput): ValidationResult {
       return validateType(input);
     case 'scroll':
       return validateScroll(input);
+    case 'screenshot':
+      return validateScreenshot(input);
     case 'stop':
       return validateStop(input);
     default: {
@@ -239,6 +242,29 @@ function validateScroll(input: ScrollActionInput): ValidationResult {
       errors.push({
         field: 'amount',
         message: `amount ${input.amount} exceeds max of ${MAX_SCROLL_AMOUNT}`,
+      });
+    }
+  }
+  return { valid: errors.length === 0, errors };
+}
+
+const MAX_SCREENSHOT_WIDTH = 1600;
+
+function validateScreenshot(input: ScreenshotActionInput): ValidationResult {
+  const errors: ValidationError[] = [];
+  if (!isNonEmptyString(input.tabId)) {
+    errors.push({ field: 'tabId', message: 'tabId must be a non-empty string' });
+  }
+  if (input.maxWidth !== undefined) {
+    if (!Number.isFinite(input.maxWidth) || input.maxWidth < 320) {
+      errors.push({
+        field: 'maxWidth',
+        message: 'maxWidth must be a number >= 320 when provided',
+      });
+    } else if (input.maxWidth > MAX_SCREENSHOT_WIDTH) {
+      errors.push({
+        field: 'maxWidth',
+        message: `maxWidth ${input.maxWidth} exceeds max of ${MAX_SCREENSHOT_WIDTH}`,
       });
     }
   }

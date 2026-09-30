@@ -33,13 +33,85 @@ export interface TabState {
   canGoForward: boolean;
   /** True if the tab belongs to an Incognito session. */
   isIncognito: boolean;
+  /**
+   * True if the tab runs in the isolated Dark Web context: fresh in-memory
+   * session, SOCKS5 (Tor) fixed proxy with loopback forced through it,
+   * JavaScript OFF, downloads quarantined. Never set on normal tabs — a
+   * normal tab must never route through Tor (spec §68).
+   */
+  isDarkWeb?: boolean;
   /** Whether the tab is currently the active tab. */
   isActive: boolean;
   /** Whether the tab is loading audio (placeholder for V2 audio indicator). */
   isAudioPlaying: boolean;
+  /**
+   * Unread notifications for this tab, parsed from the page title prefix
+   * (e.g. "(3) WhatsApp"). 0 = no unread indicator. Not persisted across
+   * sessions — restored tabs start at 0 until the page updates its title.
+   */
+  unreadCount: number;
+  /**
+   * True when the tab's WebContentsView was destroyed to free memory
+   * (sleep tab) — the tab stays in the strip and wakes on activation.
+   */
+  isDiscarded: boolean;
   createdAt: number;
   lastActivatedAt: number;
 }
+
+// ---------------------------------------------------------------------------
+// Chrome layout geometry
+// ---------------------------------------------------------------------------
+
+/**
+ * Chrome geometry shared between the main process (WebContentsView layout)
+ * and the renderer (pickLayoutKind). Values MUST stay in sync with the
+ * --nc-chrome-* / --nc-agent-panel-width tokens in
+ * renderer/src/design-tokens.css.
+ */
+export const CHROME_LAYOUT = {
+  /** Custom title bar (brand + nav + status + window controls). */
+  titlebarHeight: 40,
+  /** Title bar (40) + tab strip (44) + toolbar (44) reserved at the top. */
+  topHeight: 128,
+  /** Status footer reserved at the bottom of the window. */
+  footerHeight: 24,
+  /** Width of the docked agent rail (right column). */
+  agentPanelWidth: 360,
+  /** Below this content width the agent rail is hidden (narrow layout). */
+  agentPanelMinWidth: 980,
+} as const;
+
+/** Internal New Tab Page (served by the pab:// protocol handler). */
+export const PAB_NEW_TAB_URL = 'pab://newtab';
+
+/** Internal Dark Web Search page (isolated search UI, pab:// protocol). */
+export const PAB_DARKWEB_URL = 'pab://darkweb';
+
+// ---------------------------------------------------------------------------
+// Web app pins (tab strip quick launch)
+// ---------------------------------------------------------------------------
+
+/** A pinned web app shortcut rendered in the tab strip. */
+export interface WebAppPin {
+  id: 'whatsapp' | 'telegram' | 'haydev' | 'darkweb';
+  label: string;
+  /** Origin the app lives at; also the URL opened on first launch. */
+  url: string;
+}
+
+export const WEB_APP_PINS: readonly WebAppPin[] = [
+  // Matrix NTP concept: messengers sit right next to the New Tab area —
+  // [ New Tab | WhatsApp | Telegram | + ] — search pins follow.
+  { id: 'whatsapp', label: 'WhatsApp', url: 'https://web.whatsapp.com/' },
+  { id: 'telegram', label: 'Telegram', url: 'https://web.telegram.org/' },
+  {
+    id: 'haydev',
+    label: 'HayDev Search',
+    url: 'pab://search',
+  },
+  { id: 'darkweb', label: 'Dark Web Search', url: 'pab://darkweb' },
+] as const;
 
 // ---------------------------------------------------------------------------
 // History
@@ -122,6 +194,47 @@ export interface DownloadItemState {
 export type SessionKind = 'default' | 'incognito';
 
 // ---------------------------------------------------------------------------
+// Session restore
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-tab navigation state captured for session restore. Mirrors
+ * `NavigationStackSnapshot` (pure module) so the runtime can persist and
+ * restore back/forward history across app restarts.
+ */
+export interface SessionTabNavigation {
+  backStack: string[];
+  current: string | null;
+  forwardStack: string[];
+}
+
+/**
+ * A single tab's persisted state for session restore.
+ *
+ * Incognito tabs are NEVER persisted (privacy policy — see
+ * `incognito-policy.ts`). The runtime filters them out before saving.
+ */
+export interface SessionTab {
+  id: string;
+  url: string;
+  pendingUrl: string;
+  title: string;
+  isIncognito: boolean;
+  navigation: SessionTabNavigation;
+}
+
+/**
+ * The full persisted session: ordered tab list + active tab id.
+ * Written to `userData/session.json` on quit, read on startup.
+ */
+export interface SessionSnapshot {
+  version: 1;
+  tabs: SessionTab[];
+  order: string[];
+  activeId: string | null;
+}
+
+// ---------------------------------------------------------------------------
 // IPC payloads (forward declarations — full channel list lives in ipc-types.ts)
 // ---------------------------------------------------------------------------
 
@@ -131,6 +244,8 @@ export interface OpenTabRequest {
   activate?: boolean;
   /** Open in an Incognito partition. Default: false. */
   incognito?: boolean;
+  /** Open in the isolated Dark Web (Tor) context. Default: false. */
+  darkweb?: boolean;
   /** Background-only creation flag (opposite of `activate`). */
   background?: boolean;
 }

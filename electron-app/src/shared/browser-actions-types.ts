@@ -161,6 +161,16 @@ export interface ScrollActionInput {
   amount?: number;
 }
 
+export interface ScreenshotActionInput {
+  kind: 'screenshot';
+  tabId: string;
+  /**
+   * Capture width cap (aspect preserved). Default: 1024.
+   * Hard cap: 1600 — bounds both memory and model context.
+   */
+  maxWidth?: number;
+}
+
 export interface StopActionInput {
   kind: 'stop';
   /** Optional explicit execution context id to stop. Defaults to the active context. */
@@ -179,6 +189,7 @@ export type ActionInput =
   | ClickActionInput
   | TypeActionInput
   | ScrollActionInput
+  | ScreenshotActionInput
   | StopActionInput;
 
 // ---------------------------------------------------------------------------
@@ -232,6 +243,15 @@ export interface ScrollResultData {
   direction: string;
   amount: number;
   dispatched: boolean;
+}
+
+export interface ScreenshotResultData {
+  tabId: string;
+  /** Base64-encoded JPEG of the visible viewport. */
+  imageBase64: string;
+  width: number;
+  height: number;
+  format: 'jpeg';
 }
 
 export interface StopResultData {
@@ -403,6 +423,15 @@ export interface ActionRuntimeAdapter {
     direction: 'up' | 'down' | 'left' | 'right',
     amount: number
   ): Promise<boolean>;
+
+  /**
+   * Capture the visible viewport of a tab as a downscaled JPEG.
+   * Native capture (no page script) — returns base64 + dimensions.
+   */
+  captureTab(
+    tabId: string,
+    opts: { maxWidth: number }
+  ): Promise<{ imageBase64: string; width: number; height: number }>;
 }
 
 /**

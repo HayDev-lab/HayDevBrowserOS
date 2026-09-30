@@ -212,6 +212,7 @@ describe('tool-validator / result mapping', () => {
       { tool: 'page.click', args: { tabId: 'tab_1', elementId: 'el_0' }, expectedKind: 'click' },
       { tool: 'page.type', args: { tabId: 'tab_1', elementId: 'el_1', text: 'x' }, expectedKind: 'type' },
       { tool: 'page.scroll', args: { tabId: 'tab_1', direction: 'down' }, expectedKind: 'scroll' },
+      { tool: 'page.screenshot', args: { tabId: 'tab_1' }, expectedKind: 'screenshot' },
       { tool: 'agent.stop', args: {}, expectedKind: 'stop' },
     ];
     for (const c of cases) {
