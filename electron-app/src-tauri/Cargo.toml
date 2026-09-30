@@ -35,5 +35,8 @@ regex = "1"
 codegen-units = 1
 lto = true
 opt-level = "s"
-panic = "abort"
+# unwind (NOT abort): a panicking provider/agent worker thread must kill only
+# itself — never the whole browser with 20 open tabs. The panic hook in
+# lib.rs still logs every unwind.
+panic = "unwind"
 strip = true

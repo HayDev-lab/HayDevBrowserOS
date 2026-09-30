@@ -43,6 +43,10 @@ use tauri::{Manager, RunEvent, WebviewUrl};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // FIRST: log every panic to %APPDATA%\com.haydev.browser\panic.log.
+    // Release builds must never die silently — a panicking provider/agent
+    // thread leaves a trace we can read after the fact.
+    install_panic_logger();
     tauri::Builder::default()
         // Single instance: a second launch focuses the existing window instead
         // of forking a second browser state (Electron had this; parity).
@@ -129,10 +133,26 @@ pub fn run() {
             commands::window_close,
         ])
         .setup(|app| {
-            if cfg!(debug_assertions) {
-                use tauri_plugin_log::Builder as LogBuilder;
-                app.handle()
-                    .plugin(LogBuilder::default().level(log::LevelFilter::Info).build())?;
+            // Logging in BOTH debug and release. Release diagnostics go to
+            // the OS log dir (rotated); stdout is invisible in a GUI app but
+            // harmless. Without this, "works on my machine" is unprovable.
+            {
+                use tauri_plugin_log::{Builder as LogBuilder, RotationStrategy, Target, TargetKind};
+                let mut targets = vec![
+                    Target::new(TargetKind::Stdout),
+                    Target::new(TargetKind::LogDir { file_name: Some("haydev.log".into()) }),
+                ];
+                if cfg!(debug_assertions) {
+                    targets.push(Target::new(TargetKind::Webview));
+                }
+                app.handle().plugin(
+                    LogBuilder::default()
+                        .level(log::LevelFilter::Info)
+                        .max_file_size(2_000_000)
+                        .rotation_strategy(RotationStrategy::KeepOne)
+                        .targets(targets)
+                        .build(),
+                )?;
             }
             let handle = app.handle().clone();
             // Load dev .env (no dotenv dependency): KEY=VALUE lines only,
@@ -216,6 +236,55 @@ fn initial_state() -> core::BrowserState {
         log::error!("[TAURI] cannot create data dir {}: {err}", dir.display());
     }
     core::BrowserState::new(&dir)
+}
+
+/// Global panic hook: append every panic (message + thread + payload) to
+/// `<data-dir>/panic.log`. Runs even under `panic=unwind` for thread panics
+/// that would otherwise vanish without a trace.
+fn install_panic_logger() {
+    let dir = app_data_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let log_path = dir.join("panic.log");
+    std::panic::set_hook(Box::new(move |info| {
+        let thread = std::thread::current();
+        let name = thread.name().unwrap_or("<unnamed>").to_string();
+        let msg = format!(
+            "[{}] thread {name}: {info}\n",
+            chrono_like_timestamp()
+        );
+        eprint!("{msg}");
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+        {
+            use std::io::Write;
+            let _ = file.write_all(msg.as_bytes());
+        }
+    }));
+}
+
+/// Local time "YYYY-MM-DD HH:MM:SS" without pulling a chrono dependency.
+fn chrono_like_timestamp() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    // Days since epoch → civil date (Howard Hinnant's algorithm).
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    let (h, m, s) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { y + 1 } else { y };
+    format!("{year:04}-{month:02}-{d:02} {h:02}:{m:02}:{s:02}")
 }
 
 /// Data dir for the dark-web service (config/history JSON files).

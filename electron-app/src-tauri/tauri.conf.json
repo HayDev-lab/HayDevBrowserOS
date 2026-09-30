@@ -5,7 +5,7 @@
   "identifier": "com.haydev.browser",
   "build": {
     "frontendDist": "../.vite/build/renderer",
-    "devUrl": "http://localhost:5173",
+    "devUrl": "http://localhost:5180",
     "beforeDevCommand": "npm run build:internal-pages && npm run dev:vite",
     "beforeBuildCommand": "npm run build:internal-pages && npm run build:vite"
   },

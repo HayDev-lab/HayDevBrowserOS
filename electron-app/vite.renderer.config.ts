@@ -37,4 +37,11 @@ export default defineConfig({
       process.env.NODE_ENV ?? 'production'
     ),
   },
+  // Dev server: fixed port, MUST match tauri.conf.json devUrl (single source
+  // of truth — keep both in sync). strictPort fails LOUDLY on conflict
+  // instead of silently hopping to another port that Tauri never loads.
+  server: {
+    port: 5180,
+    strictPort: true,
+  },
 });
