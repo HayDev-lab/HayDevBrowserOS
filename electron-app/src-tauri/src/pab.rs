@@ -368,6 +368,7 @@ fn start_research_run(
         }
     }
     let digests = crate::attachments::digests_for(app, attachment_ids);
+    let images = crate::attachments::images_for(app, attachment_ids);
     let command = crate::attachments::compose_research_command(query, &digests);
     let handle = app.clone();
     std::thread::spawn(move || {
@@ -379,6 +380,7 @@ fn start_research_run(
             command,
             crate::agent::RESEARCH_MAX_STEPS_DEFAULT,
             &profile,
+            images,
         );
         control.lock().unwrap_or_else(|p| p.into_inner()).mark_run_ended();
     });

@@ -623,10 +623,13 @@ pub async fn agent_run(
         .unwrap_or(default_steps)
         .clamp(1, crate::agent::MAX_STEPS_HARD_CAP);
     let task = req.command.clone();
+    // Direct agent:run has no attachment channel yet (the research path via
+    // pab://newtab is the only vision seed — Electron parity).
+    let images: Vec<String> = Vec::new();
     let control_for_loop = control.clone();
     let handle = app.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        crate::agent::run_loop(handle, shared, &control_for_loop, task, max_steps, &profile)
+        crate::agent::run_loop(handle, shared, &control_for_loop, task, max_steps, &profile, images)
     })
     .await
     .map_err(|e| AppError::new("AGENT_JOIN_FAILED", e.to_string()));
@@ -692,8 +695,18 @@ pub fn agent_research_report(app: AppHandle<tauri::Wry>) -> Option<Value> {
 }
 
 #[tauri::command]
-pub fn agent_pick_attachment(_kind: Option<String>) -> AppResult<Value> {
-    Err(not_available_err("Agent attachments"))
+pub fn agent_pick_attachment(
+    app: tauri::AppHandle<tauri::Wry>,
+    kind: Option<String>,
+) -> AppResult<Value> {
+    // Sync command → runs on the command thread pool, so the modal dialog is
+    // safe here (never the main thread). Same pick core as the newtab
+    // bridge; the descriptor lands in the SAME registry the research run
+    // consumes. Electron parity shape: { attachment: null | {...} }.
+    let kind = kind.as_deref().unwrap_or("file");
+    Ok(serde_json::json!({
+        "attachment": crate::attachments::blocking_pick(&app, kind),
+    }))
 }
 
 // ---------------------------------------------------------------------------

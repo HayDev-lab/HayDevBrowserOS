@@ -26,6 +26,9 @@ pub const NEWTAB_ATTACH_MAX_FILES: usize = 4;
 pub const NEWTAB_ATTACH_MAX_TEXT_BYTES: usize = 256 * 1024;
 pub const NEWTAB_ATTACH_INLINE_TEXT_LIMIT: usize = 24 * 1024;
 pub const NEWTAB_RESEARCH_QUERY_MAX: usize = 2_000;
+pub const NEWTAB_ATTACH_MAX_IMAGES: usize = 2;
+pub const NEWTAB_IMAGE_MAX_EDGE: u32 = 1024;
+pub const NEWTAB_THUMB_EDGE: u32 = 192;
 
 /// Registry bound: live attachments cap (8) + one run's worth of files.
 const REGISTRY_CAP: usize = 8;
@@ -51,8 +54,6 @@ pub struct PendingAttachment {
     /// Bounded utf-8 text excerpt for text-like files (no path leaves here).
     pub text: Option<String>,
     /// Full-size (≤1024px) JPEG base64 for vision models — images only.
-    /// Reserved for Phase 2.3 (vision attachments); text digests work now.
-    #[allow(dead_code)]
     pub model_image_base64: Option<String>,
     stored_at: Instant,
 }
@@ -80,6 +81,23 @@ fn sweep(registry: &mut Registry) {
         .retain(|_, (_, at)| at.elapsed() < REGISTRY_TTL);
 }
 
+/// Blocking pick: native dialog (MUST run off the main thread — invoke
+/// commands and start_pick's worker both qualify) + registry registration.
+/// `None` = the user cancelled.
+pub fn blocking_pick(
+    app: &tauri::AppHandle<tauri::Wry>,
+    kind: &str,
+) -> Option<AttachmentDescriptor> {
+    let picked = run_file_dialog(app, kind)?;
+    match register_file(app, &picked) {
+        Ok(desc) => Some(desc),
+        Err(err) => {
+            log::warn!("[NEWTAB] attachment read failed: {err}");
+            None
+        }
+    }
+}
+
 /// Start an async native file pick. Returns the pick job id immediately; the
 /// dialog runs on a worker thread and the result is consumed via `poll_pick`.
 pub fn start_pick(app: &tauri::AppHandle<tauri::Wry>, kind: &str) -> String {
@@ -102,15 +120,9 @@ pub fn start_pick(app: &tauri::AppHandle<tauri::Wry>, kind: &str) -> String {
     let job_id = pick_id.clone();
     let kind = kind.to_string();
     std::thread::spawn(move || {
-        let picked = run_file_dialog(&handle, &kind);
-        let outcome = picked.map(|path| register_file(&handle, &path));
-        let done = match outcome {
-            None => PickJob::Done(None), // user cancelled
-            Some(Ok(desc)) => PickJob::Done(Some(desc)),
-            Some(Err(err)) => {
-                log::warn!("[NEWTAB] attachment read failed: {err}");
-                PickJob::Done(None)
-            }
+        let done = match blocking_pick(&handle, &kind) {
+            Some(desc) => PickJob::Done(Some(desc)),
+            None => PickJob::Done(None), // cancelled or read failure
         };
         let reg = attachments_state(&handle);
         let mut reg = reg.lock().unwrap_or_else(|p| p.into_inner());
@@ -140,10 +152,13 @@ fn run_file_dialog(app: &tauri::AppHandle<tauri::Wry>, kind: &str) -> Option<std
 
 /// Read the picked file with the hard caps; returns the opaque descriptor
 /// and registers the pending attachment. No path is returned to any page.
+/// Images additionally get a ≤1024px JPEG model image and a 192px thumbnail
+/// (Electron NEWTAB_IMAGE_MAX_EDGE / NEWTAB_THUMB_EDGE parity).
 fn register_file(
     app: &tauri::AppHandle<tauri::Wry>,
     path: &Path,
 ) -> std::io::Result<AttachmentDescriptor> {
+    const IMAGE_FILE_READ_CAP: u64 = 25 * 1024 * 1024;
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -155,12 +170,23 @@ fn register_file(
     } else {
         None
     };
+    let mut model_image = None;
+    let mut thumbnail = None;
+    if mime.starts_with("image/") && size > 0 && size <= IMAGE_FILE_READ_CAP {
+        match build_image_variants(path) {
+            Ok((model, thumb)) => {
+                model_image = Some(model);
+                thumbnail = Some(thumb);
+            }
+            Err(err) => log::warn!("[NEWTAB] image variant build failed for {name}: {err}"),
+        }
+    }
     let descriptor = AttachmentDescriptor {
         id: uuid::Uuid::new_v4().to_string(),
         name,
         mime,
         size,
-        thumbnail: None,
+        thumbnail,
     };
     let registry = attachments_state(app);
     let mut reg = registry.lock().unwrap_or_else(|p| p.into_inner());
@@ -170,11 +196,41 @@ fn register_file(
         PendingAttachment {
             attachment: descriptor.clone(),
             text,
-            model_image_base64: None,
+            model_image_base64: model_image,
             stored_at: Instant::now(),
         },
     );
     Ok(descriptor)
+}
+
+/// Decode + downscale one image into the two variants the pipeline uses:
+/// (model_image_base64 ≤1024px JPEG, thumbnail data-URL 192px JPEG).
+fn build_image_variants(path: &Path) -> Result<(String, String), String> {
+    use base64::Engine;
+    let img = image::open(path).map_err(|e| e.to_string())?;
+    let encode_jpeg = |img: &image::DynamicImage| -> Result<Vec<u8>, String> {
+        let mut out = std::io::Cursor::new(Vec::new());
+        let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 80);
+        img.write_with_encoder(enc).map_err(|e| e.to_string())?;
+        Ok(out.into_inner())
+    };
+    let model = img.thumbnail(NEWTAB_IMAGE_MAX_EDGE, NEWTAB_IMAGE_MAX_EDGE);
+    let model_b64 = base64::engine::general_purpose::STANDARD.encode(encode_jpeg(&model)?);
+    let thumb = img.thumbnail(NEWTAB_THUMB_EDGE, NEWTAB_THUMB_EDGE);
+    let thumb_b64 = base64::engine::general_purpose::STANDARD.encode(encode_jpeg(&thumb)?);
+    Ok((model_b64, format!("data:image/jpeg;base64,{thumb_b64}")))
+}
+
+/// Model-ready base64 images for a research run, in pick order, capped at
+/// NEWTAB_ATTACH_MAX_IMAGES (Electron runResearch parity).
+pub fn images_for(app: &tauri::AppHandle<tauri::Wry>, ids: &[String]) -> Vec<String> {
+    let registry = attachments_state(app);
+    let reg = registry.lock().unwrap_or_else(|p| p.into_inner());
+    ids.iter()
+        .take(NEWTAB_ATTACH_MAX_FILES)
+        .filter_map(|id| reg.attachments.get(id)?.model_image_base64.clone())
+        .take(NEWTAB_ATTACH_MAX_IMAGES)
+        .collect()
 }
 
 /// One-shot poll: `{"state":"pending"}` while the dialog is open; a `done`
@@ -434,5 +490,31 @@ mod tests {
         assert_eq!(mime_by_name("a.png"), "image/png");
         assert_eq!(mime_by_name("b.MD"), "text/markdown");
         assert_eq!(mime_by_name("noext"), "application/octet-stream");
+    }
+
+    #[test]
+    fn image_variants_produce_model_and_thumbnail() {
+        // Synthetic 800×600 PNG → ≤1024 model JPEG + 192 thumb data-URL.
+        let dir = std::env::temp_dir().join(format!("haydev-att-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = dir.join("in.png");
+        let img = image::DynamicImage::new_rgb8(800, 600);
+        img.save_with_format(&png, image::ImageFormat::Png).unwrap();
+        let (model, thumb) = build_image_variants(&png).expect("variants");
+        use base64::Engine;
+        let model_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&model)
+            .expect("model b64");
+        assert_eq!(model_bytes[..2], [0xFF, 0xD8], "model must be JPEG");
+        assert!(thumb.starts_with("data:image/jpeg;base64,"), "thumb data-URL");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn images_for_caps_at_two() {
+        // Static shape check: the cap constant matches Electron parity.
+        assert_eq!(NEWTAB_ATTACH_MAX_IMAGES, 2);
+        assert_eq!(NEWTAB_IMAGE_MAX_EDGE, 1024);
+        assert_eq!(NEWTAB_THUMB_EDGE, 192);
     }
 }

@@ -34,6 +34,10 @@ regex = "1"
 # HTML allowlist sanitizer for the darkweb preview (parity: the Electron
 # preview sanitizer — script/style-free fragment, a[href http(s)] only).
 ammonia = "4"
+# Attachment vision pipeline: decode → downscale (≤1024 model / 192 thumb)
+# → JPEG. Only reached for picked image files, off the main thread.
+image = { version = "0.25", default-features = true }
+base64 = "0.22"
 
 [profile.release]
 codegen-units = 1

@@ -35,6 +35,9 @@ use crate::llm::LlmProvider;
 
 pub const MAX_STEPS_DEFAULT: u32 = 12;
 pub const RESEARCH_MAX_STEPS_DEFAULT: u32 = 24;
+/// Vision seed cap (parity: AGENT_RUN_MAX_IMAGES); stripped automatically
+/// when the model refuses image input.
+pub const AGENT_RUN_MAX_IMAGES: usize = 4;
 pub const MAX_STEPS_HARD_CAP: u32 = 40;
 const LLM_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_TIMELINE: usize = 200;
@@ -375,6 +378,18 @@ fn execute_tool(
     }
 }
 
+/// Terminal LLM failure: mark the run errored, surface the message, hand
+/// back the final snapshot (callers `return` it).
+fn return_llm_error(app: &AppHandle<Wry>, shared: &SharedAgent, message: &str) -> AgentSnapshot {
+    set_status(app, shared, AgentStatus::Error, Some("llm_error".to_string()));
+    {
+        let mut snap = shared.snapshot.lock().unwrap_or_else(|p| p.into_inner());
+        snap.error = Some(message.to_string());
+    }
+    push_timeline(app, shared, "error", "", "failed", message, None, None);
+    shared.snapshot.lock().unwrap_or_else(|p| p.into_inner()).clone()
+}
+
 /// One chat completion against the provider's OpenAI-compatible endpoint;
 /// returns the raw assistant message VALUE (kept intact — never
 /// reconstructed) plus finish_reason.
@@ -439,6 +454,7 @@ pub fn run_loop(
     task: String,
     max_steps: u32,
     profile: &str,
+    initial_images: Vec<String>,
 ) -> AgentSnapshot {
     // Provider + credential (call-time read; honest failure when absent).
     let Some(provider) = crate::llm::resolve_provider().filter(|p| p.is_configured()) else {
@@ -513,10 +529,30 @@ pub fn run_loop(
 
     let agent = ureq::AgentBuilder::new().timeout(LLM_TIMEOUT).build();
     let system_prompt = if is_research { RESEARCH_SYSTEM_PROMPT } else { SYSTEM_PROMPT };
+    // Seeded vision attachments (New Tab image uploads) ride the OpenAI
+    // content-parts channel — the Tauri equivalent of Electron's Ollama
+    // `images` field on the same semantic slot. If the model refuses image
+    // input, the FIRST chat call falls back to text-only (parity with the
+    // Electron non-vision retry).
+    let images: Vec<String> = initial_images.into_iter().take(AGENT_RUN_MAX_IMAGES).collect();
+    let user_message = if images.is_empty() {
+        serde_json::json!({ "role": "user", "content": task })
+    } else {
+        let mut parts = vec![serde_json::json!({ "type": "text", "text": task })];
+        for b64 in &images {
+            parts.push(serde_json::json!({
+                "type": "image_url",
+                "image_url": { "url": format!("data:image/jpeg;base64,{b64}") }
+            }));
+        }
+        serde_json::json!({ "role": "user", "content": parts })
+    };
     let mut messages: Vec<Value> = vec![
         serde_json::json!({ "role": "system", "content": system_prompt }),
-        serde_json::json!({ "role": "user", "content": task }),
+        user_message,
     ];
+    // Still true only while the seeded vision images are part of history.
+    let mut vision_fallback_used = images.is_empty();
     let sources: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
     let mut final_snapshot: Option<AgentSnapshot> = None;
 
@@ -533,14 +569,50 @@ pub fn run_loop(
         }
         let (message, finish) = match chat_once(&agent, &provider, &model, &api_key, &messages) {
             Ok(v) => v,
-            Err(e) => {
-                set_status(&app, &shared, AgentStatus::Error, Some("llm_error".to_string()));
-                {
-                    let mut snap = shared.snapshot.lock().unwrap_or_else(|p| p.into_inner());
-                    snap.error = Some(e.message.clone());
+            Err(first_err) => {
+                // Non-vision fallback (Electron parity): a model without
+                // image input rejects the seeded images — retry ONCE with a
+                // text-only history before giving up.
+                if !vision_fallback_used {
+                    vision_fallback_used = true;
+                    let had_images = messages.iter().any(|m| {
+                        m.get("content").map(|c| c.is_array()).unwrap_or(false)
+                    });
+                    if had_images {
+                        log::warn!("[AGENT] model rejected image input ({}) — retrying text-only", first_err.message);
+                        push_timeline(&app, &shared, "thought", "", "completed",
+                            "Model does not accept images — continuing with text only", None, None);
+                        for m in messages.iter_mut() {
+                            if m.get("content").map(|c| c.is_array()).unwrap_or(false) {
+                                let text = m["content"]
+                                    .as_array()
+                                    .and_then(|parts| {
+                                        parts.iter().find(|p| p.get("type").and_then(|t| t.as_str()) == Some("text"))
+                                    })
+                                    .and_then(|p| p.get("text").and_then(|t| t.as_str()))
+                                    .unwrap_or("")
+                                    .to_string();
+                                m["content"] = serde_json::json!(text);
+                            }
+                        }
+                        match chat_once(&agent, &provider, &model, &api_key, &messages) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                set_status(&app, &shared, AgentStatus::Error, Some("llm_error".to_string()));
+                                {
+                                    let mut snap = shared.snapshot.lock().unwrap_or_else(|p| p.into_inner());
+                                    snap.error = Some(e.message.clone());
+                                }
+                                push_timeline(&app, &shared, "error", "", "failed", &e.message, None, None);
+                                return shared.snapshot.lock().unwrap_or_else(|p| p.into_inner()).clone();
+                            }
+                        }
+                    } else {
+                        return return_llm_error(&app, &shared, &first_err.message);
+                    }
+                } else {
+                    return return_llm_error(&app, &shared, &first_err.message);
                 }
-                push_timeline(&app, &shared, "error", "", "failed", &e.message, None, None);
-                return shared.snapshot.lock().unwrap_or_else(|p| p.into_inner()).clone();
             }
         };
 
