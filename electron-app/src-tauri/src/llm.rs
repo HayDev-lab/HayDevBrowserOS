@@ -144,6 +144,117 @@ pub fn ollama_provider() -> LlmProvider {
     build("ollama", base, model, research, "OLLAMA_API_KEY")
 }
 
+// ---------------------------------------------------------------------------
+// Verified chat-model resolution — parity with Electron's
+// `resolvePreferredChatModel` (search-services.ts).
+//
+// Root cause it fixes: Perplexica's live model list starts with keys that
+// 404 for the account, and a 404 inside generateObject makes the non-stream
+// /api/search promise never settle (infinite spinner). Probing candidates
+// with a 1-token request and using the FIRST model that answers 200 avoids
+// the dead key. Divergence from Electron (documented): we cache with a TTL
+// instead of for the process lifetime, and `pab://search` serves from the
+// CACHE ONLY (never blocks on the probe) — a background warm thread fills
+// it at startup.
+// ---------------------------------------------------------------------------
+
+/// Curated cheap+quality candidates, tried in order (same list as Electron).
+pub const PREFERRED_CHAT_MODELS: &[&str] = &[
+    "gemini-3.1-flash-lite",
+    "gemini-flash-lite-latest",
+    "gemini-3.5-flash-lite",
+    "gemini-flash-latest",
+];
+
+/// Cache TTL: a long-lived browser re-picks up rotated keys/models without a
+/// restart (the probe costs one 1-token request).
+const PROBE_TTL: std::time::Duration = std::time::Duration::from_secs(600);
+
+struct ProbeCache {
+    model: Option<String>,
+    resolved_at: std::time::Instant,
+}
+
+static PROBE_CACHE: std::sync::Mutex<Option<ProbeCache>> = std::sync::Mutex::new(None);
+
+/// Probe candidates live (BLOCKING — up to 6 s per candidate). Prefer
+/// `cached_preferred_chat_model()` on serve paths and `warm_…` at startup.
+pub fn probe_preferred_chat_model() -> Option<String> {
+    // Fresh cache fast-path.
+    {
+        let guard = PROBE_CACHE.lock().unwrap();
+        if let Some(cache) = guard.as_ref() {
+            if cache.resolved_at.elapsed() < PROBE_TTL {
+                return cache.model.clone();
+            }
+        }
+    }
+    let model = run_model_probe();
+    *PROBE_CACHE.lock().unwrap() = Some(ProbeCache {
+        model: model.clone(),
+        resolved_at: std::time::Instant::now(),
+    });
+    model
+}
+
+/// Cache-only read for serve paths: `Some` when verified, `None` when not
+/// yet probed/expired — callers fall through to env/default (Electron's
+/// `verifiedModel ?? PAB_PERPLEXICA_MODEL ?? default` chain).
+pub fn cached_preferred_chat_model() -> Option<String> {
+    let guard = PROBE_CACHE.lock().unwrap();
+    match guard.as_ref() {
+        Some(cache) if cache.resolved_at.elapsed() < PROBE_TTL => cache.model.clone(),
+        _ => None,
+    }
+}
+
+/// Resolve at startup on a worker thread so the first `pab://search` render
+/// never waits on the network.
+pub fn warm_preferred_chat_model() {
+    std::thread::spawn(|| {
+        let _ = probe_preferred_chat_model();
+    });
+}
+
+fn run_model_probe() -> Option<String> {
+    let key = env_key("GEMINI_API_KEY")?;
+    let base = env_str("GEMINI_BASE_URL")
+        .unwrap_or_else(|| GEMINI_BASE.to_string())
+        .trim_end_matches('/')
+        .to_string();
+    let mut candidates: Vec<String> = Vec::new();
+    if let Some(m) = env_str("GEMINI_MODEL") {
+        candidates.push(m);
+    }
+    candidates.extend(PREFERRED_CHAT_MODELS.iter().map(|s| s.to_string()));
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(6))
+        .build();
+    for model in candidates {
+        let body = serde_json::json!({
+            "model": model,
+            "messages": [{ "role": "user", "content": "hi" }],
+            "max_tokens": 1,
+        });
+        let url = format!("{base}/chat/completions");
+        let answered = agent
+            .post(url.as_str())
+            .set("authorization", &format!("Bearer {key}"))
+            .send_json(body)
+            .is_ok();
+        if answered {
+            log::info!("[LLM] verified chat model via live probe: {model}");
+            return Some(model);
+        }
+    }
+    if let Ok(k) = std::env::var("GEMINI_API_KEY") {
+        if !k.trim().is_empty() {
+            log::warn!("[LLM] no PREFERRED_CHAT_MODELS candidate answered — falling back to env/default model");
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

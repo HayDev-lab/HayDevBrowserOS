@@ -290,9 +290,17 @@ fn serve_search(app: &AppHandle<tauri::Wry>, uri: &Uri) -> http::Response<Vec<u8
                 .filter(|v| !v.trim().is_empty())
         })
         .unwrap_or_else(|| "http://127.0.0.1:3000".to_string());
-    let model = std::env::var("PAB_PERPLEXICA_MODEL")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
+    // Model preference (parity with Electron): live-verified model →
+    // PAB_PERPLEXICA_MODEL → default. The verified model is read from the
+    // probe CACHE (filled at startup by llm::warm_preferred_chat_model) —
+    // this serve path never blocks on the network probe.
+    let model = crate::llm::cached_preferred_chat_model()
+        .or_else(|| {
+            std::env::var("PAB_PERPLEXICA_MODEL")
+                .ok()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+        })
         .unwrap_or_else(|| "deepseek-v4-pro:0813".to_string());
     let query = uri
         .query()

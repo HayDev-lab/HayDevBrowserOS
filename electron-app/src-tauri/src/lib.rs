@@ -198,6 +198,10 @@ pub fn run() {
             // Anti-detect: resolve the cleaned site UA from the engine's
             // real UA (worker thread; tab webviews pick it up once ready).
             core::warm_site_user_agent();
+            // Verify the Perplexica chat model against the live Gemini API
+            // (worker thread) so pab://search serves a model that actually
+            // answers — never one that 404s and hangs the search promise.
+            crate::llm::warm_preferred_chat_model();
             // Login capture poller (bridge-based; prompts push to the chrome).
             vault_capture::start_poller(handle.clone());
             // Managed backend engines (Perplexica/SearXNG/Tor) start ASYNC —

@@ -706,6 +706,11 @@ fn seed_perplexica_data(standalone: &Path, data_dir: &Path, searxng_url: Option<
     if let Some(url) = searxng_url {
         cfg["search"]["searxngURL"] = serde_json::json!(url);
     }
+    // Provider injection helpers need a real array; bootstrap one if the
+    // config predates this code or was seeded without it.
+    if !cfg["modelProviders"].is_array() {
+        cfg["modelProviders"] = serde_json::json!([]);
+    }
     // Gemini provider (Web Search / Research LLM) — same shape/hash as TS.
     if let Ok(key) = std::env::var("GEMINI_API_KEY") {
         let key = key.trim().to_string();
@@ -727,9 +732,42 @@ fn seed_perplexica_data(standalone: &Path, data_dir: &Path, searxng_url: Option<
                 "config": { "apiKey": key },
                 "hash": perplexica_hash(&serde_json::json!({ "apiKey": key })),
             });
-            let providers = cfg["modelProviders"].as_array_mut();
-            if let Some(arr) = providers {
+            if let Some(arr) = cfg["modelProviders"].as_array_mut() {
                 arr.retain(|p| p.get("id").and_then(|v| v.as_str()) != Some("gemini"));
+                arr.insert(0, entry);
+            }
+        }
+    }
+    // NVIDIA NIM provider (OpenAI-compatible) — alternative Web Search LLM.
+    // Parity with Electron's ensureOpenAiCompatProvider: the Perplexica
+    // registry maps id `openai` → its OpenAI provider class, which sends
+    // config.baseURL + config.apiKey verbatim. Runs AFTER the gemini insert
+    // so nvidia lands first in the list (same order as Electron).
+    if let Ok(key) = std::env::var("NVIDIA_API_KEY") {
+        let key = key.trim().to_string();
+        if !key.is_empty() {
+            let base = std::env::var("NVIDIA_BASE_URL")
+                .ok()
+                .map(|b| b.trim().to_string())
+                .filter(|b| !b.is_empty())
+                .unwrap_or_else(|| "https://integrate.api.nvidia.com/v1".into());
+            let model = std::env::var("NVIDIA_MODEL")
+                .ok()
+                .map(|m| m.trim().to_string())
+                .filter(|m| !m.is_empty())
+                .unwrap_or_else(|| "openai/gpt-oss-20b".into());
+            let config = serde_json::json!({ "apiKey": key, "baseURL": base });
+            let entry = serde_json::json!({
+                "id": "openai",
+                "name": "NVIDIA NIM",
+                "type": "openai",
+                "chatModels": [{ "name": "GPT-OSS 20B (NVIDIA NIM)", "key": model }],
+                "embeddingModels": [],
+                "config": config,
+                "hash": perplexica_hash(&config),
+            });
+            if let Some(arr) = cfg["modelProviders"].as_array_mut() {
+                arr.retain(|p| p.get("id").and_then(|v| v.as_str()) != Some("openai"));
                 arr.insert(0, entry);
             }
         }
