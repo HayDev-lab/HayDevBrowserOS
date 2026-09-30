@@ -58,6 +58,10 @@ pub struct ServiceStatus {
     pub error_code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pid: Option<u32>,
+    /// Tor bootstrap percent (0..100) from the control port — present only
+    /// while BOOTSTRAPPING/READY (Electron followBootstrap parity).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress: Option<u32>,
 }
 
 impl ServiceStatus {
@@ -68,6 +72,7 @@ impl ServiceStatus {
             source: "not-started".into(),
             error_code: None,
             pid: None,
+            progress: None,
         }
     }
 }
@@ -318,6 +323,7 @@ fn start_searxng(m: SharedRuntimeManager, external_url: Option<String>) {
                         source: "external".into(),
                         error_code: None,
                         pid: None,
+                        progress: None,
                     }
                 });
                 log::info!("[PROCESS] searxng READY via external adopt");
@@ -429,6 +435,7 @@ fn fail(code: &str) -> ServiceStatus {
         source: "managed".into(),
         error_code: Some(code.to_string()),
         pid: None,
+        progress: None,
     }
 }
 
@@ -561,6 +568,7 @@ fn start_perplexica(
                         source: "external".into(),
                         error_code: None,
                         pid: None,
+                        progress: None,
                     }
                 });
                 log::info!("[PROCESS] perplexica READY via external adopt");
@@ -826,6 +834,7 @@ fn start_tor(m: SharedRuntimeManager) {
                         source: "external".into(),
                         error_code: None,
                         pid: None,
+                        progress: None,
                     }
                 });
             } else {
@@ -833,15 +842,12 @@ fn start_tor(m: SharedRuntimeManager) {
             }
             return;
         }
-        let Some(root) = runtimes_root() else {
+        let Some((tor_exe, provenance)) = find_tor_binary() else {
             set_status(&m, "tor", |s| *s = fail("RUNTIME_NOT_BUNDLED"));
             return;
         };
-        let tor_exe = root.join("tor").join("tor.exe");
-        if !tor_exe.exists() {
-            set_status(&m, "tor", |s| *s = fail("RUNTIME_NOT_BUNDLED"));
-            return;
-        }
+        log::info!("[PROCESS] tor binary resolved: {provenance} ({})", tor_exe.display());
+        let tor_cwd = tor_exe.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
         let socks_port = find_free_port(PREFERRED_TOR_SOCKS);
         let control_port = find_free_port(PREFERRED_TOR_CONTROL);
         let data_dir = app_data_dir().join("runtime").join("tor").join("data");
@@ -870,7 +876,7 @@ fn start_tor(m: SharedRuntimeManager) {
                 "--SocksPolicy",
                 "reject *",
             ],
-            &root.join("tor"),
+            &tor_cwd,
             &[],
             "tor.log",
         ) {
@@ -880,6 +886,9 @@ fn start_tor(m: SharedRuntimeManager) {
                 log::info!(
                     "[PROCESS] tor spawned pid={pid} socks={socks_port} control={control_port}"
                 );
+                // Bootstrap percent via the control port (best-effort; the
+                // SOCKS probe below remains the READY source of truth).
+                follow_tor_bootstrap(m.clone(), control_port, data_dir.clone());
                 // Tor READY = end-to-end SOCKS5 CONNECT through the proxy
                 // (remote DNS) — the port accepting alone is NOT enough.
                 let endpoint = format!("socks5://127.0.0.1:{socks_port}");
@@ -897,6 +906,7 @@ fn start_tor(m: SharedRuntimeManager) {
                             s.state = ServiceState::Ready;
                             s.endpoint = Some(endpoint.clone());
                             s.error_code = None;
+                            s.progress = Some(100);
                         });
                         log::info!("[PROCESS] tor READY (SOCKS end-to-end probe ok)");
                         loop {
@@ -931,6 +941,156 @@ fn start_tor(m: SharedRuntimeManager) {
             Err(err) => set_status(&m, "tor", |s| *s = fail(&format!("SPAWN_FAILED: {err}"))),
         }
     });
+}
+
+/// Port of findTorBinary: PAB_TOR_PATH → Tor Browser installs → system
+/// dirs → bundled runtime. Returns (path, provenance) for honest logging.
+fn find_tor_binary() -> Option<(PathBuf, &'static str)> {
+    if let Ok(p) = std::env::var("PAB_TOR_PATH") {
+        let p = PathBuf::from(p.trim());
+        if !p.as_os_str().is_empty() && p.is_file() {
+            return Some((p, "PAB_TOR_PATH"));
+        }
+    }
+    if cfg!(target_os = "windows") {
+        for base in ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"] {
+            if let Some(dir) = std::env::var_os(base) {
+                let cand = Path::new(&dir).join("Tor Browser").join("Browser").join("tor.exe");
+                if cand.is_file() {
+                    return Some((cand, "tor-browser"));
+                }
+            }
+        }
+    } else {
+        for cand in ["/usr/bin/tor", "/usr/local/bin/tor", "/opt/homebrew/bin/tor", "/usr/sbin/tor"] {
+            let p = Path::new(cand);
+            if p.is_file() {
+                return Some((p.to_path_buf(), "system"));
+            }
+        }
+    }
+    if let Some(root) = runtimes_root() {
+        for name in ["tor.exe", "tor"] {
+            let cand = root.join("tor").join(name);
+            if cand.is_file() {
+                return Some((cand, "bundled"));
+            }
+        }
+    }
+    None
+}
+
+/// Read one CRLF-terminated control-protocol line. ASCII protocol — byte
+/// accumulation is exact; the 8 KB bound guards a garbage stream.
+fn read_control_line(stream: &mut TcpStream, buf: &mut String) -> Option<String> {
+    let mut byte = [0u8; 1];
+    loop {
+        match stream.read(&mut byte) {
+            Ok(0) => return None,
+            Ok(_) => {
+                buf.push(byte[0] as char);
+                if buf.ends_with("\r\n") {
+                    let line = buf.trim_end_matches("\r\n").to_string();
+                    buf.clear();
+                    return Some(line);
+                }
+                if buf.len() > 8192 {
+                    return None;
+                }
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
+/// Control-port bootstrap follower (Electron followBootstrap parity):
+/// cookie AUTHENTICATE + SETEVENTS STATUS_CLIENT, surface PROGRESS=n.
+/// Strictly best-effort — every failure simply stops updating the percent
+/// (the SOCKS end-to-end probe remains the source of truth for READY).
+fn follow_tor_bootstrap(m: SharedRuntimeManager, control_port: u16, data_dir: PathBuf) {
+    std::thread::spawn(move || {
+        let Ok(addr) = format!("127.0.0.1:{control_port}").parse::<std::net::SocketAddr>() else {
+            return;
+        };
+        // The control port appears a moment after spawn — retry briefly.
+        let mut stream = None;
+        for _ in 0..10 {
+            if let Ok(s) = TcpStream::connect_timeout(&addr, Duration::from_secs(1)) {
+                stream = Some(s);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        let Some(mut stream) = stream else { return };
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+        let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+        let mut buf = String::new();
+        // Greeting must be a 250 line.
+        if !matches!(read_control_line(&mut stream, &mut buf), Some(l) if l.starts_with("250")) {
+            return;
+        }
+        // Cookie auth (hex); a control port without a cookie still accepts a
+        // bare AUTHENTICATE — parity with the Electron fallback.
+        let auth = match std::fs::read(data_dir.join("control_cookie")) {
+            Ok(cookie) => format!(
+                "AUTHENTICATE {}\r\n",
+                cookie.iter().map(|b| format!("{b:02x}")).collect::<String>()
+            ),
+            Err(_) => "AUTHENTICATE\r\n".to_string(),
+        };
+        if stream.write_all(auth.as_bytes()).is_err() {
+            return;
+        }
+        if !matches!(read_control_line(&mut stream, &mut buf), Some(l) if l.starts_with("250")) {
+            return;
+        }
+        if stream.write_all(b"SETEVENTS STATUS_CLIENT\r\n").is_err() {
+            return;
+        }
+        if !matches!(read_control_line(&mut stream, &mut buf), Some(l) if l.starts_with("250")) {
+            return;
+        }
+        // Event lines look like: 650 STATUS_CLIENT NOTICE BOOTSTRAP PROGRESS=45 ...
+        let deadline = Instant::now() + Duration::from_secs(120);
+        while Instant::now() < deadline {
+            match read_control_line(&mut stream, &mut buf) {
+                Some(line) => {
+                    let Some(idx) = line.find("PROGRESS=") else { continue };
+                    let tail = &line[idx + "PROGRESS=".len()..];
+                    let digits: String = tail.chars().take_while(|c| c.is_ascii_digit()).collect();
+                    if let Ok(pct) = digits.parse::<u32>() {
+                        set_status(&m, "tor", |s| s.progress = Some(pct.min(100)));
+                        if pct >= 100 {
+                            return;
+                        }
+                    }
+                }
+                None => return,
+            }
+        }
+    });
+}
+
+/// On-demand Tor start (Electron `tor.spawnIfAvailable` parity). Rate-
+/// limited so a UI polling loop cannot fork tor bombs; start_tor itself is
+/// idempotent (is_active guard) and runs on its own thread.
+pub fn request_tor_start(m: &SharedRuntimeManager) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static LAST_TRY: AtomicU64 = AtomicU64::new(0);
+    if is_active(m, "tor") {
+        return;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let last = LAST_TRY.load(Ordering::Relaxed);
+    if now.saturating_sub(last) < 15_000 {
+        return;
+    }
+    LAST_TRY.store(now, Ordering::Relaxed);
+    log::info!("[PROCESS] tor offline — on-demand start requested (spawnIfAvailable)");
+    start_tor(m.clone());
 }
 
 /// Minimal SOCKS5 client: greeting (no-auth) + CONNECT with a DOMAIN-name

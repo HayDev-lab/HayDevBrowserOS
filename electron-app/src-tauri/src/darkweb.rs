@@ -57,6 +57,9 @@ pub struct DarkWebConfig {
     pub enabled: bool,
     pub socks_host: String,
     pub socks_port: u16,
+    /// Electron parity (tor.spawnIfAvailable): when Tor is offline, kick an
+    /// on-demand managed start (rate-limited) instead of failing closed.
+    pub tor_spawn_if_available: bool,
     pub max_results: usize,
     pub provider_timeout_ms: u64,
     pub global_timeout_ms: u64,
@@ -83,6 +86,7 @@ impl Default for DarkWebConfig {
             enabled: true,
             socks_host: "127.0.0.1".to_string(),
             socks_port: DEFAULT_SOCKS_PORT,
+            tor_spawn_if_available: true,
             max_results: SEARCH_MAX_RESULTS,
             provider_timeout_ms: SEARCH_PROVIDER_TIMEOUT_MS,
             global_timeout_ms: SEARCH_GLOBAL_TIMEOUT_MS,
@@ -120,7 +124,7 @@ impl DarkWebConfig {
         let path = data_dir.join("darkweb-config.json");
         let doc = json!({
             "enabled": self.enabled,
-            "tor": { "socksHost": self.socks_host, "socksPort": self.socks_port },
+            "tor": { "socksHost": self.socks_host, "socksPort": self.socks_port, "spawnIfAvailable": self.tor_spawn_if_available },
             "search": {
                 "maxResults": self.max_results,
                 "providerTimeoutMs": self.provider_timeout_ms,
@@ -161,6 +165,9 @@ impl DarkWebConfig {
             }
             if let Some(p) = t.get("socksPort").and_then(get_u64) {
                 c.socks_port = clamp_port(p);
+            }
+            if let Some(b) = t.get("spawnIfAvailable").and_then(get_bool) {
+                c.tor_spawn_if_available = b;
             }
         }
         if let Some(s) = raw.get("search") {
@@ -217,6 +224,9 @@ impl DarkWebConfig {
                     self.socks_host = h.to_string();
                 }
             }
+            if let Some(b) = t.get("spawnIfAvailable").and_then(Value::as_bool) {
+                self.tor_spawn_if_available = b;
+            }
         }
         if let Some(s) = patch.get("search") {
             self.max_results = clamp(s.get("maxResults").and_then(Value::as_u64), 1, 200, self.max_results as u64) as usize;
@@ -256,7 +266,7 @@ impl DarkWebConfig {
     pub fn to_json(&self) -> Value {
         json!({
             "enabled": self.enabled,
-            "tor": { "socksHost": self.socks_host, "socksPort": self.socks_port, "binaryPath": null },
+            "tor": { "socksHost": self.socks_host, "socksPort": self.socks_port, "spawnIfAvailable": self.tor_spawn_if_available, "binaryPath": null },
             "search": {
                 "globalTimeoutMs": self.global_timeout_ms,
                 "providerTimeoutMs": self.provider_timeout_ms,
@@ -762,6 +772,17 @@ pub fn tor_endpoint(app: &tauri::AppHandle<tauri::Wry>, config: &DarkWebConfig) 
     }
     if socks_probe(&config.socks_host, config.socks_port) {
         return Some((config.socks_host.clone(), config.socks_port));
+    }
+    // Electron parity (tor.spawnIfAvailable): kick a rate-limited on-demand
+    // managed start when Tor is offline. THIS call still resolves None —
+    // the endpoint becomes usable on a later poll once tor bootstraps
+    // (fail-closed in the meantime, never a clearnet fallback).
+    if config.tor_spawn_if_available {
+        use tauri::Manager;
+        if let Some(m) = app.try_state::<crate::runtime_manager::SharedRuntimeManager>() {
+            let m = m.inner().clone();
+            crate::runtime_manager::request_tor_start(&m);
+        }
     }
     None
 }

@@ -1,14 +1,14 @@
 {
   "schemaVersion": "mimosa-hook-status/v1",
-  "recordedAt": "2026-09-30T21:17:53.013Z",
+  "recordedAt": "2026-09-30T21:25:40.113Z",
   "sessionId": "sess_6a16bc5a-d65a-4ab9-8755-52a68a2f08bb",
   "event": "PostToolUse",
   "toolName": "Edit",
-  "file": "src/darkweb.rs",
+  "file": "src/runtime_manager.rs",
   "outcome": "clear",
   "coverage": "complete",
   "findingCount": 0,
-  "durationMs": 39,
+  "durationMs": 31,
   "hostState": "hook_complete",
   "reportHint": ".mimosa/reports/"
 }
