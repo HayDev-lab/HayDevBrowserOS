@@ -209,7 +209,11 @@ pub fn run() {
                 WebviewUrl::App("index.html".into()),
             )
             .additional_browser_args(&format!(
-                "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --remote-debugging-port={chrome_port}"
+                // remote-allow-origins: the tab webviews' CDP port already
+                // accepts scriptable loopback automation (wry defaults);
+                // without it the chrome port's websocket rejects every
+                // Origin — keep BOTH automation ports symmetric.
+                "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --remote-debugging-port={chrome_port} --remote-allow-origins=*"
             ));
             window.add_child(
                 chrome_webview,
