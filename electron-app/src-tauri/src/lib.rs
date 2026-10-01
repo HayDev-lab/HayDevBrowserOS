@@ -75,8 +75,17 @@ pub fn run() {
           }
           log::info!("[TAURI] second-instance signal — focused existing window");
         }))
-        .register_uri_scheme_protocol("pab", |ctx, request| {
-            pab::handle_pab(ctx.app_handle(), &request)
+        // ASYNC protocol handler (UI-freeze fix, 2026-10-01): WebView2 raises
+        // WebResourceRequested on the UI thread — the SYNC variant made every
+        // slow pab endpoint (darkweb preview/fetch over Tor, up to ~25 s)
+        // freeze the whole window. Heavy work now runs on a worker thread and
+        // replies through UriSchemeResponder.
+        .register_asynchronous_uri_scheme_protocol("pab", |ctx, request, responder| {
+            let app = ctx.app_handle().clone();
+            std::thread::spawn(move || {
+                let response = pab::handle_pab(&app, &request);
+                responder.respond(response);
+            });
         })
         .manage(runtime_manager::new_manager())
         .manage(agent::new_agent())
@@ -270,8 +279,30 @@ pub fn run() {
         });
 }
 
-fn initial_state() -> core::BrowserState {
-    let dir = app_data_dir();
+/// App-data dir WITHOUT the create_dir_all side effect (for optional reads
+/// like the user .env lookup).
+fn app_data_dir_opt() -> Option<std::path::PathBuf> {
+    let ident = "com.haydev.browser";
+    if cfg!(target_os = "windows") {
+        std::env::var_os("APPDATA")
+            .map(|base| std::path::PathBuf::from(base).join(ident))
+    } else if cfg!(target_os = "macos") {
+        std::env::var_os("HOME").map(|h| {
+            std::path::PathBuf::from(h)
+                .join("Library/Application Support")
+                .join(ident)
+        })
+    } else {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config"))
+            })
+            .map(|base| base.join(ident))
+    }
+}
+
+fn initial_state() -> core::BrowserState {    let dir = app_data_dir();
     if let Err(err) = std::fs::create_dir_all(&dir) {
         log::error!("[TAURI] cannot create data dir {}: {err}", dir.display());
     }
@@ -386,10 +417,16 @@ fn app_data_dir() -> std::path::PathBuf {
 /// dotenv; parity for AI/search endpoint configuration without adding a
 /// dependency. Existing environment variables always win.
 fn load_dev_env() {
-    let candidates = [
+    let mut candidates = vec![
         std::path::PathBuf::from(".env"),
         std::path::PathBuf::from("../.env"),
     ];
+    // Installed builds have no project .env in CWD (Program Files) — the
+    // user-configured location is the app-data dir:
+    //   %APPDATA%\com.haydev.browser\.env
+    if let Some(data_env) = app_data_dir_opt().map(|d| d.join(".env")) {
+        candidates.insert(0, data_env);
+    }
     for path in candidates {
         let Ok(contents) = std::fs::read_to_string(&path) else {
             continue;
