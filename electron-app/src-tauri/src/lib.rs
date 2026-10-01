@@ -9,10 +9,15 @@
 //! - AI providers (Ollama Cloud / Gemini / NVIDIA) resolved per run (llm.rs)
 //! - control authorization HUMAN/AGENT (control.rs) with renderer pushes
 //! - dark-web search over the Tor SOCKS gateway (socks_http.rs + darkweb.rs)
+//! - bounded onion crawler + local index (crawl.rs) + download quarantine
+//!   (downloads.rs, wiped at exit)
 //! - login capture → DPAPI vault prompts (vault_capture.rs)
+//! - memory facts + confirmation prompts (memory.rs, memory.save tool)
+//! - vision attachments via the __pabNewTab bridge (attachments.rs)
+//! - local MCP server with the darkweb tool surface (mcp.rs, port 27301)
 //!
-//! Honest remaining gaps (FEATURE_NOT_AVAILABLE, never fake success): agent
-//! attachments, memory prompts, download cancel, darkweb crawl/index/quarantine.
+//! Honest remaining gaps (FEATURE_NOT_AVAILABLE, never fake success):
+//! download cancel mid-flight (wry exposes no cancel handle — verified).
 
 pub mod agent;
 pub mod attachments;
@@ -28,6 +33,7 @@ pub mod downloads;
 pub mod error;
 pub mod layout;
 pub mod llm;
+pub mod mcp;
 pub mod memory;
 pub mod navstack;
 pub mod pab;
@@ -50,6 +56,11 @@ pub fn run() {
     // Release builds must never die silently — a panicking provider/agent
     // thread leaves a trace we can read after the fact.
     install_panic_logger();
+    // One shared local-index instance for BOTH the crawler and the pab/API
+    // state lookups (Arc clone — same store everywhere).
+    let darkweb_index: crawl::SharedIndex = std::sync::Arc::new(std::sync::Mutex::new(
+        crawl::LocalIndex::default(),
+    ));
     tauri::Builder::default()
         // Native file dialogs for the __pabNewTab attachment bridge (Rust
         // API only — no JS-side permissions are granted by this plugin).
@@ -76,12 +87,8 @@ pub fn run() {
             &darkweb_data_dir(),
         )))
         .manage(vault_capture::new_capture())
-        .manage({
-            let index: crawl::SharedIndex = std::sync::Arc::new(std::sync::Mutex::new(
-                crawl::LocalIndex::default(),
-            ));
-            crawl::CrawlRegistry::new(index)
-        })
+        .manage(darkweb_index.clone())
+        .manage(crawl::CrawlRegistry::new(darkweb_index))
         .manage(downloads::SharedQuarantine::default())
         .manage(core::shared(initial_state()))
         .invoke_handler(tauri::generate_handler![
@@ -175,6 +182,9 @@ pub fn run() {
             load_dev_env();
             // Memory facts store (file path resolution; lazy file load).
             memory::init(&handle);
+            // Local MCP server with the darkweb tool surface (loopback only;
+            // failure to bind degrades honestly to offline).
+            mcp::start(handle.clone());
 
             // Dark-web environment privacy (parity with Electron's
             // memory:darkweb- partitions): the isolated Tor profile keeps
