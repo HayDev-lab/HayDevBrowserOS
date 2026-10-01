@@ -562,10 +562,6 @@ pub fn browser_downloads_remove(app: AppHandle<tauri::Wry>, id: String) -> AppRe
 // Subsystems retained on the Electron runtime — honest NOT_AVAILABLE
 // ---------------------------------------------------------------------------
 
-fn not_available_err(feature: &str) -> AppError {
-    AppError::not_available(feature)
-}
-
 // ---------------------------------------------------------------------------
 // Agent runtime (REAL: Rust LLM loop over the BrowserAutomationBridge)
 // ---------------------------------------------------------------------------
@@ -986,13 +982,17 @@ pub fn vault_prompt_resolve(app: AppHandle<tauri::Wry>, answer: Value) -> AppRes
 }
 
 #[tauri::command]
-pub fn memory_prompt_current() -> Option<Value> {
-    None
+pub fn memory_prompt_current(app: tauri::AppHandle<tauri::Wry>) -> Option<Value> {
+    // Electron shape: the prompt object or null.
+    crate::memory::current(&app).map(|p| serde_json::to_value(&p).unwrap_or(Value::Null))
 }
 
 #[tauri::command]
-pub fn memory_prompt_resolve(_answer: Value) -> AppResult<Value> {
-    Err(not_available_err("Memory prompts"))
+pub fn memory_prompt_resolve(app: tauri::AppHandle<tauri::Wry>, answer: Value) -> AppResult<Value> {
+    // Electron: resolveMemoryPrompt(promptId, save) -> {success}.
+    let prompt_id = answer.get("promptId").and_then(|v| v.as_str()).unwrap_or("");
+    let save = answer.get("save").and_then(|v| v.as_bool()).unwrap_or(false);
+    Ok(serde_json::json!({ "success": crate::memory::resolve(&app, prompt_id, save) }))
 }
 
 // ---------------------------------------------------------------------------

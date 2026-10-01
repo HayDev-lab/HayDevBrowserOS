@@ -250,6 +250,7 @@ fn tool_declarations() -> Value {
         { "type": "function", "function": { "name": "press_key", "description": "Dispatch a key (e.g. Enter) on the focused element.", "parameters": { "type": "object", "properties": { "key": { "type": "string" } }, "required": ["key"] } } },
         { "type": "function", "function": { "name": "read_page", "description": "Read visible text of the page (bounded).", "parameters": { "type": "object", "properties": { "maxChars": { "type": "integer" } } } } },
         { "type": "function", "function": { "name": "screenshot", "description": "Save a PNG screenshot of the tab; returns the file path.", "parameters": { "type": "object", "properties": {} } } },
+        { "type": "function", "function": { "name": "memory.save", "description": "Propose one durable fact about the user for long-term memory (e.g. a preference). The user must confirm it in the UI before it is stored.", "parameters": { "type": "object", "properties": { "fact": { "type": "string", "description": "The fact, one concise sentence." } }, "required": ["fact"] } } },
         { "type": "function", "function": { "name": "finish", "description": "Finish the task with a short summary for the user.", "parameters": { "type": "object", "properties": { "summary": { "type": "string" } }, "required": ["summary"] } } }
     ])
 }
@@ -367,6 +368,20 @@ fn execute_tool(
         })()
         .map_err(|e| AppError::new("SCREENSHOT_FAILED", e)),
         "finish" => Ok(serde_json::json!({ "summary": get("summary") })),
+        // memory.save PROPOSES only — the user's confirmation in the rail
+        // (memory_prompt_resolve) is the sole write path (parity).
+        "memory.save" => {
+            let fact = get("fact").trim().to_string();
+            if fact.is_empty() {
+                Err(AppError::new("MEMORY_EMPTY_FACT", "memory.save: fact is empty"))
+            } else {
+                crate::memory::propose(app, &fact);
+                Ok(serde_json::json!({
+                    "proposed": true,
+                    "note": "The fact was proposed — the user must confirm it before it is stored."
+                }))
+            }
+        }
         other => Err(AppError::new(
             "UNKNOWN_TOOL",
             format!("unknown tool {other}"),
@@ -529,6 +544,22 @@ pub fn run_loop(
 
     let agent = ureq::AgentBuilder::new().timeout(LLM_TIMEOUT).build();
     let system_prompt = if is_research { RESEARCH_SYSTEM_PROMPT } else { SYSTEM_PROMPT };
+    // Confirmed user facts ride the system prompt (parity: the KNOWN FACTS
+    // block in the Electron prompt builder).
+    let memory_facts = {
+        use tauri::Manager;
+        let block = app.state::<crate::memory::SharedMemory>();
+        let st = block.lock().unwrap_or_else(|p| p.into_inner());
+        st.fact_texts()
+    };
+    let system_prompt = if memory_facts.is_empty() {
+        system_prompt.to_string()
+    } else {
+        format!(
+            "{system_prompt}\n\n## KNOWN FACTS ABOUT THE USER (confirmed by the user)\n\n{}\nUse these to personalize answers and default choices.",
+            memory_facts.iter().map(|f| format!("- {f}")).collect::<Vec<_>>().join("\n")
+        )
+    };
     // Seeded vision attachments (New Tab image uploads) ride the OpenAI
     // content-parts channel — the Tauri equivalent of Electron's Ollama
     // `images` field on the same semantic slot. If the model refuses image

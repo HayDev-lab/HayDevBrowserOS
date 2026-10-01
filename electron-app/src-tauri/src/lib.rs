@@ -27,6 +27,7 @@ pub mod downloads;
 pub mod error;
 pub mod layout;
 pub mod llm;
+pub mod memory;
 pub mod navstack;
 pub mod pab;
 pub mod profiles;
@@ -69,6 +70,7 @@ pub fn run() {
         .manage(agent::new_agent())
         .manage(attachments::SharedAttachments::default())
         .manage(control::SharedControl::default())
+        .manage(memory::SharedMemory::default())
         .manage(darkweb::SharedDarkWeb::new(darkweb::DarkWebService::new(
             &darkweb_data_dir(),
         )))
@@ -163,6 +165,8 @@ pub fn run() {
             // Load dev .env (no dotenv dependency): KEY=VALUE lines only,
             // real environment variables take precedence.
             load_dev_env();
+            // Memory facts store (file path resolution; lazy file load).
+            memory::init(&handle);
 
             // Dark-web environment privacy (parity with Electron's
             // memory:darkweb- partitions): the isolated Tor profile keeps
