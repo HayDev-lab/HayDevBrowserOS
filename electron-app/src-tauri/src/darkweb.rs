@@ -825,7 +825,7 @@ pub fn is_onion_url(url: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn extract_title(html: &str) -> Option<String> {
+pub fn extract_title(html: &str) -> Option<String> {
     let re = Regex::new(r"(?is)<title[^>]*>(.*?)</title\s*>").ok()?;
     re.captures(html)
         .and_then(|c| c.get(1))
@@ -1502,6 +1502,13 @@ impl DarkWebService {
             })
         };
         let history_count = self.history.lock().unwrap_or_else(|p| p.into_inner()).len();
+        // Real local-index count (was hardcoded 0 — the index is implemented).
+        let index_count = {
+            use tauri::Manager;
+            app.try_state::<crate::crawl::SharedIndex>()
+                .map(|i| i.lock().unwrap_or_else(|p| p.into_inner()).count())
+                .unwrap_or(0)
+        };
         json!({
             "enabled": config.enabled,
             "tor": {
@@ -1517,7 +1524,7 @@ impl DarkWebService {
                 provider_status("tor66", "Tor66", config.tor66_enabled, true),
             ],
             "historyCount": history_count,
-            "indexCount": 0,
+            "indexCount": index_count,
         })
     }
 

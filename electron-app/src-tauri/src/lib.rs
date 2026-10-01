@@ -22,6 +22,7 @@ pub mod challenge;
 pub mod commands;
 pub mod control;
 pub mod core;
+pub mod crawl;
 pub mod darkweb;
 pub mod downloads;
 pub mod error;
@@ -75,6 +76,13 @@ pub fn run() {
             &darkweb_data_dir(),
         )))
         .manage(vault_capture::new_capture())
+        .manage({
+            let index: crawl::SharedIndex = std::sync::Arc::new(std::sync::Mutex::new(
+                crawl::LocalIndex::default(),
+            ));
+            crawl::CrawlRegistry::new(index)
+        })
+        .manage(downloads::SharedQuarantine::default())
         .manage(core::shared(initial_state()))
         .invoke_handler(tauri::generate_handler![
             commands::app_version,
@@ -235,9 +243,14 @@ pub fn run() {
                 core::persist_session(app);
                 // Tree-kill managed engines FIRST — no orphan tor/python/node
                 // children survive HayDevBrowser (parity: engines→sweep order).
-                if let Some(manager) = app.try_state::<runtime_manager::SharedRuntimeManager>() {
-                    runtime_manager::stop_all(manager.inner());
-                }
+            if let Some(manager) = app.try_state::<runtime_manager::SharedRuntimeManager>() {
+                runtime_manager::stop_all(manager.inner());
+            }
+            // Quarantine wipe (Electron parity): nothing from an onion tab
+            // survives the exit unless explicitly saved.
+            if let Some(q) = app.try_state::<downloads::SharedQuarantine>() {
+                q.lock().unwrap_or_else(|p| p.into_inner()).wipe_all();
+            }
                 log::info!("[TAURI] session persisted; engines stopped; exiting");
             }
         });
@@ -301,7 +314,7 @@ fn chrono_like_timestamp() -> String {
 }
 
 /// Data dir for the dark-web service (config/history JSON files).
-fn darkweb_data_dir() -> std::path::PathBuf {
+pub fn darkweb_data_dir() -> std::path::PathBuf {
     let dir = app_data_dir().join("darkweb");
     let _ = std::fs::create_dir_all(&dir);
     dir

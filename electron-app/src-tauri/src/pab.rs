@@ -658,15 +658,118 @@ fn serve_darkweb(
             service.clear_history();
             respond(serde_json::json!({ "ok": true }), 200)
         }
-        // Crawl / local index / quarantined downloads remain Electron-only.
-        (other, _) if other.starts_with("api/crawl")
-            || other.starts_with("api/index")
-            || other.starts_with("api/downloads") =>
-        {
-            respond(
-                serde_json::json!({ "error": "NOT_IMPLEMENTED_IN_TAURI", "feature": other }),
-                501,
-            )
+        // Crawler + local index + quarantined downloads (Electron parity).
+        ("api/crawl", "POST") => {
+            use tauri::Manager;
+            let Some(url) = body.get("url").and_then(|v| v.as_str()) else {
+                return respond(serde_json::json!({ "error": "invalid_json" }), 400);
+            };
+            let get_u32 = |k: &str| body.get(k).and_then(|v| v.as_u64()).map(|v| v as u32);
+            let Some(crawler) = app.try_state::<crate::crawl::CrawlRegistry>() else {
+                return respond(serde_json::json!({ "error": "STATE_NOT_INITIALIZED" }), 500);
+            };
+            let config = service.config();
+            match crawler.crawl(app, &config, url, get_u32("maxDepth"), get_u32("maxPages"), body.get("sameHostOnly").and_then(|v| v.as_bool())) {
+                Ok(job_id) => respond(serde_json::json!({ "jobId": job_id }), 200),
+                Err(code) => respond(serde_json::json!({ "error": code }), 400),
+            }
+        }
+        (_, "GET") if api.starts_with("api/crawl/") && !api.ends_with("/cancel") => {
+            use tauri::Manager;
+            let id = api.trim_start_matches("api/crawl/");
+            let Some(crawler) = app.try_state::<crate::crawl::CrawlRegistry>() else {
+                return respond(serde_json::json!({ "error": "STATE_NOT_INITIALIZED" }), 500);
+            };
+            match crawler.status(id) {
+                Some(s) => respond(serde_json::to_value(&s).unwrap_or_default(), 200),
+                None => respond(serde_json::json!({ "error": "NOT_FOUND" }), 404),
+            }
+        }
+        ("api/crawls", "GET") => {
+            use tauri::Manager;
+            let Some(crawler) = app.try_state::<crate::crawl::CrawlRegistry>() else {
+                return respond(serde_json::json!({ "error": "STATE_NOT_INITIALIZED" }), 500);
+            };
+            respond(serde_json::json!({ "jobs": crawler.list() }), 200)
+        }
+        (_, "POST") if api.starts_with("api/crawl/") && api.ends_with("/cancel") => {
+            use tauri::Manager;
+            let id = api.trim_start_matches("api/crawl/").trim_end_matches("/cancel");
+            let Some(crawler) = app.try_state::<crate::crawl::CrawlRegistry>() else {
+                return respond(serde_json::json!({ "error": "STATE_NOT_INITIALIZED" }), 500);
+            };
+            respond(serde_json::json!({ "ok": crawler.cancel(id) }), 200)
+        }
+        ("api/index/add", "POST") => {
+            use tauri::Manager;
+            let (Some(url), Some(text)) = (
+                body.get("url").and_then(|v| v.as_str()),
+                body.get("text").and_then(|v| v.as_str()),
+            ) else {
+                return respond(serde_json::json!({ "error": "invalid_json" }), 400);
+            };
+            if !crate::darkweb::is_onion_url(url) {
+                return respond(serde_json::json!({ "error": "ONION_ONLY" }), 400);
+            }
+            let Some(index) = app.try_state::<crate::crawl::SharedIndex>() else {
+                return respond(serde_json::json!({ "error": "STATE_NOT_INITIALIZED" }), 500);
+            };
+            let mut index = index.lock().unwrap_or_else(|p| p.into_inner());
+            let host = url.split("//").nth(1).and_then(|r| r.split('/').next()).unwrap_or("").to_string();
+            let title = body.get("title").and_then(|v| v.as_str()).unwrap_or(url);
+            let out = index.add(&crate::lib_app_data_dir().join("darkweb"), url, &host, title, text, crate::darkweb::now_ms(), None);
+            respond(serde_json::json!({ "added": out.added, "reason": out.reason, "id": out.id }), 200)
+        }
+        ("api/index/search", "GET") => {
+            use tauri::Manager;
+            let q = uri
+                .query()
+                .and_then(|s| s.split('&').find(|p| p.starts_with("q=")).map(|p| urldecode(&p[2..])))
+                .unwrap_or_default();
+            let limit = uri
+                .query()
+                .and_then(|s| s.split('&').find(|p| p.starts_with("limit=")).and_then(|p| p[6..].parse::<usize>().ok()))
+                .unwrap_or(20);
+            let Some(index) = app.try_state::<crate::crawl::SharedIndex>() else {
+                return respond(serde_json::json!({ "error": "STATE_NOT_INITIALIZED" }), 500);
+            };
+            let index = index.lock().unwrap_or_else(|p| p.into_inner());
+            respond(serde_json::json!({ "hits": index.search(&q, limit) }), 200)
+        }
+        ("api/index/clear", "POST") => {
+            use tauri::Manager;
+            let Some(index) = app.try_state::<crate::crawl::SharedIndex>() else {
+                return respond(serde_json::json!({ "error": "STATE_NOT_INITIALIZED" }), 500);
+            };
+            index.lock().unwrap_or_else(|p| p.into_inner()).clear(&crate::lib_app_data_dir().join("darkweb"));
+            respond(serde_json::json!({ "ok": true }), 200)
+        }
+        ("api/downloads", "GET") => {
+            use tauri::Manager;
+            let Some(q) = app.try_state::<crate::downloads::SharedQuarantine>() else {
+                return respond(serde_json::json!({ "error": "STATE_NOT_INITIALIZED" }), 500);
+            };
+            respond(serde_json::json!({ "downloads": q.lock().unwrap_or_else(|p| p.into_inner()).list() }), 200)
+        }
+        (_, "POST") if api.starts_with("api/downloads/") => {
+            use tauri::Manager;
+            let rest = api.trim_start_matches("api/downloads/");
+            let (id, action) = match rest.rsplit_once('/') {
+                Some(v) => v,
+                None => return respond(serde_json::json!({ "error": "NOT_FOUND" }), 404),
+            };
+            let Some(q) = app.try_state::<crate::downloads::SharedQuarantine>() else {
+                return respond(serde_json::json!({ "error": "STATE_NOT_INITIALIZED" }), 500);
+            };
+            let mut q = q.lock().unwrap_or_else(|p| p.into_inner());
+            match action {
+                "save" => match q.save(app, &crate::lib_app_data_dir().join("darkweb"), id) {
+                    Ok(()) => respond(serde_json::json!({ "ok": true }), 200),
+                    Err(reason) => respond(serde_json::json!({ "ok": false, "reason": reason }), 200),
+                },
+                "discard" => respond(serde_json::json!({ "ok": q.discard(id) }), 200),
+                _ => respond(serde_json::json!({ "error": "NOT_FOUND" }), 404),
+            }
         }
         _ => respond(serde_json::json!({ "error": "NOT_FOUND" }), 404),
     }

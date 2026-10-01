@@ -207,7 +207,7 @@ fn create_tab_webview(
         .on_document_title_changed(move |_wv, title| {
             on_title_changed(&handle_for_title, &tab_for_title, &title);
         })
-        .on_download(move |_wv, event| on_download_event(&handle_for_download, event));
+        .on_download(move |wv, event| on_download_event(&handle_for_download, event, wv.label()));
 
     // Anti-detect (Electron parity, site-user-agent.ts): tab webviews
     // present the ENGINE's UA with embedding-shell tokens removed.
@@ -422,9 +422,41 @@ fn on_title_changed<R: Runtime>(app: &AppHandle<R>, tab_id: &str, raw_title: &st
     });
 }
 
-fn on_download_event(app: &AppHandle<Wry>, event: tauri::webview::DownloadEvent<'_>) -> bool {
+fn on_download_event(
+    app: &AppHandle<Wry>,
+    event: tauri::webview::DownloadEvent<'_>,
+    webview_label: &str,
+) -> bool {
+    // Which tab fired? Labels look like browser-tab-{uuid}. Dark-web tabs
+    // quarantine their downloads (spec §14) instead of the OS Downloads
+    // folder — nothing auto-runs, Save/Discard is explicit.
+    let tab_id = webview_label.strip_prefix("browser-tab-").map(str::to_string);
+    let is_darkweb_tab = tab_id
+        .as_deref()
+        .and_then(|id| {
+            with_state(app, |s| {
+                s.registry.get(id).and_then(|t| t.is_dark_web).unwrap_or(false)
+            })
+            .ok()
+        })
+        .unwrap_or(false);
     match event {
         tauri::webview::DownloadEvent::Requested { url, destination } => {
+            if is_darkweb_tab {
+                use tauri::Manager;
+                let Some(q) = app.try_state::<crate::downloads::SharedQuarantine>() else {
+                    return false;
+                };
+                let mut q = q.lock().unwrap_or_else(|p| p.into_inner());
+                let (id, dest) = q.intercept(
+                    &crate::lib_app_data_dir().join("darkweb"),
+                    url.as_str(),
+                    &*destination,
+                );
+                log::info!("[DOWNLOAD] quarantined {url} -> {} ({id})", dest.display());
+                *destination = dest;
+                return true;
+            }
             let dest = with_state(app, |state| {
                 let dest = state.downloads.destination_for(url.as_str(), &*destination);
                 state.downloads.started(url.as_str(), &dest);
@@ -441,6 +473,15 @@ fn on_download_event(app: &AppHandle<Wry>, event: tauri::webview::DownloadEvent<
         }
         tauri::webview::DownloadEvent::Finished { url, path, success } => {
             log::info!("[DOWNLOAD] finished {} success={success}", url);
+            if is_darkweb_tab {
+                use tauri::Manager;
+                if let Some(q) = app.try_state::<crate::downloads::SharedQuarantine>() {
+                    if let Some(p) = path.as_ref() {
+                        q.lock().unwrap_or_else(|p| p.into_inner()).finished(p, success);
+                    }
+                }
+                return true;
+            }
             let _ = with_state(app, |state| {
                 state
                     .downloads
