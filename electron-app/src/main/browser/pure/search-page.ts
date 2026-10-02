@@ -387,7 +387,7 @@ export function buildSearchPageHtml(opts: SearchPageOptions): string {
     { id: 'research', label: 'Deep Research', source: null },
     { id: 'darkweb', label: 'Dark Web', source: null }
   ];
-  var VALID = { web: 1, discussions: 1, academic: 1 };
+  var VALID = { web: 1, discussions: 1, academic: 1, research: 1 };
   var paramsMode = (params.get('src') || '').trim();
   var mode = VALID[paramsMode] ? paramsMode : 'web';
   var modesBox = document.getElementById('modes');
@@ -447,21 +447,31 @@ export function buildSearchPageHtml(opts: SearchPageOptions): string {
       return;
     }
     if (id === 'research') {
-      if (!bridge) { modeNoteMsg('Deep Research is unavailable on this page.', true); return; }
       var rq = (new URLSearchParams(location.search).get('q') || input.value || '').trim();
-      if (!rq) { modeNoteMsg('Type a query first — Deep Research will use it.', true); return; }
-      modeNoteMsg('Starting Deep Research — follow the AGENT panel…');
-      bridge.runResearch({ query: rq, attachmentIds: [] }).then(function (r) {
-        if (r && r.started) modeNoteMsg('Deep Research started — follow the AGENT panel.');
-        else modeNoteMsg((r && r.error) || 'Deep Research could not start.', true);
-      }).catch(function () { modeNoteMsg('Deep Research request failed.', true); });
+      startResearch(rq);
     }
+  }
+
+  /** Launch the Deep Research agent (mode chip OR src=research autoload). */
+  function startResearch(rq) {
+    if (!bridge) { modeNoteMsg('Deep Research is unavailable on this page.', true); return; }
+    if (!rq) { modeNoteMsg('Type a query first — Deep Research will use it.', true); return; }
+    input.value = rq;
+    modeNoteMsg('Starting Deep Research — follow the AGENT panel…');
+    bridge.runResearch({ query: rq, attachmentIds: [] }).then(function (r) {
+      if (r && r.started) modeNoteMsg('Deep Research started — follow the AGENT panel.');
+      else modeNoteMsg((r && r.error) || 'Deep Research could not start.', true);
+    }).catch(function () { modeNoteMsg('Deep Research request failed.', true); });
   }
 
   renderModes();
   if (mode !== 'web') modeNoteMsg('Mode: ' + mode.toUpperCase());
 
-  if (q) ask(q); else input.focus();
+  if (q) {
+    // src=research (the HayDev engine chip): auto-launch the agent pipeline.
+    if (mode === 'research') startResearch(q);
+    else ask(q);
+  } else input.focus();
 })();
 </script>
 <script>

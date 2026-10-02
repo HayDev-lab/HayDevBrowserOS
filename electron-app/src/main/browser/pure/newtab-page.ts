@@ -524,7 +524,7 @@ ${newsCards}`
         <p class="status" id="sstatus" role="status" aria-live="polite"></p>
       </form>
       <div class="engines" role="radiogroup" aria-label="Search engine">
-        <button type="button" class="engine" id="engine-haydev" role="radio" aria-checked="true" data-engine="haydev" title="Ask HayDev Search — AI + Web intelligence (pab://search)">
+        <button type="button" class="engine" id="engine-haydev" role="radio" aria-checked="true" data-engine="haydev" title="HayDev flagship — Deep Research agent pipeline (requires AGENT mode)">
           <span class="engine__icon" aria-hidden="true">
             <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
               <path d="M12 2l7 4v6c0 4.4-3 8.4-7 10-4-1.6-7-5.6-7-10V6l7-4z"></path>
@@ -534,10 +534,10 @@ ${newsCards}`
           </span>
           <span class="engine__text">
             <span class="engine__title">HayDev Search</span>
-            <span class="engine__sub">AI + Web intelligence</span>
+            <span class="engine__sub">Deep Research agent</span>
           </span>
         </button>
-        <button type="button" class="engine" id="engine-perplexity" role="radio" aria-checked="false" data-engine="perplexity" title="Real-time research (pab://search)">
+        <button type="button" class="engine" id="engine-perplexity" role="radio" aria-checked="false" data-engine="perplexity" title="Instant AI + Web answers via Perplexica (pab://search, web mode)">
           <span class="engine__icon" aria-hidden="true">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
               <line x1="12" y1="3" x2="12" y2="21"></line>
@@ -548,7 +548,7 @@ ${newsCards}`
           </span>
           <span class="engine__text">
             <span class="engine__title">Perplexity Search</span>
-            <span class="engine__sub">Real-time research</span>
+            <span class="engine__sub">AI + Web answers</span>
           </span>
         </button>
         <button type="button" class="engine" id="engine-darkweb" role="radio" aria-checked="false" data-engine="darkweb" title="Beyond the surface (pab://darkweb via Tor)">
@@ -786,8 +786,16 @@ ${newsBlock}
         location.href = pabNav('darkweb', '?q=' + encodeURIComponent(v));
         return;
       }
-      status(engine === 'perplexity' ? 'Searching (Perplexity engine)…' : 'Searching…');
-      location.href = pabNav('search', '?q=' + encodeURIComponent(v));
+      if (engine === 'perplexity') {
+        // Perplexity chip = instant AI + Web answers (Perplexica, web mode).
+        status('Searching — Perplexity (AI + Web)…');
+        location.href = pabNav('search', '?q=' + encodeURIComponent(v) + '&src=web');
+        return;
+      }
+      // HayDev chip = the flagship: Deep Research agent pipeline (src=research
+      // auto-launches on the search page; requires AGENT mode).
+      status('Starting Deep Research (HayDev agent)…');
+      location.href = pabNav('search', '?q=' + encodeURIComponent(v) + '&src=research');
     });
 
     document.getElementById('sicon').addEventListener('click', function () {

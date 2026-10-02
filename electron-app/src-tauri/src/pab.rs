@@ -260,6 +260,56 @@ fn compute_top_sites(entries: &[crate::types::HistoryEntry], limit: usize) -> se
         .collect::<Vec<_>>())
 }
 
+/// The `__pabNewTab` bridge API (Electron parity: isBridgeDocumentUrl allows
+/// BOTH the newtab and the search document to call it — the mode switcher's
+/// Deep Research button lives on the search page). Served from whichever
+/// pab page received the request; `None` = not a bridge route.
+fn bridge_api(
+    app: &AppHandle<tauri::Wry>,
+    path: &str,
+    uri: &Uri,
+    method: &str,
+    body: &serde_json::Value,
+) -> Option<http::Response<Vec<u8>>> {
+    let respond = |v: serde_json::Value, status: u16| -> http::Response<Vec<u8>> {
+        let mut resp = json_response(v.to_string());
+        *resp.status_mut() = http::StatusCode::from_u16(status).unwrap_or(http::StatusCode::OK);
+        resp
+    };
+    match (path, method) {
+        ("/api/attachment/pick", "POST") => {
+            let kind = body.get("kind").and_then(|v| v.as_str()).unwrap_or("file");
+            let pick_id = crate::attachments::start_pick(app, kind);
+            Some(respond(serde_json::json!({ "pickId": pick_id }), 200))
+        }
+        ("/api/attachment/poll", "GET") => {
+            let id = uri
+                .query()
+                .and_then(|q| q.split('&').find(|p| p.starts_with("id=")))
+                .map(|p| urldecode(&p[3..]));
+            Some(match id {
+                Some(id) => match crate::attachments::poll_pick(app, &id) {
+                    Some(v) => respond(v, 200),
+                    None => respond(serde_json::json!({ "error": "NOT_FOUND" }), 404),
+                },
+                None => respond(serde_json::json!({ "error": "invalid_request" }), 400),
+            })
+        }
+        ("/api/research/run", "POST") => {
+            let Some(query) = body.get("query").and_then(|v| v.as_str()) else {
+                return Some(respond(serde_json::json!({ "started": false, "error": "invalid_request" }), 400));
+            };
+            let ids: Vec<String> = body
+                .get("attachmentIds")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+                .unwrap_or_default();
+            Some(respond(start_research_run(app, query, &ids), 200))
+        }
+        _ => None,
+    }
+}
+
 /// Serve `pab://newtab` — the generated page plus live JSON endpoints
 /// (news/topsites) and the attachment/research bridge API that backs
 /// `window.__pabNewTab` (see attachments::BRIDGE_INIT_SCRIPT).
@@ -276,11 +326,9 @@ fn serve_newtab(
     } else {
         serde_json::Value::Null
     };
-    let respond = |v: serde_json::Value, status: u16| -> http::Response<Vec<u8>> {
-        let mut resp = json_response(v.to_string());
-        *resp.status_mut() = http::StatusCode::from_u16(status).unwrap_or(http::StatusCode::OK);
-        resp
-    };
+    if let Some(resp) = bridge_api(app, path, uri, method, &body) {
+        return resp;
+    }
     match (path, method) {
         ("", "GET") | ("/", "GET") | ("/index.html", "GET") => match read_internal_page("newtab.html") {
             Some(html) => html_response(html),
@@ -288,36 +336,6 @@ fn serve_newtab(
         },
         ("/api/news", "GET") => json_response(fetch_tech_news(4)),
         ("/api/topsites", "GET") => json_response(topsites_payload(app)),
-        // ---- __pabNewTab bridge (pab://newtab + pab://search documents) ----
-        ("/api/attachment/pick", "POST") => {
-            let kind = body.get("kind").and_then(|v| v.as_str()).unwrap_or("file");
-            let pick_id = crate::attachments::start_pick(app, kind);
-            respond(serde_json::json!({ "pickId": pick_id }), 200)
-        }
-        ("/api/attachment/poll", "GET") => {
-            let id = uri
-                .query()
-                .and_then(|q| q.split('&').find(|p| p.starts_with("id=")))
-                .map(|p| urldecode(&p[3..]));
-            match id {
-                Some(id) => match crate::attachments::poll_pick(app, &id) {
-                    Some(v) => respond(v, 200),
-                    None => respond(serde_json::json!({ "error": "NOT_FOUND" }), 404),
-                },
-                None => respond(serde_json::json!({ "error": "invalid_request" }), 400),
-            }
-        }
-        ("/api/research/run", "POST") => {
-            let Some(query) = body.get("query").and_then(|v| v.as_str()) else {
-                return respond(serde_json::json!({ "started": false, "error": "invalid_request" }), 400);
-            };
-            let ids: Vec<String> = body
-                .get("attachmentIds")
-                .and_then(|v| v.as_array())
-                .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
-                .unwrap_or_default();
-            respond(start_research_run(app, query, &ids), 200)
-        }
         _ => not_found("pab://newtab"),
     }
 }
@@ -389,7 +407,25 @@ fn start_research_run(
 
 /// Serve `pab://search` — the generated page with runtime placeholders
 /// (Perplexica endpoint + model key) substituted.
-fn serve_search(app: &AppHandle<tauri::Wry>, uri: &Uri) -> http::Response<Vec<u8>> {
+fn serve_search(
+    app: &AppHandle<tauri::Wry>,
+    uri: &Uri,
+    request: &tauri::http::Request<Vec<u8>>,
+) -> http::Response<Vec<u8>> {
+    // The search page is a BRIDGE document (Electron isBridgeDocumentUrl):
+    // its Deep Research mode calls the same attachment/research API as the
+    // newtab page. Requests reach this handler attributed to page=search —
+    // serve the bridge routes before the page itself.
+    let method = request.method().as_str();
+    if method == "POST" {
+        let body: serde_json::Value =
+            serde_json::from_slice(request.body()).unwrap_or(serde_json::Value::Null);
+        if let Some(resp) = bridge_api(app, uri.path(), uri, method, &body) {
+            return resp;
+        }
+    } else if let Some(resp) = bridge_api(app, uri.path(), uri, method, &serde_json::Value::Null) {
+        return resp;
+    }
     let Some(mut html) = read_internal_page("search.html") else {
         return not_found("pab://search");
     };
@@ -501,7 +537,7 @@ pub fn handle_pab(app: &AppHandle<tauri::Wry>, request: &tauri::http::Request<Ve
     log::info!("[WEBVIEW] pab request page={page} path={sub_path}");
     match page.as_str() {
         "newtab" => serve_newtab(app, &sub_path, &uri, request),
-        "search" => serve_search(app, &uri),
+        "search" => serve_search(app, &uri, request),
         "darkweb" => serve_darkweb(app, &sub_path, &uri, request),
         _ => not_found("pab:// page"),
     }
