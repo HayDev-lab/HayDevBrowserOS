@@ -610,6 +610,19 @@ ${newsBlock}
     // drops script navigations to the raw pab:// scheme — internal links
     // ALWAYS use the vhost form, derived from this document's protocol.
     function pabNav(page, qs) { return location.protocol + '//pab.' + page + '/' + qs; }
+    // Single-search-home policy (2026-10-03): every search reuses the open
+    // pab search/darkweb tab (or the active tab on first use) — the backend
+    // NEVER opens a new tab. location.href stays as the no-API fallback.
+    function searchNavigate(page, qs) {
+      var url = 'pab://' + page + '/' + qs;
+      fetch('/api/navigate', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ url: url })
+      }).then(function (r) { return r.json(); })
+        .then(function (j) { if (!j || !j.navigated) location.href = pabNav(page, qs); })
+        .catch(function () { location.href = pabNav(page, qs); });
+    }
     // Never fail silently: surface script errors on the status line so
     // "nothing happens" is always explainable.
     window.addEventListener('error', function (e) {
@@ -783,19 +796,19 @@ ${newsBlock}
       }
       if (engine === 'darkweb') {
         status('Opening Dark Web search…');
-        location.href = pabNav('darkweb', '?q=' + encodeURIComponent(v));
+        searchNavigate('darkweb', '?q=' + encodeURIComponent(v));
         return;
       }
       if (engine === 'perplexity') {
         // Perplexity chip = instant AI + Web answers (Perplexica, web mode).
         status('Searching — Perplexity (AI + Web)…');
-        location.href = pabNav('search', '?q=' + encodeURIComponent(v) + '&src=web');
+        searchNavigate('search', '?q=' + encodeURIComponent(v) + '&src=web');
         return;
       }
       // HayDev chip = the flagship: Deep Research agent pipeline (src=research
-      // auto-launches on the search page; requires AGENT mode).
+      // auto-launches on the search page and auto-switches to AGENT mode).
       status('Starting Deep Research (HayDev agent)…');
-      location.href = pabNav('search', '?q=' + encodeURIComponent(v) + '&src=research');
+      searchNavigate('search', '?q=' + encodeURIComponent(v) + '&src=research');
     });
 
     document.getElementById('sicon').addEventListener('click', function () {

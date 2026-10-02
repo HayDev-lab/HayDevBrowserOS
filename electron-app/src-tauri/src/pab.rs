@@ -306,7 +306,65 @@ fn bridge_api(
                 .unwrap_or_default();
             Some(respond(start_research_run(app, query, &ids), 200))
         }
+        ("/api/navigate", "POST") => {
+            let Some(url) = body.get("url").and_then(|v| v.as_str()) else {
+                return Some(respond(serde_json::json!({ "error": "invalid_request" }), 400));
+            };
+            Some(navigate_in_existing_tab(app, url, &respond))
+        }
         _ => None,
+    }
+}
+
+/// Single-search-home policy (user decision 2026-10-03): a search NEVER
+/// opens a new tab — it reuses an already-open tab of the target pab page
+/// (navigating + activating it), or, if none exists yet, drives the ACTIVE
+/// tab (the first search converts the current newtab). Bridge-only endpoint,
+/// and only pab://search / pab://darkweb targets are accepted.
+fn navigate_in_existing_tab(
+    app: &AppHandle<tauri::Wry>,
+    url: &str,
+    respond: &dyn Fn(serde_json::Value, u16) -> http::Response<Vec<u8>>,
+) -> http::Response<Vec<u8>> {
+    let page = if url.starts_with("pab://search") || url.contains("//pab.search") {
+        "pab://search"
+    } else if url.starts_with("pab://darkweb") || url.contains("//pab.darkweb") {
+        "pab://darkweb"
+    } else {
+        return respond(serde_json::json!({ "navigated": false, "error": "invalid_target" }), 400);
+    };
+    let existing = crate::core::with_state(app, |s| {
+        s.registry
+            .list()
+            .into_iter()
+            .find(|t| t.url.starts_with(page))
+            .map(|t| t.id)
+    })
+    .unwrap_or(None);
+    let target = existing.clone().or_else(|| {
+        crate::core::with_state(app, |s| {
+            s.registry
+                .list()
+                .into_iter()
+                .find(|t| t.is_active)
+                .map(|t| t.id)
+        })
+        .unwrap_or(None)
+    });
+    let Some(tab_id) = target else {
+        return respond(serde_json::json!({ "navigated": false, "error": "no_active_tab" }), 500);
+    };
+    let nav = crate::core::navigate(
+        app,
+        &crate::types::NavigateRequest { tab_id: tab_id.clone(), url: url.to_string() },
+    );
+    let _ = crate::core::activate_tab(app, &tab_id);
+    match nav {
+        Ok(_) => respond(
+            serde_json::json!({ "navigated": true, "tabId": tab_id, "reused": existing.is_some() }),
+            200,
+        ),
+        Err(e) => respond(serde_json::json!({ "navigated": false, "error": e.message }), 500),
     }
 }
 

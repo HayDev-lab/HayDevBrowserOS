@@ -380,6 +380,18 @@ export function buildSearchPageHtml(opts: SearchPageOptions): string {
   // page on a virtual host (http://pab.search/) and drops script navigations
   // to the raw pab:// scheme — internal links always use the vhost form.
   function pabNav(page, qs) { return location.protocol + '//pab.' + page + '/' + qs; }
+  // Single-search-home policy: reuse the open darkweb tab via the backend
+  // (never a new tab); location.href is the no-API fallback.
+  function searchNavigate(page, qs) {
+    var url = 'pab://' + page + '/' + qs;
+    fetch('/api/navigate', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ url: url })
+    }).then(function (r) { return r.json(); })
+      .then(function (j) { if (!j || !j.navigated) location.href = pabNav(page, qs); })
+      .catch(function () { location.href = pabNav(page, qs); });
+  }
   var MODES = [
     { id: 'web', label: 'AI + Web', source: 'web' },
     { id: 'discussions', label: 'Discussions', source: 'discussions' },
@@ -443,7 +455,7 @@ export function buildSearchPageHtml(opts: SearchPageOptions): string {
     if (id === 'darkweb') {
       var dq = (new URLSearchParams(location.search).get('q') || input.value || '').trim();
       if (!dq) { modeNoteMsg('Type a query first — Dark Web search will use it.', true); return; }
-      location.href = pabNav('darkweb', '?q=' + encodeURIComponent(dq));
+      searchNavigate('darkweb', '?q=' + encodeURIComponent(dq));
       return;
     }
     if (id === 'research') {
