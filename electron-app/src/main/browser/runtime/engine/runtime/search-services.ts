@@ -358,32 +358,37 @@ export class SearxngService extends ManagedService {
     // settings.yml: loopback-only bind, dynamic port, JSON format ON —
     // verified by the functional health check (spec §27/§31).
     //
-    // Engine policy (root-cause #2 of the dead search): on a native Windows
-    // runtime most default engines are unreachable or bot-blocked from this
-    // egress (duckduckgo — connection-level block, brave/qwant — 429/CAPTCHA,
-    // mojeek/startpage — empty). keep_only restricts the tree to the two
-    // engines verified with real queries (bing, google). CRITICAL: both must
-    // ALSO be explicitly `disabled: false` — in SearXNG defaults they are
-    // disabled, and default (no engines= param) queries run only enabled
-    // engines, producing an instantly cached EMPTY result.
+    // Engine policy (2026-10-01 revision): the original keep_only [bing,
+    // google] died in the field — google serves a CAPTCHA from this egress
+    // (engine suspended for 3600 s), bing times out. A two-engine policy is
+    // brittle: one flaky engine = EMPTY search = Perplexica answers
+    // "could not find any relevant information". Multi-engine redundancy:
+    // SearXNG merges results and merely lists dead engines in
+    // `unresponsive_engines` (harmless). limiter is OFF — this instance is
+    // loopback-only and its API callers (Perplexica) send no
+    // X-Forwarded-For, which botdetection otherwise rejects.
     try {
       await fs.mkdir(this.o.configDir, { recursive: true });
       const file = path.join(this.o.configDir, 'settings.yml');
+      // Per-instance random secret (regenerated on every spawn — a local
+      // loopback instance needs uniqueness, not persistence).
+      const secret = crypto.randomBytes(24).toString('hex');
+      const reliableEngines = [
+        'bing', 'google', 'duckduckgo', 'brave', 'qwant',
+        'startpage', 'mojeek', 'wikipedia', 'ecosia', 'marginalia',
+      ];
       const yaml = [
         'use_default_settings:',
         '  engines:',
         '    keep_only:',
-        '      - bing',
-        '      - google',
+        ...reliableEngines.map((e) => `      - ${e}`),
         'engines:',
-        '  - name: bing',
-        '    disabled: false',
-        '  - name: google',
-        '    disabled: false',
+        ...reliableEngines.map((e) => `  - name: ${e}\n    disabled: false`),
         'server:',
-        '  secret_key: "haydev-managed-instance-not-a-secret"',
+        `  secret_key: "${secret}"`,
         `  bind_address: "127.0.0.1"`,
         `  port: ${port}`,
+        '  limiter: false',
         'outgoing:',
         '  request_timeout: 10.0',
         'search:',

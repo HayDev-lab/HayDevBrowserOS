@@ -396,9 +396,29 @@ fn start_searxng(m: SharedRuntimeManager, external_url: Option<String>) {
 
 fn write_searxng_settings(config_dir: &Path, port: u16) -> PathBuf {
     let _ = std::fs::create_dir_all(config_dir);
-    let yaml = format!(
-        "use_default_settings:\n  engines:\n    keep_only:\n      - bing\n      - google\nengines:\n  - name: bing\n    disabled: false\n  - name: google\n    disabled: false\nserver:\n  secret_key: \"haydev-managed-instance-not-a-secret\"\n  bind_address: \"127.0.0.1\"\n  port: {port}\noutgoing:\n  request_timeout: 10.0\nsearch:\n  formats:\n    - html\n    - json\n"
-    );
+    // Engine policy (2026-10-01 revision, Electron parity): the original
+    // keep_only [bing, google] died in the field — google CAPTCHA (engine
+    // suspended 3600 s), bing timeouts. Multi-engine redundancy: SearXNG
+    // merges results and merely lists dead engines in unresponsive_engines.
+    // limiter: false — loopback-only instance; Perplexica sends no
+    // X-Forwarded-For, which botdetection otherwise rejects.
+    let reliable_engines = [
+        "bing", "google", "duckduckgo", "brave", "qwant",
+        "startpage", "mojeek", "wikipedia", "ecosia", "marginalia",
+    ];
+    let mut yaml = String::from("use_default_settings:\n  engines:\n    keep_only:\n");
+    for e in reliable_engines {
+        yaml.push_str(&format!("      - {e}\n"));
+    }
+    yaml.push_str("engines:\n");
+    for e in reliable_engines {
+        yaml.push_str(&format!("  - name: {e}\n    disabled: false\n"));
+    }
+    // Per-instance random secret (regenerated on every spawn).
+    let secret = uuid::Uuid::new_v4().to_string().replace('-', "");
+    yaml.push_str(&format!(
+        "server:\n  secret_key: \"{secret}\"\n  bind_address: \"127.0.0.1\"\n  port: {port}\n  limiter: false\noutgoing:\n  request_timeout: 10.0\nsearch:\n  formats:\n    - html\n    - json\n"
+    ));
     let file = config_dir.join("settings.yml");
     let _ = std::fs::write(&file, yaml);
     file
