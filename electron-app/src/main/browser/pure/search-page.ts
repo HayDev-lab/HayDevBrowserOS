@@ -376,6 +376,14 @@ export function buildSearchPageHtml(opts: SearchPageOptions): string {
 
   // ---- search mode switcher (above the chat) ------------------------------
   var bridge = window.__pabNewTab || null;
+  // Cross-runtime internal navigation (see newtab-page.ts): WebView2 serves
+  // this page on a virtual host (http://pab.search/) and drops script
+  // navigations to the pab:// scheme — navigate via the vhost form there;
+  // Electron uses the pab:// scheme directly.
+  var PAB_NAV_BASE = /^https?:\\/\\/pab\\./i.test(location.href)
+    ? location.protocol + '//pab.'
+    : 'pab://';
+  function pabNav(page, qs) { return PAB_NAV_BASE + page + '/' + qs; }
   var MODES = [
     { id: 'web', label: 'AI + Web', source: 'web' },
     { id: 'discussions', label: 'Discussions', source: 'discussions' },
@@ -432,14 +440,14 @@ export function buildSearchPageHtml(opts: SearchPageOptions): string {
       // Re-run the current query in the freshly selected mode.
       var cur = (new URLSearchParams(location.search).get('q') || '').trim();
       if (cur) {
-        location.href = 'pab://search/?q=' + encodeURIComponent(cur) + '&src=' + encodeURIComponent(id);
+        location.href = pabNav('search', '?q=' + encodeURIComponent(cur) + '&src=' + encodeURIComponent(id));
       }
       return;
     }
     if (id === 'darkweb') {
       var dq = (new URLSearchParams(location.search).get('q') || input.value || '').trim();
       if (!dq) { modeNoteMsg('Type a query first — Dark Web search will use it.', true); return; }
-      location.href = 'pab://darkweb/?q=' + encodeURIComponent(dq);
+      location.href = pabNav('darkweb', '?q=' + encodeURIComponent(dq));
       return;
     }
     if (id === 'research') {

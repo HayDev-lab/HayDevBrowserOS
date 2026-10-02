@@ -605,6 +605,15 @@ ${newsBlock}
     // (attachments + Deep Research). Feature-detected: without it the page
     // still works as a pure search entry.
     var bridge = window.__pabNewTab || null;
+    // Cross-runtime internal navigation: WebView2 (Tauri) serves these pages
+    // on virtual hosts (http://pab.newtab/) and SILENTLY DROPS script
+    // navigations to the pab:// scheme — so the page must navigate via its
+    // own vhost form there. Electron serves the pab:// scheme directly.
+    // Detected from THIS document's protocol — no UA sniffing.
+    var PAB_NAV_BASE = /^https?:\\/\\/pab\\./i.test(location.href)
+      ? location.protocol + '//pab.'
+      : 'pab://';
+    function pabNav(page, qs) { return PAB_NAV_BASE + page + '/' + qs; }
     var ENGINE_KEY = 'pab.newtab.engine';
     var ENGINES = ['haydev', 'perplexity', 'darkweb'];
     var MAX_CHIPS = 4;
@@ -615,6 +624,9 @@ ${newsBlock}
     } catch (e) { /* storage unavailable — per-tab default */ }
 
     var form = document.getElementById('sform');
+    // Align the no-JS GET fallback with the detected runtime (the static
+    // attribute stays pab:// for Electron; JS submits use pabNav anyway).
+    if (form) form.action = pabNav('search', '');
     var input = document.getElementById('sinput');
     var attachBtn = document.getElementById('sattach');
     var imageBtn = document.getElementById('simage');
@@ -762,12 +774,10 @@ ${newsBlock}
         return;
       }
       if (engine === 'darkweb') {
-        // Trailing slash required: WebView2 drops pab://host?query
-        // navigations without a path segment (Electron tolerates both).
-        location.href = 'pab://darkweb/?q=' + encodeURIComponent(v);
+        location.href = pabNav('darkweb', '?q=' + encodeURIComponent(v));
         return;
       }
-      location.href = 'pab://search/?q=' + encodeURIComponent(v);
+      location.href = pabNav('search', '?q=' + encodeURIComponent(v));
     });
 
     document.getElementById('sicon').addEventListener('click', function () {
