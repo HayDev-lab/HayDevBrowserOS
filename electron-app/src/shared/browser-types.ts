@@ -102,15 +102,12 @@ export interface WebAppPin {
 
 export const WEB_APP_PINS: readonly WebAppPin[] = [
   // Matrix NTP concept: messengers sit right next to the New Tab area —
-  // [ New Tab | WhatsApp | Telegram | + ] — search pins follow.
+  // [ New Tab | WhatsApp | Telegram | + ].
+  // (2026-10-03, user decision: messenger pins only — the search pins
+  // [haydev/darkweb] were removed; search lives on the New Tab engine
+  // chips and the RESEARCH quick action.)
   { id: 'whatsapp', label: 'WhatsApp', url: 'https://web.whatsapp.com/' },
   { id: 'telegram', label: 'Telegram', url: 'https://web.telegram.org/' },
-  {
-    id: 'haydev',
-    label: 'HayDev Search',
-    url: 'pab://search',
-  },
-  { id: 'darkweb', label: 'Dark Web Search', url: 'pab://darkweb' },
 ] as const;
 
 // ---------------------------------------------------------------------------
