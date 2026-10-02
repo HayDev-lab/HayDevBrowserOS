@@ -116,6 +116,23 @@ export function buildSearchPageHtml(opts: SearchPageOptions): string {
   .fallback a { color: #9cc3ff; }
   .home-hint { text-align: center; font-size: 13px; color: #5f789c; }
 
+  /* ---- deep research result (answer above, sources below) -------------- */
+  .research-progress {
+    margin: 10px auto 0; width: min(760px, 92vw);
+    font-size: 13px; color: #7fd4b0; animation: pulse 1.6s ease-in-out infinite;
+  }
+  .sources { margin: 12px auto 0; width: min(760px, 92vw); }
+  .sources__head {
+    font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase;
+    color: #5f789c; margin-bottom: 6px;
+  }
+  .sources__link {
+    display: block; font-size: 13px; color: #9cc3ff; text-decoration: none;
+    padding: 3px 0; word-break: break-all;
+  }
+  .sources__link:hover { text-decoration: underline; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }
+
   /* ---- search mode switcher (above the chat) --------------------------- */
   .modes {
     display: flex; flex-wrap: wrap; justify-content: center; gap: 6px;
@@ -469,11 +486,74 @@ export function buildSearchPageHtml(opts: SearchPageOptions): string {
     if (!bridge) { modeNoteMsg('Deep Research is unavailable on this page.', true); return; }
     if (!rq) { modeNoteMsg('Type a query first — Deep Research will use it.', true); return; }
     input.value = rq;
-    modeNoteMsg('Starting Deep Research — follow the AGENT panel…');
+    addUser(rq);
+    modeNoteMsg('Starting Deep Research — the answer will appear here…');
     bridge.runResearch({ query: rq, attachmentIds: [] }).then(function (r) {
-      if (r && r.started) modeNoteMsg('Deep Research started — follow the AGENT panel.');
-      else modeNoteMsg((r && r.error) || 'Deep Research could not start.', true);
+      if (r && r.started) {
+        modeNoteMsg('Deep Research running — steps shown below…');
+        pollResearch();
+      } else {
+        modeNoteMsg((r && r.error) || 'Deep Research could not start.', true);
+      }
     }).catch(function () { modeNoteMsg('Deep Research request failed.', true); });
+  }
+
+  /* Poll the run and render the RESULT ON THIS PAGE: answer block first,
+     sources list below (user decision 2026-10-03 — no more answers living
+     only in the AGENT side panel). */
+  function pollResearch() {
+    var tries = 0;
+    var statusBox = null;
+    (function tick() {
+      fetch('/api/research/status', { signal: AbortSignal.timeout(8000) })
+        .then(function (r) { return r.json(); })
+        .then(function (s) {
+          tries++;
+          if (s.state === 'RUNNING' || s.state === 'STARTING' || s.state === 'WAITING_FOR_HUMAN') {
+            if (!statusBox) {
+              statusBox = el('div', 'research-progress');
+              statusBox.textContent = 'Deep Research running…';
+              chat.appendChild(statusBox);
+            }
+            statusBox.textContent = 'Deep Research running — step ' + (s.stepCount || 0) + '… (invisible page fetches, your tabs are untouched)';
+            scroll();
+            if (tries < 600) setTimeout(tick, 2000);
+            return;
+          }
+          if (statusBox && statusBox.parentNode) statusBox.parentNode.removeChild(statusBox);
+          renderResearchResult(s);
+        })
+        .catch(function () { if (tries < 600) { tries++; setTimeout(tick, 3000); } });
+    })();
+  }
+
+  function renderResearchResult(s) {
+    var answer = (s.answer && String(s.answer).trim()) ||
+      (s.report && s.report.summary && String(s.report.summary).trim()) || '';
+    if (!answer) {
+      modeNoteMsg('Deep Research ' + (s.state || 'finished') + ' — no answer was produced.', true);
+      return;
+    }
+    addAnswer(answer);
+    var srcs = (s.report && s.report.sources) || [];
+    if (srcs.length) {
+      var box = el('div', 'sources');
+      var head = document.createElement('div');
+      head.className = 'sources__head';
+      head.textContent = 'SOURCES (' + srcs.length + ')';
+      box.appendChild(head);
+      srcs.forEach(function (src) {
+        var a = document.createElement('a');
+        a.href = String(src.url || '');
+        a.textContent = String(src.title || src.url || '');
+        a.className = 'sources__link';
+        a.rel = 'noreferrer noopener';
+        box.appendChild(a);
+      });
+      chat.appendChild(box);
+    }
+    modeNoteMsg('Deep Research complete — answer above, sources below.');
+    scroll();
   }
 
   renderModes();

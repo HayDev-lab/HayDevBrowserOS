@@ -228,20 +228,31 @@ Rules:
 5. When the task is complete, call `finish` with a short summary."#;
 
 const RESEARCH_SYSTEM_PROMPT: &str = r#"You are HayDev Browser DEEP RESEARCH agent. You investigate a question by
-browsing real pages with the tools, then write a structured report.
+fetching real pages with the `web_fetch` tool (invisible — no tab is opened
+or navigated), then write a structured report shown to the user on the
+search page.
 
 Method:
-1. Decompose the question into 2-4 searchable angles; navigate and read the
-   strongest independent sources you can find (at least 2 distinct hosts).
+1. Decompose the question into 2-4 angles. Discover sources by fetching a
+   search-engine results page first (e.g. https://duckduckgo.com/html/?q=…),
+   then `web_fetch` the strongest independent pages (at least 2 distinct hosts).
 2. READ before you claim: every claim must come from a page you actually
-   opened with `navigate` + `read_page`.
+   fetched with `web_fetch`.
 3. Cross-check: if two sources disagree, say so explicitly in the summary.
-4. NEVER invent URLs — cite only pages you visited.
+4. NEVER invent URLs — cite only pages you fetched.
 5. Finish with `finish` where `summary` is the structured report:
    a short ANSWER paragraph, then "SOURCES:" lines "<url> — what it
    contributed", then "UNKNOWNS:" lines for what the sources did not cover."#;
 
-fn tool_declarations() -> Value {
+fn tool_declarations(profile: &str) -> Value {
+    if profile == "DEEP_RESEARCH" {
+        // Invisible research: HTTP fetch only — the visible tab is NEVER
+        // navigated by a research run (user decision 2026-10-03).
+        return serde_json::json!([
+            { "type": "function", "function": { "name": "web_fetch", "description": "Fetch a web page by URL and receive its title plus extracted readable text. Nothing is opened or rendered visibly.", "parameters": { "type": "object", "properties": { "url": { "type": "string", "description": "Absolute http(s) URL to fetch." } }, "required": ["url"] } } },
+            { "type": "function", "function": { "name": "finish", "description": "Finish with the structured report: ANSWER paragraph, SOURCES lines, UNKNOWNS lines.", "parameters": { "type": "object", "properties": { "summary": { "type": "string" } }, "required": ["summary"] } } },
+        ]);
+    }
     serde_json::json!([
         { "type": "function", "function": { "name": "navigate", "description": "Navigate the active tab to a URL (bare hostnames are upgraded to https).", "parameters": { "type": "object", "properties": { "url": { "type": "string" } }, "required": ["url"] } } },
         { "type": "function", "function": { "name": "snapshot", "description": "Get a bounded list of interactive elements with CSS-relevant info (tag/text/placeholder/ariaLabel).", "parameters": { "type": "object", "properties": { "max": { "type": "integer" } } } } },
@@ -368,6 +379,55 @@ fn execute_tool(
         })()
         .map_err(|e| AppError::new("SCREENSHOT_FAILED", e)),
         "finish" => Ok(serde_json::json!({ "summary": get("summary") })),
+        // INVISIBLE page fetch (research profile only): HTTP GET + text
+        // extraction — no tab is opened or navigated. Visited pages land
+        // in the sources ledger exactly like navigations used to.
+        "web_fetch" => (|| -> Result<Value, String> {
+            let url = get("url").trim().to_string();
+            if !(url.starts_with("http://") || url.starts_with("https://")) {
+                return Err("WEB_FETCH_HTTP_ONLY".into());
+            }
+            let fetcher = ureq::AgentBuilder::new()
+                .timeout(Duration::from_secs(20))
+                .build();
+            let resp = fetcher
+                .get(&url)
+                .set(
+                    "User-Agent",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+                )
+                .set("Accept", "text/html,application/xhtml+xml,*/*;q=0.8")
+                .set("Accept-Language", "en-US,en;q=0.9")
+                .call()
+                .map_err(|e| format!("FETCH_FAILED: {e}"))?;
+            let mut reader = resp.into_reader().take(2 * 1024 * 1024);
+            let mut bytes = Vec::new();
+            reader
+                .read_to_end(&mut bytes)
+                .map_err(|e| format!("READ_FAILED: {e}"))?;
+            let html = String::from_utf8_lossy(&bytes).to_string();
+            let title =
+                crate::darkweb::extract_title(&html).unwrap_or_else(|| url.clone());
+            let text = crate::crawl::extract_text(&html, 60_000);
+            if let Some(ledger) = sources {
+                if let Ok(mut list) = ledger.lock() {
+                    if list.len() < 12 {
+                        let order = list.len() + 1;
+                        list.push(json!({
+                            "url": url, "title": title,
+                            "status": "visited", "order": order,
+                        }));
+                    }
+                }
+            }
+            Ok(json!({
+                "url": url,
+                "title": title,
+                "text": text.chars().take(6000).collect::<String>(),
+                "chars": text.len(),
+            }))
+        })()
+        .map_err(|e| AppError::new("WEB_FETCH_FAILED", e)),
         // memory.save PROPOSES only — the user's confirmation in the rail
         // (memory_prompt_resolve) is the sole write path (parity).
         "memory.save" => {
@@ -414,11 +474,12 @@ fn chat_once(
     model: &str,
     api_key: &str,
     messages: &[Value],
+    tools: &Value,
 ) -> AppResult<(Value, String)> {
     let body = serde_json::json!({
         "model": model,
         "messages": messages,
-        "tools": tool_declarations(),
+        "tools": tools,
     });
     let resp = agent
         .post(&format!("{}/chat/completions", provider.base_url))
@@ -584,6 +645,7 @@ pub fn run_loop(
     ];
     // Still true only while the seeded vision images are part of history.
     let mut vision_fallback_used = images.is_empty();
+    let tools = tool_declarations(profile);
     let sources: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
     let mut final_snapshot: Option<AgentSnapshot> = None;
 
@@ -598,7 +660,7 @@ pub fn run_loop(
             let mut snap = shared.snapshot.lock().unwrap_or_else(|p| p.into_inner());
             snap.steps_executed = step;
         }
-        let (message, finish) = match chat_once(&agent, &provider, &model, &api_key, &messages) {
+        let (message, finish) = match chat_once(&agent, &provider, &model, &api_key, &messages, &tools) {
             Ok(v) => v,
             Err(first_err) => {
                 // Non-vision fallback (Electron parity): a model without
@@ -626,7 +688,7 @@ pub fn run_loop(
                                 m["content"] = serde_json::json!(text);
                             }
                         }
-                        match chat_once(&agent, &provider, &model, &api_key, &messages) {
+                        match chat_once(&agent, &provider, &model, &api_key, &messages, &tools) {
                             Ok(v) => v,
                             Err(e) => {
                                 set_status(&app, &shared, AgentStatus::Error, Some("llm_error".to_string()));

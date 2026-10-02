@@ -312,6 +312,34 @@ fn bridge_api(
             };
             Some(navigate_in_existing_tab(app, url, &respond))
         }
+        ("/api/research/status", "GET") => {
+            use tauri::Manager;
+            let Some(shared) = app.try_state::<crate::agent::SharedAgent>() else {
+                return Some(respond(serde_json::json!({ "error": "STATE_NOT_INITIALIZED" }), 500));
+            };
+            let shared = shared.inner().clone();
+            let (state, steps, answer) = {
+                let s = shared.snapshot.lock().unwrap_or_else(|p| p.into_inner());
+                (
+                    s.state.ui_state().to_string(),
+                    s.steps_executed,
+                    s.timeline
+                        .iter()
+                        .rev()
+                        .find(|e| e.kind == "final_answer")
+                        .and_then(|e| e.full_text.clone()),
+                )
+            };
+            let report = shared
+                .last_research_report
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone();
+            Some(respond(
+                serde_json::json!({ "state": state, "stepCount": steps, "answer": answer, "report": report }),
+                200,
+            ))
+        }
         _ => None,
     }
 }
