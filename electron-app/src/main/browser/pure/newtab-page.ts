@@ -494,7 +494,7 @@ ${newsCards}`
         <div class="clock__time" id="time">--:--</div>
         <div class="clock__date" id="date"></div>
       </div>
-      <form class="search-wrap" id="sform" action="pab://search" method="get">
+      <form class="search-wrap" id="sform" action="pab://search/" method="get">
         <div class="search">
           <button type="button" class="search__icon" id="sicon" aria-label="Focus search" tabindex="-1">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
@@ -762,10 +762,12 @@ ${newsBlock}
         return;
       }
       if (engine === 'darkweb') {
-        location.href = 'pab://darkweb?q=' + encodeURIComponent(v);
+        // Trailing slash required: WebView2 drops pab://host?query
+        // navigations without a path segment (Electron tolerates both).
+        location.href = 'pab://darkweb/?q=' + encodeURIComponent(v);
         return;
       }
-      location.href = 'pab://search?q=' + encodeURIComponent(v);
+      location.href = 'pab://search/?q=' + encodeURIComponent(v);
     });
 
     document.getElementById('sicon').addEventListener('click', function () {

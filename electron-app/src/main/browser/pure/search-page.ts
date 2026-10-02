@@ -432,14 +432,14 @@ export function buildSearchPageHtml(opts: SearchPageOptions): string {
       // Re-run the current query in the freshly selected mode.
       var cur = (new URLSearchParams(location.search).get('q') || '').trim();
       if (cur) {
-        location.href = 'pab://search?q=' + encodeURIComponent(cur) + '&src=' + encodeURIComponent(id);
+        location.href = 'pab://search/?q=' + encodeURIComponent(cur) + '&src=' + encodeURIComponent(id);
       }
       return;
     }
     if (id === 'darkweb') {
       var dq = (new URLSearchParams(location.search).get('q') || input.value || '').trim();
       if (!dq) { modeNoteMsg('Type a query first — Dark Web search will use it.', true); return; }
-      location.href = 'pab://darkweb?q=' + encodeURIComponent(dq);
+      location.href = 'pab://darkweb/?q=' + encodeURIComponent(dq);
       return;
     }
     if (id === 'research') {
