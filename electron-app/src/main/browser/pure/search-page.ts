@@ -376,14 +376,10 @@ export function buildSearchPageHtml(opts: SearchPageOptions): string {
 
   // ---- search mode switcher (above the chat) ------------------------------
   var bridge = window.__pabNewTab || null;
-  // Cross-runtime internal navigation (see newtab-page.ts): WebView2 serves
-  // this page on a virtual host (http://pab.search/) and drops script
-  // navigations to the pab:// scheme — navigate via the vhost form there;
-  // Electron uses the pab:// scheme directly.
-  var PAB_NAV_BASE = /^https?:\\/\\/pab\\./i.test(location.href)
-    ? location.protocol + '//pab.'
-    : 'pab://';
-  function pabNav(page, qs) { return PAB_NAV_BASE + page + '/' + qs; }
+  // TAURI 2 ONLY (per project decision 2026-10-02): WebView2 serves this
+  // page on a virtual host (http://pab.search/) and drops script navigations
+  // to the raw pab:// scheme — internal links always use the vhost form.
+  function pabNav(page, qs) { return location.protocol + '//pab.' + page + '/' + qs; }
   var MODES = [
     { id: 'web', label: 'AI + Web', source: 'web' },
     { id: 'discussions', label: 'Discussions', source: 'discussions' },

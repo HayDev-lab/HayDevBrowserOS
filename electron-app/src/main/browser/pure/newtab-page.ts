@@ -605,15 +605,17 @@ ${newsBlock}
     // (attachments + Deep Research). Feature-detected: without it the page
     // still works as a pure search entry.
     var bridge = window.__pabNewTab || null;
-    // Cross-runtime internal navigation: WebView2 (Tauri) serves these pages
-    // on virtual hosts (http://pab.newtab/) and SILENTLY DROPS script
-    // navigations to the pab:// scheme — so the page must navigate via its
-    // own vhost form there. Electron serves the pab:// scheme directly.
-    // Detected from THIS document's protocol — no UA sniffing.
-    var PAB_NAV_BASE = /^https?:\\/\\/pab\\./i.test(location.href)
-      ? location.protocol + '//pab.'
-      : 'pab://';
-    function pabNav(page, qs) { return PAB_NAV_BASE + page + '/' + qs; }
+    // TAURI 2 ONLY (per project decision 2026-10-02): WebView2 serves the
+    // internal pages on virtual hosts (http://pab.<page>/) and silently
+    // drops script navigations to the raw pab:// scheme — internal links
+    // ALWAYS use the vhost form, derived from this document's protocol.
+    function pabNav(page, qs) { return location.protocol + '//pab.' + page + '/' + qs; }
+    // Never fail silently: surface script errors on the status line so
+    // "nothing happens" is always explainable.
+    window.addEventListener('error', function (e) {
+      var el = document.getElementById('sstatus');
+      if (el) el.textContent = 'Page error: ' + (e.message || 'unknown');
+    });
     var ENGINE_KEY = 'pab.newtab.engine';
     var ENGINES = ['haydev', 'perplexity', 'darkweb'];
     var MAX_CHIPS = 4;
@@ -765,7 +767,13 @@ ${newsBlock}
     form.addEventListener('submit', function (e) {
       e.preventDefault();
       var v = input.value.trim();
-      if (!v) return;
+      // Empty query is a LOUD no-op — a silent one reads as "the button
+      // is broken" (user-reported confusion).
+      if (!v) {
+        status('Type a query first — then press Search or Enter.', true);
+        input.focus();
+        return;
+      }
       if (category && category !== 'More') v = v + ' [' + category + ']';
       // Attachments can only be consumed by the agent pipeline — route
       // there explicitly (the only honest engine for files/images).
@@ -774,9 +782,11 @@ ${newsBlock}
         return;
       }
       if (engine === 'darkweb') {
+        status('Opening Dark Web search…');
         location.href = pabNav('darkweb', '?q=' + encodeURIComponent(v));
         return;
       }
+      status(engine === 'perplexity' ? 'Searching (Perplexity engine)…' : 'Searching…');
       location.href = pabNav('search', '?q=' + encodeURIComponent(v));
     });
 
