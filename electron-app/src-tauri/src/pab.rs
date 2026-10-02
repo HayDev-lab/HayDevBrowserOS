@@ -376,14 +376,32 @@ fn start_research_run(
         return serde_json::json!({ "started": false, "error": "control state missing" });
     };
     let control = control.inner().clone();
+    // AUTO-ESCALATION (user decision 2026-10-03): clicking the HayDev chip
+    // IS the explicit authorization — a HUMAN-mode refusal here escalates
+    // to AGENT for the duration of the run and reverts automatically when
+    // it settles. Honest refusals remain: a run is already active, or TAKE
+    // CONTROL is latched mid-run and switch_to_agent() declines.
+    let mut escalated = false;
     {
         let mut cs = control.lock().unwrap_or_else(|p| p.into_inner());
         if !cs.mark_run_started() {
-            return serde_json::json!({
-                "started": false,
-                "error": "switch to AGENT mode first (the run is refused in HUMAN mode)"
-            });
+            if cs.switch_to_agent() && cs.mark_run_started() {
+                escalated = true;
+            } else {
+                return serde_json::json!({
+                    "started": false,
+                    "error": "agent already running (or waiting for human) — stop it first"
+                });
+            }
         }
+    }
+    if escalated {
+        use tauri::Emitter;
+        let _ = app.emit(
+            "control:mode:update",
+            serde_json::json!({ "mode": "AGENT", "takeover": false, "reason": "deep_research_autostart" }),
+        );
+        log::info!("[CONTROL] HUMAN -> AGENT auto-escalation for Deep Research");
     }
     let digests = crate::attachments::digests_for(app, attachment_ids);
     let images = crate::attachments::images_for(app, attachment_ids);
@@ -392,7 +410,7 @@ fn start_research_run(
     std::thread::spawn(move || {
         let profile = "DEEP_RESEARCH".to_string();
         let _ = crate::agent::run_loop(
-            handle,
+            handle.clone(),
             shared,
             &control,
             command,
@@ -400,7 +418,25 @@ fn start_research_run(
             &profile,
             images,
         );
-        control.lock().unwrap_or_else(|p| p.into_inner()).mark_run_ended();
+        {
+            let mut cs = control.lock().unwrap_or_else(|p| p.into_inner());
+            cs.mark_run_ended();
+            // Revert the auto-escalation, but only if WE still own AGENT and
+            // no new run started meanwhile (a manual HUMAN switch already
+            // landed, or the user re-ran research — leave those untouched).
+            if escalated
+                && cs.mode == crate::control::ControlMode::Agent
+                && !cs.agent_run_active
+            {
+                cs.switch_to_human();
+                use tauri::Emitter;
+                let _ = handle.emit(
+                    "control:mode:update",
+                    serde_json::json!({ "mode": "HUMAN", "takeover": false, "reason": "deep_research_finished" }),
+                );
+                log::info!("[CONTROL] AGENT -> HUMAN auto-revert after Deep Research");
+            }
+        }
     });
     serde_json::json!({ "started": true })
 }

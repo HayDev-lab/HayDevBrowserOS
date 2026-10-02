@@ -524,7 +524,7 @@ ${newsCards}`
         <p class="status" id="sstatus" role="status" aria-live="polite"></p>
       </form>
       <div class="engines" role="radiogroup" aria-label="Search engine">
-        <button type="button" class="engine" id="engine-haydev" role="radio" aria-checked="true" data-engine="haydev" title="HayDev flagship — Deep Research agent pipeline (requires AGENT mode)">
+        <button type="button" class="engine" id="engine-haydev" role="radio" aria-checked="true" data-engine="haydev" title="HayDev flagship — Deep Research agent pipeline (switches to AGENT mode automatically for the run)">
           <span class="engine__icon" aria-hidden="true">
             <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
               <path d="M12 2l7 4v6c0 4.4-3 8.4-7 10-4-1.6-7-5.6-7-10V6l7-4z"></path>
