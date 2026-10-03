@@ -97,6 +97,17 @@
   --nc-onion-dim: rgba(176, 107, 255, 0.25);
   --nc-onion-faint: rgba(176, 107, 255, 0.08);
 
+  /* ---------- COLORS: web app pins (brand accents) ----------------------- */
+  --nc-proton: #6d4aff;
+  --nc-proton-dim: rgba(109, 74, 255, 0.25);
+  --nc-proton-faint: rgba(109, 74, 255, 0.08);
+  --nc-yt: #ff0033;
+  --nc-yt-dim: rgba(255, 0, 51, 0.25);
+  --nc-yt-faint: rgba(255, 0, 51, 0.08);
+  --nc-rezka: #ffa41b;
+  --nc-rezka-dim: rgba(255, 164, 27, 0.25);
+  --nc-rezka-faint: rgba(255, 164, 27, 0.08);
+
   /* ---------- COLORS: research (cool aurora) ---------------------------- */
   --nc-research-accent: #a8c6ff;
   --nc-research-accent-dim: rgba(122, 162, 247, 0.5);

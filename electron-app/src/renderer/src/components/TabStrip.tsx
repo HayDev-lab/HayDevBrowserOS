@@ -50,8 +50,12 @@ export function TabStrip({
               <WhatsAppGlyph />
             ) : app.id === 'telegram' ? (
               <TelegramGlyph />
-            ) : app.id === 'darkweb' ? (
-              <DarkWebGlyph />
+            ) : app.id === 'proton' ? (
+              <ProtonGlyph />
+            ) : app.id === 'youtube' ? (
+              <YouTubeGlyph />
+            ) : app.id === 'hdrezka' ? (
+              <HdRezkaGlyph />
             ) : (
               <HayDevGlyph />
             )}
@@ -115,18 +119,6 @@ function HayDevGlyph() {
         d="M15.5 14h-.79l-.28-.27a6.5 6.5 0 1 0-.7.7l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0A4.5 4.5 0 1 1 14 9.5 4.49 4.49 0 0 1 9.5 14zm-.5-7h1v2h2v1h-2v2H9v-2H7V9h2z"
       />
       <path className="webapp-pin__glyph" d="M4 4h6v1.5H4zM4 7h4v1.5H4z" opacity="0.55" />
-    </svg>
-  );
-}
-
-/* Onion glyph for the Dark Web Search pin (stylized layered bulb). */
-function DarkWebGlyph() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden focusable="false">
-      <path
-        className="webapp-pin__glyph"
-        d="M12 2c-3.9 3-6.5 6.2-6.5 10a6.5 6.5 0 0 0 13 0c0-3.8-2.6-7-6.5-10zm0 18.5a3 3 0 0 1-3-3c0-1.8 1.3-3.6 3-5.5 1.7 1.9 3 3.7 3 5.5a3 3 0 0 1-3 3z"
-      />
     </svg>
   );
 }

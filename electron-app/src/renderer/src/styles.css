@@ -386,6 +386,51 @@ input {
   box-shadow: 0 0 12px var(--nc-tg-dim);
 }
 
+.webapp-pin--proton {
+  color: var(--nc-text-muted);
+}
+
+.webapp-pin--proton:hover,
+.webapp-pin--proton.webapp-pin--active {
+  color: var(--nc-proton);
+  background: var(--nc-proton-faint);
+  border-color: var(--nc-proton-dim);
+}
+
+.webapp-pin--proton.webapp-pin--active {
+  box-shadow: 0 0 12px var(--nc-proton-dim);
+}
+
+.webapp-pin--youtube {
+  color: var(--nc-text-muted);
+}
+
+.webapp-pin--youtube:hover,
+.webapp-pin--youtube.webapp-pin--active {
+  color: var(--nc-yt);
+  background: var(--nc-yt-faint);
+  border-color: var(--nc-yt-dim);
+}
+
+.webapp-pin--youtube.webapp-pin--active {
+  box-shadow: 0 0 12px var(--nc-yt-dim);
+}
+
+.webapp-pin--hdrezka {
+  color: var(--nc-text-muted);
+}
+
+.webapp-pin--hdrezka:hover,
+.webapp-pin--hdrezka.webapp-pin--active {
+  color: var(--nc-rezka);
+  background: var(--nc-rezka-faint);
+  border-color: var(--nc-rezka-dim);
+}
+
+.webapp-pin--hdrezka.webapp-pin--active {
+  box-shadow: 0 0 12px var(--nc-rezka-dim);
+}
+
 .webapp-pin:focus-visible {
   outline: none;
   box-shadow: var(--nc-focus-ring);
