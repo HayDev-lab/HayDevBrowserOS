@@ -15,11 +15,15 @@
  *     process to open an isolated Tor tab; the page itself never loads
  *     onion content.
  *
+ * `logoDataUrl` (optional) is the brand hero image as a `data:image/*`
+ * URL injected by scripts/build-internal-pages.mjs from a repo asset — a
+ * build-time constant, never user input, so direct interpolation is safe.
+ *
  * PURE — no Electron imports.
  */
 import { MATRIX_RAIN_CANVAS, buildMatrixRainScript } from '../../pure/matrix-rain';
 
-export function buildDarkWebPageHtml(): string {
+export function buildDarkWebPageHtml(logoDataUrl?: string): string {
   return `<!doctype html>
 <html>
 <head>
@@ -40,9 +44,16 @@ export function buildDarkWebPageHtml(): string {
   }
   body > *:not(#matrix-rain) { position: relative; z-index: 1; }
   .head { text-align: center; padding: 4px 0 14px; }
-  .brand { font-size: 11px; letter-spacing: 0.3em; text-transform: uppercase; color: #b06bff; opacity: 0.9; margin-bottom: 12px; }
-  .statusline { display: flex; justify-content: center; gap: 10px; align-items: center; font-size: 12px; color: #5f789c; }
-  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; border: 1px solid rgba(120,140,180,0.3); }
+  .brand-logo {
+    display: block; margin: 0 auto 12px;
+    max-height: clamp(140px, 24vh, 210px); max-width: min(86vw, 440px); height: auto;
+    border-radius: 20px; background: #000;
+    border: 1px solid rgba(176,107,255,0.45);
+    box-shadow: 0 12px 44px rgba(140,60,255,0.28), 0 0 22px rgba(176,107,255,0.18);
+  }
+  .brand { font-size: 12px; letter-spacing: 0.34em; text-transform: uppercase; color: #c98bff; font-weight: 600; margin-bottom: 12px; }
+  .statusline { display: flex; justify-content: center; gap: 10px; align-items: center; font-size: 12px; color: #a9bdd9; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; border: 1px solid rgba(150,170,210,0.45); }
   .pill .dot { width: 7px; height: 7px; border-radius: 50%; background: #6b7a94; }
   .pill.tor-ready .dot { background: #35d07f; box-shadow: 0 0 8px rgba(53,208,127,0.8); }
   .pill.tor-offline .dot { background: #ff4d6d; box-shadow: 0 0 8px rgba(255,77,109,0.6); }
@@ -52,71 +63,72 @@ export function buildDarkWebPageHtml(): string {
     flex: 1; height: 44px; padding: 0 18px;
     background: rgba(8,14,28,0.72);
     border: 1px solid rgba(90,60,140,0.55); border-radius: 999px;
-    color: #eef5ff; font-size: 14px; outline: none;
+    color: #eef5ff; font-size: 15px; outline: none;
     transition: border-color 150ms ease-out, box-shadow 150ms ease-out;
   }
   .searchbar input:focus { border-color: rgba(176,107,255,0.6); box-shadow: 0 0 22px rgba(176,107,255,0.18); }
-  .searchbar input::placeholder { color: #5f789c; }
+  .searchbar input::placeholder { color: #8aa3c7; }
   .searchbar button {
     height: 44px; padding: 0 22px; border-radius: 999px; cursor: pointer;
     border: 1px solid rgba(176,107,255,0.5); background: rgba(176,107,255,0.14);
     color: #e6d5ff; font-size: 14px;
   }
   .searchbar button:disabled { opacity: 0.45; cursor: default; }
-  .controls { width: min(720px, 92vw); margin: 10px auto 0; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; font-size: 12px; color: #8fa6c8; }
+  .controls { width: min(720px, 92vw); margin: 10px auto 0; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; font-size: 12px; color: #bccbe8; }
   .controls label { display: inline-flex; gap: 5px; align-items: center; cursor: pointer; }
   .controls select { background: rgba(8,14,28,0.8); color: #cfe0ff; border: 1px solid rgba(90,60,140,0.4); border-radius: 8px; padding: 3px 6px; font-size: 12px; }
   .providerstrip { width: min(720px, 92vw); margin: 10px auto 0; display: flex; flex-wrap: wrap; gap: 8px; font-size: 12px; min-height: 20px; }
-  .prov { padding: 3px 10px; border-radius: 999px; border: 1px solid rgba(120,140,180,0.25); color: #8fa6c8; }
-  .prov.ok { border-color: rgba(53,208,127,0.5); color: #7fe0ae; }
-  .prov.err, .prov.timeout, .prov.no_tor { border-color: rgba(255,77,109,0.5); color: #ff9fb2; }
+  .prov { padding: 3px 10px; border-radius: 999px; border: 1px solid rgba(150,170,210,0.4); color: #bccbe8; }
+  .prov.ok { border-color: rgba(53,208,127,0.5); color: #8eeebc; }
+  .prov.err, .prov.timeout, .prov.no_tor { border-color: rgba(255,77,109,0.5); color: #ffa8bb; }
   .prov.pending { border-color: rgba(255,184,77,0.5); color: #ffd28f; }
-  .statebar { width: min(720px, 92vw); margin: 12px auto 0; display: none; justify-content: space-between; align-items: center; font-size: 12px; color: #5f789c; }
+  .statebar { width: min(720px, 92vw); margin: 12px auto 0; display: none; justify-content: space-between; align-items: center; font-size: 12px; color: #a9bdd9; }
   .statebar .st { display: inline-flex; gap: 8px; align-items: center; }
   .statebar .dot { width: 7px; height: 7px; border-radius: 50%; background: #b06bff; animation: pulse 1.2s ease-in-out infinite; }
   .statebar button { background: none; border: 1px solid rgba(255,77,109,0.5); color: #ff9fb2; border-radius: 8px; padding: 3px 12px; cursor: pointer; font-size: 12px; }
   .results { flex: 1; overflow-y: auto; width: min(720px, 92vw); margin: 14px auto 0; padding-bottom: 40px; display: flex; flex-direction: column; gap: 12px; }
   .card { background: rgba(8,14,28,0.72); border: 1px solid rgba(90,60,140,0.35); border-radius: 12px; padding: 14px 18px; }
-  .card .t { font-size: 15px; color: #d9c2ff; }
-  .card .t a { color: #d9c2ff; text-decoration: none; }
-  .card .t a:hover { color: #b06bff; text-decoration: underline; }
-  .card .s { font-size: 13px; line-height: 1.55; color: #b9c8e2; margin-top: 5px; white-space: pre-wrap; word-break: break-word; }
-  .card .u { font-size: 11px; color: #6b7a94; margin-top: 6px; word-break: break-all; }
-  .card .meta { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 7px; font-size: 11px; color: #8fa6c8; align-items: center; }
-  .card .meta .r-yes { color: #7fe0ae; } .card .meta .r-no { color: #ff9fb2; } .card .meta .r-unknown { color: #8fa6c8; }
+  .card .t { font-size: 16px; font-weight: 600; color: #ecdcff; }
+  .card .t a { color: #ecdcff; text-decoration: none; }
+  .card .t a:hover { color: #c98bff; text-decoration: underline; }
+  .card .s { font-size: 13px; line-height: 1.6; color: #d5dfee; margin-top: 5px; white-space: pre-wrap; word-break: break-word; }
+  .card .u { font-size: 11px; color: #96a9c9; margin-top: 6px; word-break: break-all; }
+  .card .meta { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 7px; font-size: 11px; color: #b3c4e2; align-items: center; }
+  .card .meta .r-yes { color: #8eeebc; } .card .meta .r-no { color: #ffa8bb; } .card .meta .r-unknown { color: #b3c4e2; }
   .card .acts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 9px; }
   .card .acts button, .card .acts a {
     font-size: 11px; padding: 4px 12px; border-radius: 999px; cursor: pointer; text-decoration: none;
-    border: 1px solid rgba(120,140,180,0.35); background: none; color: #9cc3ff; display: inline-block;
+    border: 1px solid rgba(150,175,215,0.45); background: none; color: #bcd6ff; display: inline-block;
   }
-  .card .acts a:hover, .card .acts button:hover { border-color: rgba(176,107,255,0.6); color: #d9c2ff; }
-  .empty { text-align: center; color: #5f789c; font-size: 13px; padding: 30px 0; }
+  .card .acts a:hover, .card .acts button:hover { border-color: rgba(176,107,255,0.6); color: #ecdcff; }
+  .empty { text-align: center; color: #a9bdd9; font-size: 13px; padding: 30px 0; }
   .error { color: #ff9fb2; font-size: 13px; text-align: center; padding: 16px 0; }
   details.panel { width: min(720px, 92vw); margin: 8px auto 0; border: 1px solid rgba(90,60,140,0.3); border-radius: 12px; background: rgba(8,14,28,0.5); }
-  details.panel > summary { cursor: pointer; padding: 10px 16px; font-size: 12px; color: #8fa6c8; letter-spacing: 0.06em; }
-  details.panel > .inner { padding: 4px 16px 14px; display: flex; flex-direction: column; gap: 8px; font-size: 12px; color: #8fa6c8; }
+  details.panel > summary { cursor: pointer; padding: 10px 16px; font-size: 12px; color: #bccbe8; letter-spacing: 0.06em; }
+  details.panel > .inner { padding: 4px 16px 14px; display: flex; flex-direction: column; gap: 8px; font-size: 12px; color: #bccbe8; }
   .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
   .row input[type=text], .row input[type=number] {
     background: rgba(2,4,10,0.8); border: 1px solid rgba(90,60,140,0.4); color: #cfe0ff;
     border-radius: 8px; padding: 4px 8px; font-size: 12px;
   }
   .row input[type=number] { width: 90px; }
-  .row button { background: none; border: 1px solid rgba(120,140,180,0.4); color: #9cc3ff; border-radius: 8px; padding: 4px 12px; cursor: pointer; font-size: 12px; }
+  .row button { background: none; border: 1px solid rgba(150,175,215,0.5); color: #bcd6ff; border-radius: 8px; padding: 4px 12px; cursor: pointer; font-size: 12px; }
   .row button.danger { border-color: rgba(255,77,109,0.5); color: #ff9fb2; }
   .jobline, .dl-line, .hline { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; border-top: 1px solid rgba(90,60,140,0.2); padding-top: 6px; word-break: break-all; }
   .jobline .st-running { color: #ffd28f; } .jobline .st-done { color: #7fe0ae; } .jobline .st-cancelled, .jobline .st-error { color: #ff9fb2; }
   #preview-overlay { position: fixed; inset: 0; background: rgba(2,4,10,0.82); display: none; z-index: 50; align-items: center; justify-content: center; }
   #preview-box { width: min(860px, 94vw); height: 84vh; background: #060a14; border: 1px solid rgba(176,107,255,0.4); border-radius: 14px; display: flex; flex-direction: column; overflow: hidden; }
-  #preview-head { display: flex; justify-content: space-between; align-items: center; padding: 10px 16px; font-size: 13px; color: #d9c2ff; gap: 10px; }
-  #preview-head button { background: none; border: 1px solid rgba(120,140,180,0.4); color: #9cc3ff; border-radius: 8px; padding: 3px 12px; cursor: pointer; }
+  #preview-head { display: flex; justify-content: space-between; align-items: center; padding: 10px 16px; font-size: 13px; color: #ecdcff; gap: 10px; }
+  #preview-head button { background: none; border: 1px solid rgba(150,175,215,0.5); color: #bcd6ff; border-radius: 8px; padding: 3px 12px; cursor: pointer; }
   #preview-frame { flex: 1; border: 0; background: #fff; }
-  #preview-note { font-size: 11px; color: #8fa6c8; padding: 6px 16px; }
+  #preview-note { font-size: 11px; color: #bccbe8; padding: 6px 16px; }
   @keyframes pulse { 0%,100% { opacity: .3 } 50% { opacity: 1 } }
 </style>
 </head>
 <body>
   ${MATRIX_RAIN_CANVAS}
   <div class="head">
+    ${logoDataUrl ? `<img class="brand-logo" src="${logoDataUrl}" alt="HayDev Browser — DarkWebSearch logo">` : ''}
     <div class="brand">Dark Web Search · Tor</div>
     <div class="statusline">
       <span class="pill" id="tor-pill"><span class="dot"></span><span id="tor-label">Tor: checking…</span></span>
@@ -173,7 +185,7 @@ export function buildDarkWebPageHtml(): string {
       <div class="row"><label><input type="checkbox" id="set-avail"> Check onion availability through Tor after search</label></div>
       <div class="row"><label><input type="checkbox" id="set-hist"> Store search history</label> <label><input type="checkbox" id="set-idx"> Store local index</label></div>
       <div class="row"><button type="button" id="set-save">Save settings</button><span id="set-msg"></span></div>
-      <div class="row" style="color:#5f789c">JavaScript is always OFF in onion tabs. Downloads are quarantined and never executed.</div>
+      <div class="row" style="color:#a9bdd9">JavaScript is always OFF in onion tabs. Downloads are quarantined and never executed.</div>
     </div>
   </details>
 

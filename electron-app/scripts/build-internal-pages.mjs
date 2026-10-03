@@ -69,6 +69,12 @@ const deferredJs = `<script>
 
 writeFileSync(join(tmpDir, 'deferred-topsites.js'), deferredJs, 'utf8');
 
+// Brand logo for pab://darkweb — embedded as a data: URL so the page stays
+// a single self-contained HTML file (the Rust handler serves it verbatim).
+const darkwebLogo =
+  'data:image/jpeg;base64,' +
+  readFileSync(join(appRoot, 'resources', 'brand', 'darkwebsearch.jpg')).toString('base64');
+
 const entryLines = [
   "import { writeFileSync, readFileSync } from 'node:fs';",
   `import { buildNewTabHtml } from '${fwd(join(appRoot, 'src/main/browser/pure/newtab-page.ts'))}';`,
@@ -84,7 +90,7 @@ const entryLines = [
   `  modelKey: '__PAB_PERPLEXICA_MODEL__',`,
   `});`,
   `writeFileSync(outDir + '/search.html', search);`,
-  `writeFileSync(outDir + '/darkweb.html', buildDarkWebPageHtml());`,
+  `writeFileSync(outDir + '/darkweb.html', buildDarkWebPageHtml('${darkwebLogo}'));`,
   `console.log('internal pages written');`,
 ];
 writeFileSync(join(tmpDir, 'entry.ts'), entryLines.join('\n'), 'utf8');
@@ -107,7 +113,7 @@ if (!searchHtml.includes('__PAB_PERPLEXICA_URL__') || !searchHtml.includes('__PA
   throw new Error('search.html is missing the runtime placeholders');
 }
 const darkwebHtml = readFileSync(join(outDir, 'darkweb.html'), 'utf8');
-if (!darkwebHtml.includes('<!doctype html>') || darkwebHtml.length < 5000 || !darkwebHtml.includes('/api/')) {
+if (!darkwebHtml.includes('<!doctype html>') || darkwebHtml.length < 5000 || !darkwebHtml.includes('/api/') || !darkwebHtml.includes('data:image/jpeg;base64,')) {
   throw new Error('darkweb.html failed verification');
 }
 rmSync(join(tmpDir), { recursive: true, force: true });
