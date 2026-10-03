@@ -123,6 +123,42 @@ function HayDevGlyph() {
   );
 }
 
+/* Proton Mail pin — envelope mark. */
+function ProtonGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden focusable="false">
+      <path
+        className="webapp-pin__glyph"
+        d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4-8 5-8-5V6l8 5 8-5v2z"
+      />
+    </svg>
+  );
+}
+
+/* YouTube pin (Simple Icons play-button mark, viewBox 0 0 24 24). */
+function YouTubeGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden focusable="false">
+      <path
+        className="webapp-pin__glyph"
+        d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"
+      />
+    </svg>
+  );
+}
+
+/* HDRezka pin — film clapper mark (Material movie path). */
+function HdRezkaGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden focusable="false">
+      <path
+        className="webapp-pin__glyph"
+        d="M18 4l2 4h-3l-2-4h-2l2 4h-3l-2-4H8l2 4H7L5 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V4h-4z"
+      />
+    </svg>
+  );
+}
+
 /* Small inline onion mark shown in place of the favicon on Tor tabs. */
 function OnionTabGlyph() {
   return (
