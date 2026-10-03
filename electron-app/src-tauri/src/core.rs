@@ -228,10 +228,12 @@ fn create_tab_webview(
     // capability (migration contract §9).
     builder = builder.initialization_script(crate::attachments::BRIDGE_INIT_SCRIPT);
 
-    // Profile mapping: PRIVATE → incognito; DEFAULT/AGENT → dedicated
-    // persistent WebView2 user-data folder; DARKWEB → its OWN environment
-    // (isolated user-data folder) routed through the Tor SOCKS proxy so
-    // onion traffic (and ONLY onion tab traffic) enters the Tor network.
+    // Profile mapping: PRIVATE → ephemeral InPrivate webview in its OWN
+    // user-data folder (own WebView2 environment so proxy/privacy args
+    // cannot clash with the chrome/default environment); DEFAULT/AGENT →
+    // dedicated persistent user-data folder; DARKWEB → its OWN environment
+    // routed through the Tor SOCKS proxy so onion traffic (and ONLY onion
+    // tab traffic) enters the Tor network.
     let profile = if incognito {
         crate::profiles::ProfileKind::Private
     } else if darkweb {
@@ -239,10 +241,57 @@ fn create_tab_webview(
     } else {
         crate::profiles::ProfileKind::Default
     };
+    let privacy_cfg = crate::privacy::global().clone();
+    let tor_endpoint = crate::darkweb::tor_endpoint(app, &crate::darkweb::config_of(app))
+        .map(|(host, port)| crate::privacy::SocksEndpoint { host, port });
+    let manager = crate::profiles::BrowserProfileManager::new(&crate::lib_app_data_dir());
+
+    // Anonymity hardening (privacy.rs): WebRTC must never bypass proxies
+    // (real-IP leak), no component updates / domain-reliability pings /
+    // crash-reporter phoning home. SmartScreen stays off (wry default).
+    const PRIVACY_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --force-webrtc-ip-handling-policy=disable_non_proxied_udp --disable-component-update --disable-domain-reliability --disable-breakpad";
+
     match profile {
-        crate::profiles::ProfileKind::Private => builder = builder.incognito(true),
+        crate::profiles::ProfileKind::Private => {
+            manager
+                .ensure(profile)
+                .map_err(|e| AppError::new("PROFILE_DIR_FAILED", e.to_string()))?;
+            if let Some(dir) = manager.data_dir(profile) {
+                builder = builder.data_directory(dir);
+            }
+            // InPrivate keeps browsing data off disk; the folder itself is
+            // wiped at every startup (lib.rs wipe_ephemeral_profiles).
+            builder = builder.incognito(true);
+            builder = builder.additional_browser_args(PRIVACY_ARGS);
+            // Egress (Tor-when-up by default, user SOCKS5, or direct).
+            match crate::privacy::resolve_egress(&privacy_cfg.private_egress, tor_endpoint.clone())
+            {
+                Ok(Some(ep)) => {
+                    let proxy = url::Url::parse(&format!("socks5://{}:{}", ep.host, ep.port))
+                        .map_err(|e| {
+                            AppError::new("INVALID_URL", format!("privacy socks url: {e}"))
+                        })?;
+                    builder = builder.proxy_url(proxy);
+                    log::info!(
+                        "[PRIVACY] private tab egress: socks5://{}:{}",
+                        ep.host,
+                        ep.port
+                    );
+                }
+                Ok(None) => log::info!("[PRIVACY] private tab egress: direct"),
+                Err(msg) => return Err(AppError::new("TOR_UNAVAILABLE", msg)),
+            }
+            // Fingerprint-noise layer: stable for the profile lifetime.
+            let seed = u64::from_le_bytes(
+                uuid::Uuid::new_v4().into_bytes()[..8].try_into().unwrap(),
+            );
+            builder = builder.initialization_script(crate::privacy_init::script(
+                seed,
+                privacy_cfg.private_timezone.as_deref(),
+                privacy_cfg.private_locale.as_deref(),
+            ));
+        }
         crate::profiles::ProfileKind::DarkWeb => {
-            let manager = crate::profiles::BrowserProfileManager::new(&crate::lib_app_data_dir());
             manager
                 .ensure(profile)
                 .map_err(|e| AppError::new("PROFILE_DIR_FAILED", e.to_string()))?;
@@ -251,31 +300,49 @@ fn create_tab_webview(
             }
             // FAIL CLOSED: no Tor endpoint → no darkweb tab (never leak
             // onion traffic outside Tor).
-            let socks = crate::darkweb::tor_endpoint(app, &crate::darkweb::config_of(app))
-                .ok_or_else(|| {
-                    AppError::new(
-                        "TOR_UNAVAILABLE",
-                        "the Tor gateway is not running — open pab://darkweb and start it first",
-                    )
-                })?;
-            let proxy = url::Url::parse(&format!("socks5://{}:{}", socks.0, socks.1))
-                .map_err(|e| AppError::new("INVALID_URL", format!("tor socks url: {e}")))?;
-            builder = builder.proxy_url(proxy);
+            let socks = tor_endpoint.ok_or_else(|| {
+                AppError::new(
+                    "TOR_UNAVAILABLE",
+                    "the Tor gateway is not running — open pab://darkweb and start it first",
+                )
+            })?;
+            // Explicit args INCLUDING the proxy: wry only appends
+            // --proxy-server when additional_browser_args is unset, and the
+            // privacy flags must live in the same environment definition.
+            builder = builder.additional_browser_args(&format!(
+                "{PRIVACY_ARGS} --proxy-server=socks5://{}:{}",
+                socks.host, socks.port
+            ));
         }
         kind => {
-            let manager = crate::profiles::BrowserProfileManager::new(&crate::lib_app_data_dir());
             manager
                 .ensure(kind)
                 .map_err(|e| AppError::new("PROFILE_DIR_FAILED", e.to_string()))?;
             if let Some(dir) = manager.data_dir(kind) {
                 builder = builder.data_directory(dir);
             }
-            // Dedicated browser process (own UDF) → give it the automation /
-            // debug port. Preserve wry's default hardening args.
-            builder = builder.additional_browser_args(&format!(
-                "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --remote-debugging-port={}",
+            // Dedicated browser process (own UDF) → keep the automation /
+            // debug port + the privacy hardening flags. AGENT tabs honor a
+            // custom egress from privacy.json (strict Tor unreachable →
+            // logged and ignored, the agent identity stays honest/direct).
+            let mut args = format!(
+                "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --remote-debugging-port={} --disable-component-update --disable-domain-reliability --disable-breakpad",
                 tab_debug_port()
-            ));
+            );
+            if kind == crate::profiles::ProfileKind::Agent {
+                match crate::privacy::resolve_egress(&privacy_cfg.agent_egress, tor_endpoint.clone())
+                {
+                    Ok(Some(ep)) => {
+                        args.push_str(&format!(
+                            " --proxy-server=socks5://{}:{}",
+                            ep.host, ep.port
+                        ));
+                    }
+                    Ok(None) => {}
+                    Err(msg) => log::warn!("[PRIVACY] agent egress unavailable: {msg}"),
+                }
+            }
+            builder = builder.additional_browser_args(&args);
         }
     }
 

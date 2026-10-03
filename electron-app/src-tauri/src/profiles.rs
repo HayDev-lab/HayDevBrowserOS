@@ -7,8 +7,10 @@
 //! - AGENT   — persistent, dedicated to agent automation. Reused across
 //!   tasks so login/trusted-device state survives (anti-bot principle:
 //!   never a fresh browser every task).
-//! - PRIVATE — ephemeral: created with `incognito(true)`, never touches
-//!   disk, never session-restored.
+//! - PRIVATE — ephemeral: `incognito(true)` (InPrivate: browsing data is
+//!   never written) in its OWN user-data folder. The folder exists only to
+//!   host an ISOLATED WebView2 environment (own proxy / privacy browser
+//!   args — see privacy.rs) and is WIPED at every startup.
 //!
 //! The StableIdentityPolicy (Phase E) is intentionally a NO-OP rotation-wise:
 //! one profile = one stable identity. UA/locale/timezone/GPU stay whatever
@@ -53,12 +55,11 @@ impl BrowserProfileManager {
         }
     }
 
-    /// The WebView2 `data_directory` for a profile. `None` for PRIVATE —
-    /// private tabs are created with `incognito(true)` instead.
+    /// The WebView2 `data_directory` for a profile. Every profile — PRIVATE
+    /// included — gets its own folder: PRIVATE needs environment isolation
+    /// (own proxy/privacy args); InPrivate mode keeps the browsing data
+    /// itself off disk and startup wipes complete the ephemeral guarantee.
     pub fn data_dir(&self, kind: ProfileKind) -> Option<PathBuf> {
-        if !kind.is_persistent() {
-            return None;
-        }
         Some(self.base.join(kind.dir_name()))
     }
 
@@ -73,9 +74,7 @@ impl BrowserProfileManager {
     /// Wipe a profile's persisted state. Caller must guarantee no live
     /// webview uses it (checked at the command layer).
     pub fn clear(&self, kind: ProfileKind) -> std::io::Result<bool> {
-        let Some(dir) = self.data_dir(kind) else {
-            return Ok(false); // PRIVATE keeps nothing on disk by construction
-        };
+        let dir = self.data_dir(kind).expect("every profile has a data dir");
         if dir.exists() {
             std::fs::remove_dir_all(&dir)?;
             std::fs::create_dir_all(&dir)?;
@@ -101,7 +100,12 @@ mod tests {
         assert!(ProfileKind::Default.is_persistent());
         assert!(ProfileKind::Agent.is_persistent());
         assert!(!ProfileKind::Private.is_persistent());
-        assert!(m.data_dir(ProfileKind::Private).is_none());
+        // PRIVATE still gets a data dir — for environment isolation only;
+        // persistence policy (is_persistent=false + startup wipe) stays.
+        assert!(m
+            .data_dir(ProfileKind::Private)
+            .unwrap()
+            .ends_with("profiles/private"));
         assert!(m
             .data_dir(ProfileKind::Default)
             .unwrap()
@@ -122,7 +126,8 @@ mod tests {
         assert!(m.clear(ProfileKind::Default).unwrap());
         assert!(!marker.exists());
         assert!(m.data_dir(ProfileKind::Default).unwrap().exists());
-        assert!(!m.clear(ProfileKind::Private).unwrap());
+        m.ensure(ProfileKind::Private).unwrap();
+        assert!(m.clear(ProfileKind::Private).unwrap());
         std::fs::remove_dir_all(&base).ok();
     }
 }

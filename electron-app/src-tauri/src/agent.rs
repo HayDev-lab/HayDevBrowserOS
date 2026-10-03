@@ -387,25 +387,47 @@ fn execute_tool(
             if !(url.starts_with("http://") || url.starts_with("https://")) {
                 return Err("WEB_FETCH_HTTP_ONLY".into());
             }
-            let fetcher = ureq::AgentBuilder::new()
-                .timeout(Duration::from_secs(20))
-                .build();
-            let resp = fetcher
-                .get(&url)
-                .set(
-                    "User-Agent",
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+            // Egress (privacy.rs): opt-in Tor routing for the INVISIBLE
+            // fetch — researching sensitive topics must not leak the
+            // user's IP through a direct ureq connection.
+            let html = if crate::privacy::global().agent_fetch_via_tor {
+                let ep = crate::darkweb::tor_endpoint(app, &crate::darkweb::config_of(app))
+                    .ok_or(
+                        "TOR_UNAVAILABLE: agent_fetch_via_tor is on but the Tor gateway is down",
+                    )?;
+                let resp = crate::socks_http::get_via_socks5(
+                    &ep.0,
+                    ep.1,
+                    &url,
+                    20_000,
+                    2 * 1024 * 1024,
                 )
-                .set("Accept", "text/html,application/xhtml+xml,*/*;q=0.8")
-                .set("Accept-Language", "en-US,en;q=0.9")
-                .call()
-                .map_err(|e| format!("FETCH_FAILED: {e}"))?;
-            let mut reader = resp.into_reader().take(2 * 1024 * 1024);
-            let mut bytes = Vec::new();
-            reader
-                .read_to_end(&mut bytes)
-                .map_err(|e| format!("READ_FAILED: {e}"))?;
-            let html = String::from_utf8_lossy(&bytes).to_string();
+                .map_err(|e| format!("{}: {:?}", e.code(), e))?;
+                if resp.status != 200 {
+                    return Err(format!("FETCH_FAILED: HTTP {}", resp.status));
+                }
+                resp.text
+            } else {
+                let fetcher = ureq::AgentBuilder::new()
+                    .timeout(Duration::from_secs(20))
+                    .build();
+                let resp = fetcher
+                    .get(&url)
+                    .set(
+                        "User-Agent",
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+                    )
+                    .set("Accept", "text/html,application/xhtml+xml,*/*;q=0.8")
+                    .set("Accept-Language", "en-US,en;q=0.9")
+                    .call()
+                    .map_err(|e| format!("FETCH_FAILED: {e}"))?;
+                let mut reader = resp.into_reader().take(2 * 1024 * 1024);
+                let mut bytes = Vec::new();
+                reader
+                    .read_to_end(&mut bytes)
+                    .map_err(|e| format!("READ_FAILED: {e}"))?;
+                String::from_utf8_lossy(&bytes).to_string()
+            };
             let title =
                 crate::darkweb::extract_title(&html).unwrap_or_else(|| url.clone());
             let text = crate::crawl::extract_text(&html, 60_000);

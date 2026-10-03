@@ -37,6 +37,8 @@ pub mod mcp;
 pub mod memory;
 pub mod navstack;
 pub mod pab;
+pub mod privacy;
+pub mod privacy_init;
 pub mod profiles;
 pub mod registry;
 pub mod runtime_manager;
@@ -198,7 +200,7 @@ pub fn run() {
             // Dark-web environment privacy (parity with Electron's
             // memory:darkweb- partitions): the isolated Tor profile keeps
             // NOTHING across launches.
-            wipe_darkweb_profile();
+            wipe_ephemeral_profiles();
 
             // Create the main window + chrome webview programmatically so the
             // CHROME environment also gets an explicit debug port via
@@ -222,7 +224,9 @@ pub fn run() {
                 // accepts scriptable loopback automation (wry defaults);
                 // without it the chrome port's websocket rejects every
                 // Origin — keep BOTH automation ports symmetric.
-                "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --remote-debugging-port={chrome_port} --remote-allow-origins=*"
+                // Hardening tail: no component updates / domain-reliability
+                // pings / crash-reporter phoning home (privacy.rs).
+                "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --remote-debugging-port={chrome_port} --remote-allow-origins=* --disable-component-update --disable-domain-reliability --disable-breakpad"
             ));
             window.add_child(
                 chrome_webview,
@@ -368,14 +372,21 @@ pub fn darkweb_data_dir() -> std::path::PathBuf {
 /// Wipe the isolated Tor webview profile (privacy parity with Electron's
 /// in-memory darkweb partitions — nothing survives a restart). Runs BEFORE
 /// session restore, so no live darkweb tab can exist yet.
-fn wipe_darkweb_profile() {
+fn wipe_ephemeral_profiles() {
     let manager = crate::profiles::BrowserProfileManager::new(&lib_app_data_dir());
-    if let Some(dir) = manager.data_dir(crate::profiles::ProfileKind::DarkWeb) {
-        if dir.exists() {
-            if let Err(err) = std::fs::remove_dir_all(&dir) {
-                log::warn!("[DARKWEB] profile wipe failed: {err}");
-            } else {
-                log::info!("[DARKWEB] isolated Tor profile wiped for a fresh session");
+    for kind in [
+        crate::profiles::ProfileKind::DarkWeb,
+        // PRIVATE hosts an isolated InPrivate environment; wipe guarantees
+        // nothing from a previous session survives (privacy.rs contract).
+        crate::profiles::ProfileKind::Private,
+    ] {
+        if let Some(dir) = manager.data_dir(kind) {
+            if dir.exists() {
+                if let Err(err) = std::fs::remove_dir_all(&dir) {
+                    log::warn!("[PRIVACY] {:?} profile wipe failed: {err}", kind);
+                } else {
+                    log::info!("[PRIVACY] {:?} profile wiped for a fresh session", kind);
+                }
             }
         }
     }
