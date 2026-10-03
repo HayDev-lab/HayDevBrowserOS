@@ -69,11 +69,12 @@ const deferredJs = `<script>
 
 writeFileSync(join(tmpDir, 'deferred-topsites.js'), deferredJs, 'utf8');
 
-// Brand logo for pab://darkweb — embedded as a data: URL so the page stays
-// a single self-contained HTML file (the Rust handler serves it verbatim).
-const darkwebLogo =
-  'data:image/jpeg;base64,' +
-  readFileSync(join(appRoot, 'resources', 'brand', 'darkwebsearch.jpg')).toString('base64');
+// Brand logos for pab://darkweb and pab://search — embedded as data: URLs so
+// the pages stay single self-contained HTML files (served verbatim by Rust).
+const brandLogo = (file) =>
+  'data:image/webp;base64,' + readFileSync(join(appRoot, 'resources', 'brand', file)).toString('base64');
+const darkwebLogo = brandLogo('darkwebsearch.webp');
+const haydevLogo = brandLogo('haydevsearch.webp');
 
 const entryLines = [
   "import { writeFileSync, readFileSync } from 'node:fs';",
@@ -88,6 +89,7 @@ const entryLines = [
   `const search = buildSearchPageHtml({`,
   `  perplexicaURL: '__PAB_PERPLEXICA_URL__',`,
   `  modelKey: '__PAB_PERPLEXICA_MODEL__',`,
+  `  logoDataUrl: '${haydevLogo}',`,
   `});`,
   `writeFileSync(outDir + '/search.html', search);`,
   `writeFileSync(outDir + '/darkweb.html', buildDarkWebPageHtml('${darkwebLogo}'));`,
@@ -109,11 +111,11 @@ if (!newtabHtml.includes('<!doctype html>') || newtabHtml.length < 10000 || !new
   throw new Error('newtab.html failed verification');
 }
 const searchHtml = readFileSync(join(outDir, 'search.html'), 'utf8');
-if (!searchHtml.includes('__PAB_PERPLEXICA_URL__') || !searchHtml.includes('__PAB_PERPLEXICA_MODEL__')) {
+if (!searchHtml.includes('__PAB_PERPLEXICA_URL__') || !searchHtml.includes('__PAB_PERPLEXICA_MODEL__') || !searchHtml.includes('data:image/webp;base64,')) {
   throw new Error('search.html is missing the runtime placeholders');
 }
 const darkwebHtml = readFileSync(join(outDir, 'darkweb.html'), 'utf8');
-if (!darkwebHtml.includes('<!doctype html>') || darkwebHtml.length < 5000 || !darkwebHtml.includes('/api/') || !darkwebHtml.includes('data:image/jpeg;base64,')) {
+if (!darkwebHtml.includes('<!doctype html>') || darkwebHtml.length < 5000 || !darkwebHtml.includes('/api/') || !darkwebHtml.includes('data:image/webp;base64,')) {
   throw new Error('darkweb.html failed verification');
 }
 rmSync(join(tmpDir), { recursive: true, force: true });

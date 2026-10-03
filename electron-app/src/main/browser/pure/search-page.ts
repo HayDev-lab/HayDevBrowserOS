@@ -25,6 +25,9 @@ export interface SearchPageOptions {
   /** Bounded network budgets for the page's own fetches (spec §5). */
   providersTimeoutMs?: number;
   searchTimeoutMs?: number;
+  /** Brand hero image as a `data:image/*` URL injected by the build script
+   * from a repo asset — a build-time constant, never user input. */
+  logoDataUrl?: string;
 }
 
 /** Central page-side bounds — no magic numbers in the script (spec §5/§37). */
@@ -60,6 +63,11 @@ export function buildSearchPageHtml(opts: SearchPageOptions): string {
   }
   body > *:not(#matrix-rain) { position: relative; z-index: 1; }
   .head { text-align: center; padding: 8px 0 20px; }
+  .brand-logo {
+    display: block; margin: 0 auto 10px;
+    max-height: clamp(130px, 22vh, 200px); max-width: min(86vw, 420px); height: auto;
+    filter: drop-shadow(0 10px 30px rgba(56,130,246,0.35)) drop-shadow(0 0 18px rgba(0,240,212,0.18));
+  }
   .brand {
     font-size: 11px; letter-spacing: 0.3em; text-transform: uppercase;
     color: #00f0d4; opacity: 0.85; margin-bottom: 14px;
@@ -162,6 +170,7 @@ export function buildSearchPageHtml(opts: SearchPageOptions): string {
 <body>
   ${MATRIX_RAIN_CANVAS}
   <div class="head">
+    ${opts.logoDataUrl ? `<img class="brand-logo" src="${opts.logoDataUrl}" alt="HayDev Browser — Search logo">` : ''}
     <div class="brand">HayDev Search</div>
     <form class="search" id="form">
       <input id="input" placeholder="Спроси что угодно — поиск с ИИ-ответом…" autocomplete="off" spellcheck="false" aria-label="HayDev Search query">

@@ -47,9 +47,7 @@ export function buildDarkWebPageHtml(logoDataUrl?: string): string {
   .brand-logo {
     display: block; margin: 0 auto 12px;
     max-height: clamp(140px, 24vh, 210px); max-width: min(86vw, 440px); height: auto;
-    border-radius: 20px; background: #000;
-    border: 1px solid rgba(176,107,255,0.45);
-    box-shadow: 0 12px 44px rgba(140,60,255,0.28), 0 0 22px rgba(176,107,255,0.18);
+    filter: drop-shadow(0 10px 30px rgba(140,60,255,0.35)) drop-shadow(0 0 18px rgba(176,107,255,0.22));
   }
   .brand { font-size: 12px; letter-spacing: 0.34em; text-transform: uppercase; color: #c98bff; font-weight: 600; margin-bottom: 12px; }
   .statusline { display: flex; justify-content: center; gap: 10px; align-items: center; font-size: 12px; color: #a9bdd9; }
