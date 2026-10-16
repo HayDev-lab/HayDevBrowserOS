@@ -1,3 +1,4 @@
+import { nativeErrorCode } from '@shared/native-errors';
 import { platformApi } from '../platform';
 /**
  * Browser UI store — client-side state mirror of the main process state.
@@ -41,7 +42,7 @@ function useAsync<T>(loader: () => Promise<T>, deps: unknown[]): [T | null, stri
         if (!cancelled) setValue(v);
       })
       .catch((e) => {
-        if (!cancelled) setError(String(e));
+        if (!cancelled) setError(nativeErrorCode(e));
       });
     return () => {
       cancelled = true;
@@ -61,7 +62,7 @@ export function useBrowserUi(): BrowserUiState {
     try {
       setTabs(await platformApi.browser.listTabs());
     } catch (e) {
-      setError(String(e));
+      setError(nativeErrorCode(e));
     }
   }, []);
 
@@ -69,7 +70,7 @@ export function useBrowserUi(): BrowserUiState {
     try {
       setHistory(await platformApi.browser.queryHistory({ limit: 200 }));
     } catch (e) {
-      setError(String(e));
+      setError(nativeErrorCode(e));
     }
   }, []);
 
@@ -77,7 +78,7 @@ export function useBrowserUi(): BrowserUiState {
     try {
       setBookmarks(await platformApi.browser.listBookmarks());
     } catch (e) {
-      setError(String(e));
+      setError(nativeErrorCode(e));
     }
   }, []);
 
@@ -85,7 +86,7 @@ export function useBrowserUi(): BrowserUiState {
     try {
       setDownloads(await platformApi.browser.listDownloads());
     } catch (e) {
-      setError(String(e));
+      setError(nativeErrorCode(e));
     }
   }, []);
 

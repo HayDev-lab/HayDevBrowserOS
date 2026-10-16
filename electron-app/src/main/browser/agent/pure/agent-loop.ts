@@ -742,16 +742,17 @@ async function executeVaultTool(
         };
       }
       case 'vault.fill': {
-        const tabId = String(args.tabId ?? '');
+        // PROMPT 03: fill from a concrete RECORD ID — the host re-verifies
+        // the live tab URL against the record domain before writing.
         const result = await deps.vault.fill({
-          tabId,
-          domain: String(args.domain ?? ''),
+          tabId: args.tabId === undefined || args.tabId === null ? undefined : String(args.tabId),
+          id: String(args.id ?? ''),
         });
         return {
           tool: call.tool,
           success: result.success,
           observation: result.success
-            ? `filled credentials for ${result.matchedDomain ?? args.domain} (user:${result.usernameFilled ? '✓' : '✗'}, pass:${result.passwordFilled ? '✓' : '✗'})`
+            ? `filled credentials for ${result.matchedDomain ?? 'record'} (user:${result.usernameFilled ? '✓' : '✗'}, pass:${result.passwordFilled ? '✓' : '✗'})`
             : `fill failed: ${result.error ?? 'unknown'}`,
           data: result,
         };

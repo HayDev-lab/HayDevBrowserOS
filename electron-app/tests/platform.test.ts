@@ -21,7 +21,6 @@ describe('platform runtime detection', () => {
 
   afterEach(() => {
     vi.resetModules();
-    // @ts-expect-error test fixture restores the global
     globalThis.window = originalWindow;
     delete (globalThis as Record<string, unknown>).__TAURI_INTERNALS__;
   });
@@ -64,7 +63,7 @@ describe('platform runtime detection', () => {
   it('returns undefined for surfaces the bridge does not expose', async () => {
     freshWindowFixture({ api: {} });
     const { electronApi } = await import('../src/renderer/src/platform/electron');
-    expect((electronApi as Record<string, unknown>).nonexistent).toBeUndefined();
+    expect((electronApi as unknown as Record<string, unknown>).nonexistent).toBeUndefined();
   });
 });
 

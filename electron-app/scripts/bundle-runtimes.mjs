@@ -1,268 +1,106 @@
-#!/usr/bin/env node
-/**
- * bundle-runtimes.mjs — build-time bundler for HayDevBrowser's internal
- * runtimes (spec §18/§79/§80/§81). Runtime code NEVER downloads or builds:
- * this script runs ONCE at build/packaging time and produces:
- *
- *   electron-app/resources/runtimes/
- *     tor/tor.exe                 ← Tor Expert Bundle (official dist)
- *     searxng/python/…            ← portable embedded Python 3.12
- *     searxng/app/…               ← SearXNG + waitress (pip-installed)
- *     searxng/searxng-runner.py   ← loopback WSGI runner (no uwsgi)
- *     perplexica/…                ← Next standalone build (optional; see below)
- *
- * Usage: node scripts/bundle-runtimes.mjs [--tor] [--searxng] [--perplexica]
- * Env overrides: TOR_EXPERT_URL, PYTHON_EMBED_URL, PERPLEXICA_DIR.
- * Everything is optional: the app degrades honestly when a runtime is
- * absent (SearXNG → DEGRADED/REMOTE, Tor → NOT_INSTALLED states).
- */
+// Pinned Windows runtime bundle. Fail on missing inputs or checksum mismatches.
 import { execFileSync } from 'node:child_process';
-import { createWriteStream, existsSync, mkdirSync, writeFileSync, readdirSync, rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, cpSync, statSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { pipeline } from 'node:stream/promises';
-import { Readable } from 'node:stream';
-
-const APP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const OUT = path.join(APP_ROOT, 'resources', 'runtimes');
-
-const TOR_URL = process.env.TOR_EXPERT_URL
-  ?? 'https://dist.torproject.org/torbrowser/15.0.23/tor-expert-bundle-windows-x86_64-15.0.23.tar.gz';
-const PY_URL = process.env.PYTHON_EMBED_URL
-  ?? 'https://www.python.org/ftp/python/3.12.10/python-3.12.10-embed-amd64.zip';
-const PERPLEXICA_DIR = process.env.PERPLEXICA_DIR ?? 'D:\\Projects\\Perplexica';
-
-const flags = new Set(process.argv.slice(2));
-const want = (name, def) => flags.has(`--${name}`) || (flags.size === 0 && def);
-
-async function download(url, destFile) {
-  console.log(`↓ ${url}`);
-  const resp = await fetch(url, { redirect: 'follow' });
-  if (!resp.ok) throw new Error(`download failed: ${resp.status} ${url}`);
-  await pipeline(Readable.fromWeb(resp.body), createWriteStream(destFile));
+import { RUNNER, PWD_SHIM } from './runtime-runner-templates.mjs';
+const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
+const lock=JSON.parse(readFileSync(path.join(root,'resources/runtime-lock.json')));
+const cache=path.join(root,'.cache/runtime-archives'),out=path.join(root,'resources/packaged-runtimes');
+mkdirSync(cache,{recursive:true});mkdirSync(out,{recursive:true});
+const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+const quote=s=>`'${s.replaceAll("'","''")}'`;
+async function archive(key){
+  const spec=lock.archives[key],file=path.join(cache,spec.filename);
+  if(!existsSync(file)){const r=await fetch(spec.url,{signal:AbortSignal.timeout(60000)});if(!r.ok)throw Error(`${key}: HTTP ${r.status}`);writeFileSync(file,Buffer.from(await r.arrayBuffer()));}
+  if(sha(readFileSync(file))!==spec.sha256)throw Error(`${key}: checksum mismatch`);
+  return file;
 }
-
-/** Untar a .tar.gz into dest (uses bsdtar shipped with Windows). */
-function untar(archive, dest) {
-  mkdirSync(dest, { recursive: true });
-  execFileSync('tar', ['-xzf', archive, '-C', dest]);
-}
-
-function unzip(archive, dest) {
-  mkdirSync(dest, { recursive: true });
-  execFileSync('powershell', ['-NoProfile', '-Command',
-    `Expand-Archive -LiteralPath '${archive}' -DestinationPath '${dest}' -Force`]);
-}
-
-function runGit(dir, args) {
-  execFileSync('git', ['-C', dir, ...args], { stdio: 'inherit' });
-}
-
-function robocopySafe(src, dest) {
-  // robocopy exit codes 1-7 are SUCCESS variants (copied/extra files) —
-  // only >=8 is failure. execFileSync throws on any non-zero, so wrap.
-  try {
-    execFileSync('robocopy', [src, dest, '/E', '/NFL', '/NDL', '/NJH', '/NJS'], { shell: true, stdio: 'ignore' });
-  } catch (err) {
-    const code = err && err.status;
-    if (!(code >= 1 && code <= 7)) throw err;
-  }
-}
-
-// ---------------------------------------------------------------------------
-async function bundleTor() {
-  const dest = path.join(OUT, 'tor');
-  if (existsSync(path.join(dest, 'tor.exe'))) {
-    console.log('✓ tor already bundled'); return;
-  }
-  const tmp = path.join(OUT, '.tmp');
-  mkdirSync(tmp, { recursive: true });
-  const archive = path.join(tmp, 'tor-expert.tar.gz');
-  await download(TOR_URL, archive);
-  untar(archive, tmp);
-  // Archive layout: tor/tor.exe (+ libcrypto/libssl/… dlls, geoip*).
-  const torDir = existsSync(path.join(tmp, 'tor')) ? path.join(tmp, 'tor') : tmp;
-  mkdirSync(dest, { recursive: true });
-  for (const f of readdirSync(torDir)) {
-    execFileSync('robocopy', [path.join(torDir, f), dest, '/E', '/NFL', '/NDL', '/NJH', '/NJS'],
-      { shell: true, stdio: 'ignore' });
-  }
-  if (!existsSync(path.join(dest, 'tor.exe'))) {
-    // robocopy quirk fallback: copy the whole dir content once more.
-    execFileSync('cmd', ['/c', `xcopy /E /I /Y "${torDir}\\*" "${dest}\\"`], { stdio: 'ignore' });
-  }
-  rmSync(tmp, { recursive: true, force: true });
-  if (!existsSync(path.join(dest, 'tor.exe'))) throw new Error('tor.exe missing after extraction');
-  console.log('✓ tor bundled →', dest);
-}
-
-// ---------------------------------------------------------------------------
-const RUNNER = `"""
-HayDevBrowser SearXNG runner — loopback WSGI serving (no uwsgi, Windows-safe).
-Settings come from SEARXNG_SETTINGS_PATH (generated by the app, spec §37).
-"""
-import os
-import sys
-
-settings = os.environ.get("SEARXNG_SETTINGS_PATH")
-if settings:
-    os.environ["SEARXNG_SETTINGS_PATH"] = settings
-
-here = os.path.dirname(os.path.abspath(__file__))
-# Embedded python (_pth) ignores PYTHONPATH — add the app dir explicitly.
-sys.path.insert(0, os.path.join(here, 'app'))
-sys.path.insert(0, here)
-
-from searx.webapp import app  # noqa: E402
-from waitress import serve     # noqa: E402
-
-port = int(os.environ.get("SEARXNG_PORT", "8888"))
-serve(app, host="127.0.0.1", port=port, threads=8)
+function unzip(file,dest){mkdirSync(dest,{recursive:true});execFileSync('powershell.exe',['-NoProfile','-Command',`Expand-Archive -LiteralPath ${quote(file)} -DestinationPath ${quote(dest)} -Force`],{stdio:'inherit'});}
+function run(exe,args,options={}){execFileSync(exe,args,{stdio:'inherit',...options});}
+const nodeArchive=await archive('node'),nodeUnpack=path.join(cache,'node-unpacked');
+const nodeSource=path.join(nodeUnpack,`node-v${lock.archives.node.version}-win-x64`);
+if(!existsSync(path.join(nodeSource,'node.exe')))unzip(nodeArchive,nodeUnpack);
+mkdirSync(path.join(out,'node'),{recursive:true});
+for(const file of ['node.exe','LICENSE'])cpSync(path.join(nodeSource,file),path.join(out,'node',file));
+const node=path.join(out,'node/node.exe');
+if(execFileSync(node,['--version'],{encoding:'utf8'}).trim()!==`v${lock.archives.node.version}`)throw Error('Bundled Node version mismatch');
+const pyBase=path.join(out,'searxng/python'),python=path.join(pyBase,'python.exe');
+if(!existsSync(python))unzip(await archive('python'),pyBase);else await archive('python');
+const pth=readdirSync(pyBase).find(f=>/^python\d+\._pth$/.test(f));
+writeFileSync(path.join(pyBase,pth),`${pth.replace('._pth','.zip')}\n.\nLib/site-packages\nimport site\n`);
+const pip=await archive('pip');
+if(!existsSync(path.join(pyBase,'Lib/site-packages/pip')))run(python,['-c','import sys,zipfile;zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])',pip,path.join(pyBase,'Lib/site-packages')]);
+const searxArchive=await archive('searxng'),unpack=path.join(cache,'searxng-source');
+mkdirSync(unpack,{recursive:true});
+const extract=String.raw`import tarfile,sys
+with tarfile.open(sys.argv[1]) as tf:
+ members=[m for m in tf.getmembers() if not any(':' in p for p in m.name.split('/'))]
+ tf.extractall(sys.argv[2],members=members,filter='data')
 `;
-
-// Windows shim for the Unix-only stdlib pwd module (see bundleSearxng step 4).
-const PWD_SHIM = `"""
-Windows shim for the Unix-only stdlib pwd module.
-
-SearXNG's searx.valkeydb imports pwd at module scope for Unix privilege
-drop support. On Windows the module does not exist; the stubs below
-satisfy the import and are never exercised at runtime.
-"""
-__all__ = ["getpwnam", "getpwuid", "getpwall"]
-
-
-class _Pw:
-    pw_name = "haydev"
-    pw_uid = 0
-    pw_gid = 0
-    pw_gecos = ""
-    pw_dir = "/"
-    pw_shell = ""
-
-
-def getpwnam(name):
-    return _Pw()
-
-
-def getpwuid(uid):
-    return _Pw()
-
-
-def getpwall():
-    return []
-`;
-
-async function bundleSearxng() {
-  const base = path.join(OUT, 'searxng');
-  if (existsSync(path.join(base, 'python', 'python.exe')) && existsSync(path.join(base, 'app', 'searx'))) {
-    console.log('✓ searxng already bundled'); return;
-  }
-  const tmp = path.join(OUT, '.tmp-searxng');
-  mkdirSync(tmp, { recursive: true });
-  const pythonExe = path.join(base, 'python', 'python.exe');
-
-  // 1. Portable Python (embeddable) → searxng/python (skipped if present).
-  if (!existsSync(pythonExe)) {
-    const pyZip = path.join(tmp, 'python.zip');
-    await download(PY_URL, pyZip);
-    unzip(pyZip, path.join(base, 'python'));
-
-    // 2. Enable site-packages in the embedded distribution.
-    const pth = readdirSync(path.join(base, 'python')).find((f) => /^python\d+\._pth$/.test(f));
-    if (!pth) throw new Error('pythonNN._pth not found in embeddable package');
-    writeFileSync(
-      path.join(base, 'python', pth),
-      'python312.zip\n.\nLib\\site-packages\nimport site\n'
-    );
-    const getpip = path.join(tmp, 'get-pip.py');
-    await download('https://bootstrap.pypa.io/get-pip.py', getpip);
-    execFileSync(pythonExe, [getpip, '--no-warn-script-location'], { stdio: 'inherit' });
-  }
-
-  // 3. SearXNG + waitress INTO the bundle (no global pip). Build backend
-  //    (setuptools/wheel) lives inside the embedded python; we install with
-  //    --no-build-isolation because embedded distros cannot create
-  //    isolated envs reliably.
-  execFileSync(pythonExe, ['-m', 'pip', 'install', '--no-warn-script-location', 'setuptools', 'wheel'], { stdio: 'inherit' });
-  mkdirSync(path.join(base, 'app'), { recursive: true });
-  const srcDir = path.join(tmp, 'searxng-src');
-  // The SearXNG source tree contains NTFS-ILLEGAL filenames (colon in
-  // utils/templates/...). git checkout fails on Windows in every mode —
-  // so: download the tarball and extract with the embedded Python,
-  // skipping any member whose path can never exist on NTFS.
-  const tarball = path.join(tmp, 'searxng.tar.gz');
-  await download('https://codeload.github.com/searxng/searxng/tar.gz/refs/heads/master', tarball);
-  const filterPy = path.join(tmp, 'extract.py');
-  writeFileSync(filterPy, `
-import tarfile, sys
-src, dest = sys.argv[1], sys.argv[2]
-def is_ntfs_safe(name):
-    return all((':' not in part) for part in name.replace('\\\\', '/').split('/'))
-with tarfile.open(src, 'r:gz') as tf:
-    members = [m for m in tf.getmembers() if is_ntfs_safe(m.name)]
-    tf.extractall(dest, members=members)
-print('extracted', len(members), 'members')
-`);
-  execFileSync(pythonExe, [filterPy, tarball, tmp], { stdio: 'inherit' });
-  const srcDirReal = existsSync(path.join(tmp, 'searxng-master'))
-    ? path.join(tmp, 'searxng-master')
-    : srcDir;
-  // setup.py imports the searx package at metadata time — its runtime deps
-  // must exist in the embedded python BEFORE the package install.
-  execFileSync(pythonExe, ['-m', 'pip', 'install', '--no-warn-script-location', '-r', path.join(srcDirReal, 'requirements.txt')], { stdio: 'inherit' });
-  execFileSync(pythonExe, [
-    '-m', 'pip', 'install', '--no-warn-script-location', '--no-build-isolation', '--no-deps',
-    '--target', path.join(base, 'app'),
-    srcDirReal,
-    'waitress',
-  ], { stdio: 'inherit' });
-
-  // 4. Windows shim: master imports the Unix-only stdlib `pwd` module
-  //    (searx/valkeydb.py) — stub it so webapp imports cleanly on Windows.
-  writeFileSync(path.join(base, 'app', 'pwd.py'), PWD_SHIM);
-
-  // 5. Runner (imported via PYTHONPATH=app; sys.path tweak inside).
-  writeFileSync(path.join(base, 'searxng-runner.py'), RUNNER);
-
-  rmSync(tmp, { recursive: true, force: true });
-  if (!existsSync(path.join(base, 'app', 'searx'))) throw new Error('searx package missing after pip install');
-  console.log('✓ searxng bundled →', base);
+run(python,['-c',extract,searxArchive,unpack]);
+const searxSource=path.join(unpack,`searxng-${lock.archives.searxng.commit}`);
+// Freeze the pinned source identity; never let setup.py discover this parent repository.
+const sourceVersion='0.0.0+git.'+lock.archives.searxng.commit.slice(0,12);
+writeFileSync(path.join(searxSource,'searx/version_frozen.py'), `VERSION_STRING = '${sourceVersion}'\nVERSION_TAG = '${sourceVersion}'\nDOCKER_TAG = '${sourceVersion}'\nGIT_URL = 'https://github.com/searxng/searxng'\nGIT_BRANCH = '${lock.archives.searxng.commit}'\n`);
+function freshGenerated(relative) { const target=path.resolve(out,relative); if(!target.startsWith(path.resolve(out)+path.sep))throw Error('Invalid generated target'); rmSync(target,{recursive:true,force:true}); mkdirSync(target,{recursive:true}); return target; }
+const requirements=path.join(root,'resources/python-requirements.lock');
+if(process.argv.includes('--resolve-python')){
+  const report=path.join(cache,'python-resolution.json');
+  run(python,['-m','pip','install','--dry-run','--ignore-installed','--report',report,'-r',path.join(searxSource,'requirements.txt'),'waitress','setuptools','wheel']);
+  const resolved=JSON.parse(readFileSync(report));
+  writeFileSync(requirements,resolved.install.map(p=>`${p.metadata.name}==${p.metadata.version} --hash=sha256:${p.download_info.archive_info.hashes.sha256}`).sort().join('\n')+'\n');
+  console.log('Python lock resolved; review before normal bundling.');process.exit(0);
 }
-
-// ---------------------------------------------------------------------------
-function bundlePerplexica() {
-  if (!existsSync(PERPLEXICA_DIR)) {
-    console.log(`ℹ Perplexica dir not found (${PERPLEXICA_DIR}) — skipping (external/adopt mode stays available)`);
-    return;
+if(!existsSync(requirements))throw Error('Missing reviewed Python dependency lock');
+run(python,['-m','pip','install','--require-hashes','-r',requirements,'--no-warn-script-location']);
+const searxApp=freshGenerated('searxng/app');
+run(python,['-m','pip','install','--no-build-isolation','--no-deps','--target',searxApp,searxSource]);
+writeFileSync(path.join(searxApp,'pwd.py'),PWD_SHIM);
+writeFileSync(path.join(out,'searxng/searxng-runner.py'),RUNNER);
+cpSync(path.join(searxSource,'LICENSE'),path.join(out,'searxng/LICENSE'));
+cpSync(searxArchive,path.join(out,'searxng/source.tar.gz'));
+const torUnpack=path.join(cache,'tor-unpacked');mkdirSync(torUnpack,{recursive:true});
+run('tar',['-xzf',await archive('tor'),'-C',torUnpack]);
+cpSync(path.join(torUnpack,'tor'),path.join(out,'tor'),{recursive:true});
+if(existsSync(path.join(torUnpack,'docs')))cpSync(path.join(torUnpack,'docs'),path.join(out,'tor/notices'),{recursive:true});
+const integration=path.join(root,'.cache/perplexica');
+if(!existsSync(path.join(integration,'.haydev-source.json'))||!existsSync(path.join(integration,'node_modules/next')))throw Error('Run npm run integration:prepare first');
+const sourceLock=readFileSync(path.join(root,'integrations/perplexica/source-lock.json'));
+if(JSON.parse(readFileSync(path.join(integration,'.haydev-source.json'))).digest!==sha(sourceLock))throw Error('Perplexica input mismatch');
+run(node,[path.join(integration,'node_modules/next/dist/bin/next'),'build','--webpack'],{cwd:integration,env:{...process.env,NEXT_TELEMETRY_DISABLED:'1'}});
+freshGenerated('perplexica');
+cpSync(path.join(integration,'.next/standalone'),path.join(out,'perplexica'),{recursive:true});
+if(!existsSync(path.join(out,'perplexica/server.js')))throw Error('Unexpected Next standalone layout');
+cpSync(path.join(integration,'.next/static'),path.join(out,'perplexica/.next/static'),{recursive:true});
+for(const name of ['public','drizzle','LICENSE'])cpSync(path.join(integration,name),path.join(out,'perplexica',name),{recursive:true});
+// Preserve dependency license texts even when Next's file tracer omits them.
+const noticeRoot=path.join(out,'perplexica/notices');mkdirSync(noticeRoot,{recursive:true});
+const inventory=[];
+const dependencyLock=JSON.parse(readFileSync(path.join(integration,'package-lock.json')));
+// Include notices for all production dependencies, including JavaScript
+// compiled into webpack chunks and consequently absent from standalone/node_modules.
+for(const [relative,locked] of Object.entries(dependencyLock.packages)){
+  if(!relative||locked.dev)continue;
+  const source=path.join(integration,relative),pkgFile=path.join(source,'package.json');
+  if(!existsSync(pkgFile))continue; // optional package for another OS/architecture
+  const pkg=JSON.parse(readFileSync(pkgFile));if(!pkg.name||!pkg.version)continue;
+  const name=`${pkg.name.replaceAll('/','_')}@${pkg.version}`;
+  const record={name:pkg.name,version:pkg.version,license:pkg.license||'SEE_PACKAGE',path:relative,notices:[]};
+  for(const f of readdirSync(source,{withFileTypes:true})){
+    if(f.isFile()&&/^(license|licence|notice|copying)([.-]|$)/i.test(f.name)){
+      const target=path.join(noticeRoot,name);mkdirSync(target,{recursive:true});
+      cpSync(path.join(source,f.name),path.join(target,f.name));record.notices.push(`notices/${name}/${f.name}`);
+    }
   }
-  const dest = path.join(OUT, 'perplexica');
-  if (existsSync(path.join(dest, 'server.js'))) {
-    console.log('✓ perplexica already bundled'); return;
-  }
-  console.log('⚙ building Perplexica (next build, standalone)…');
-  // The repo pins its own build flavor ("next build --webpack") — match it.
-  // Build with the ELECTRON binary as Node (ELECTRON_RUN_AS_NODE) so native
-  // modules (better-sqlite3) match the Electron ABI at runtime — a system
-  // Node build fails with NODE_MODULE_VERSION mismatch inside the app.
-  const electronNode = path.join(APP_ROOT, 'node_modules', 'electron', 'dist', 'electron.exe');
-  execFileSync(electronNode, [path.join(PERPLEXICA_DIR, 'node_modules', 'next', 'dist', 'bin', 'next'), 'build', '--webpack'], {
-    cwd: PERPLEXICA_DIR, stdio: 'inherit', env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', NEXT_TELEMETRY_DISABLED: '1' },
-  });
-  // Standard standalone layout: server.js + .next + public, static merged in.
-  robocopySafe(path.join(PERPLEXICA_DIR, '.next', 'standalone'), dest);
-  robocopySafe(path.join(PERPLEXICA_DIR, '.next', 'static'), path.join(dest, '.next', 'static'));
-  robocopySafe(path.join(PERPLEXICA_DIR, 'public'), path.join(dest, 'public'));
-  // Drizzle migrations are read at runtime from the app root — the
-  // standalone output omits them, so copy explicitly.
-  robocopySafe(path.join(PERPLEXICA_DIR, 'drizzle'), path.join(dest, 'drizzle'));
-  console.log('✓ perplexica bundled →', dest);
+  inventory.push(record);
 }
-
-// ---------------------------------------------------------------------------
-mkdirSync(OUT, { recursive: true });
-const jobs = [];
-if (want('tor', true)) jobs.push(bundleTor().catch((e) => console.error('✗ tor:', e.message)));
-if (want('searxng', true)) jobs.push(bundleSearxng().catch((e) => console.error('✗ searxng:', e.message)));
-if (want('perplexica', false)) jobs.push(Promise.resolve(bundlePerplexica()).catch((e) => console.error('✗ perplexica:', e.message)));
-await Promise.all(jobs);
-console.log('done.');
+cpSync(path.join(integration,'src/app/fonts/OFL.txt'),path.join(noticeRoot,'Montserrat-OFL.txt'));
+writeFileSync(path.join(out,'perplexica/dependency-inventory.json'),JSON.stringify(inventory,null,2));
+const files={};
+function walk(dir){for(const name of readdirSync(dir).sort()){const p=path.join(dir,name);if(statSync(p).isDirectory())walk(p);else if(name!=='runtime-manifest.json') files[path.relative(out,p).replaceAll('\\','/')]=sha(readFileSync(p));}}
+writeFileSync(path.join(out,'THIRD_PARTY_NOTICES.txt'),'Node.js: MIT (node/LICENSE)\nPython: PSF-2.0 (searxng/python/LICENSE.txt)\nSearXNG: AGPL-3.0-or-later (searxng/LICENSE; exact source in source.tar.gz)\nTor: BSD and bundled dependencies (tor/notices)\nPerplexica/Vane: MIT (perplexica/LICENSE)\nPerplexica dependency inventory and notices: perplexica/dependency-inventory.json and perplexica/notices.\nMontserrat font: SIL OFL 1.1 (perplexica/notices/Montserrat-OFL.txt).\nDependency license texts are retained in the respective runtime packages.\n');
+walk(out);
+writeFileSync(path.join(out,'runtime-manifest.json'),JSON.stringify({schema:1,archives:lock.archives,perplexica:JSON.parse(sourceLock),files},null,2));
+console.log(`Verified runtime bundle: ${Object.keys(files).length} files`);

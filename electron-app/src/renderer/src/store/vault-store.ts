@@ -1,4 +1,5 @@
 import { platformApi } from '../platform';
+import { nativeErrorCode } from '@shared/native-errors';
 /**
  * Vault store — renderer-side React hook for the Credential Vault.
  *
@@ -22,7 +23,7 @@ export interface UseVaultStore {
   save: (domain: string, username: string, password: string) => Promise<{ success: boolean; error?: string }>;
   generateAndStore: (domain: string, username: string) => Promise<{ success: boolean; error?: string }>;
   delete: (id: string) => Promise<{ success: boolean; error?: string }>;
-  fill: (tabId: string, domain: string) => Promise<{ success: boolean; error?: string }>;
+  fill: (id: string, tabId: string | null) => Promise<{ success: boolean; error?: string }>;
 }
 
 export function useVaultStore(): UseVaultStore {
@@ -37,7 +38,7 @@ export function useVaultStore(): UseVaultStore {
       setCredentials(result.credentials);
       setError(null);
     } catch (e) {
-      setError(String(e));
+      setError(nativeErrorCode(e));
     } finally {
       setLoading(false);
     }
@@ -56,7 +57,7 @@ export function useVaultStore(): UseVaultStore {
       }
       return { success: false, error: result.error };
     } catch (e) {
-      return { success: false, error: String(e) };
+      return { success: false, error: nativeErrorCode(e) };
     }
   }, [refresh]);
 
@@ -69,7 +70,7 @@ export function useVaultStore(): UseVaultStore {
       }
       return { success: false, error: result.error };
     } catch (e) {
-      return { success: false, error: String(e) };
+      return { success: false, error: nativeErrorCode(e) };
     }
   }, [refresh]);
 
@@ -82,16 +83,18 @@ export function useVaultStore(): UseVaultStore {
       }
       return { success: false, error: result.error };
     } catch (e) {
-      return { success: false, error: String(e) };
+      return { success: false, error: nativeErrorCode(e) };
     }
   }, [refresh]);
 
-  const fill = useCallback(async (tabId: string, domain: string) => {
+  const fill = useCallback(async (id: string, tabId: string | null) => {
     try {
-      const result = await platformApi.vault.fill({ tabId, domain });
+      // PROMPT 03 contract: fill from a CONCRETE record id; the tab's live
+      // URL is authorized against the record domain inside the host.
+      const result = await platformApi.vault.fill({ id, tabId: tabId ?? undefined });
       return { success: result.success, error: result.error };
     } catch (e) {
-      return { success: false, error: String(e) };
+      return { success: false, error: nativeErrorCode(e) };
     }
   }, []);
 

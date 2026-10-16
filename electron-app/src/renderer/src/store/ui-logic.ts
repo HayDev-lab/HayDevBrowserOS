@@ -202,13 +202,13 @@ export function getFaviconFallback(displayUrl: string): string {
  *   1. tab.title (if non-empty)
  *   2. tab.url (if non-empty)
  *   3. tab.pendingUrl (if non-empty)
- *   4. 'New Tab'
+ *   4. fallbackLabel (localized 'New Tab' — passed by the caller)
  */
-export function getTabDisplayTitle(tab: TabState): string {
+export function getTabDisplayTitle(tab: TabState, fallbackLabel = 'New Tab'): string {
   if (tab.title && tab.title.length > 0) return tab.title;
   if (tab.url && tab.url.length > 0) return tab.url;
   if (tab.pendingUrl && tab.pendingUrl.length > 0) return tab.pendingUrl;
-  return 'New Tab';
+  return fallbackLabel;
 }
 
 // ---------------------------------------------------------------------------
@@ -375,25 +375,42 @@ export function formatPercent(received: number, total: number): number {
  * Format a timestamp as a short relative label.
  * Returns 'just now', '5m ago', '2h ago', '3d ago', or a date.
  */
+export interface RelativeTimeLabels {
+  justNow: string;
+  mAgo: string;
+  hAgo: string;
+  dAgo: string;
+}
+
+const DEFAULT_RELATIVE_LABELS: RelativeTimeLabels = {
+  justNow: 'just now',
+  mAgo: '{n}m ago',
+  hAgo: '{n}h ago',
+  dAgo: '{n}d ago',
+};
+
 export function formatRelativeTime(
   timestamp: number,
-  now: number = Date.now()
+  now: number = Date.now(),
+  labels?: Partial<RelativeTimeLabels>
 ): string {
+  const L: RelativeTimeLabels = { ...DEFAULT_RELATIVE_LABELS, ...labels };
+  const fmt = (tpl: string, n: number) => tpl.replaceAll('{n}', String(n));
   if (!Number.isFinite(timestamp) || timestamp <= 0) return '';
   const diff = now - timestamp;
-  if (diff < 0) return 'just now';
-  if (diff < 60_000) return 'just now';
+  if (diff < 0) return L.justNow;
+  if (diff < 60_000) return L.justNow;
   if (diff < 3_600_000) {
     const m = Math.floor(diff / 60_000);
-    return `${m}m ago`;
+    return fmt(L.mAgo, m);
   }
   if (diff < 86_400_000) {
     const h = Math.floor(diff / 3_600_000);
-    return `${h}h ago`;
+    return fmt(L.hAgo, h);
   }
   if (diff < 7 * 86_400_000) {
     const d = Math.floor(diff / 86_400_000);
-    return `${d}d ago`;
+    return fmt(L.dAgo, d);
   }
   // Beyond a week — fall back to a date.
   const date = new Date(timestamp);

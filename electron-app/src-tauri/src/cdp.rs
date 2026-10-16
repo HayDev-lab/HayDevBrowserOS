@@ -10,6 +10,8 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::{Duration, Instant};
 
+use serde_json::json;
+
 use crate::error::{AppError, AppResult};
 
 // ---------------------------------------------------------------------------
@@ -102,6 +104,12 @@ struct WsConn {
 
 impl WsConn {
     fn connect(port: u16, target_id: &str) -> AppResult<Self> {
+        Self::connect_path(port, &format!("/devtools/page/{target_id}"))
+    }
+
+    /// Connect to ANY DevTools ws path (page target OR the browser-level
+    /// endpoint used by the shield's Fetch interceptor).
+    fn connect_path(port: u16, path: &str) -> AppResult<Self> {
         let addr = format!("127.0.0.1:{port}");
         let mut stream = TcpStream::connect(&addr)
             .map_err(|e| AppError::new("CDP_CONNECT_FAILED", e.to_string()))?;
@@ -109,7 +117,7 @@ impl WsConn {
         stream.set_write_timeout(Some(Duration::from_secs(10))).ok();
         let key = cdp_key();
         let req = format!(
-            "GET /devtools/page/{target_id} HTTP/1.1\r\n\
+            "GET {path} HTTP/1.1\r\n\
              Host: 127.0.0.1:{port}\r\n\
              Upgrade: websocket\r\n\
              Connection: Upgrade\r\n\
@@ -150,6 +158,73 @@ impl WsConn {
             stream,
             buf: Vec::new(),
         })
+    }
+
+    /// Read frames until one TEXT message is assembled (events included —
+    /// the caller inspects them). Pings are answered transparently. Returns
+    /// Err on close/IO, Ok(None) on timeout.
+    fn next_message(&mut self, idle: Duration) -> AppResult<Option<serde_json::Value>> {
+        let deadline = Instant::now() + idle;
+        let mut assembled: Vec<u8> = Vec::new();
+        loop {
+            if let Some((frame, used)) = decode_server_frame(&self.buf) {
+                let fin = self.buf[0] & 0x80 != 0;
+                self.buf.drain(..used);
+                match frame.opcode {
+                    0x8 => return Err(AppError::new("CDP_CLOSED", "close frame")),
+                    0x9 => {
+                        let pong = encode_client_frame(&frame.payload, rand_mask());
+                        self.stream
+                            .write_all(&pong)
+                            .map_err(|e| AppError::new("CDP_SEND_FAILED", e.to_string()))?;
+                    }
+                    0x1 | 0x2 => {
+                        if fin {
+                            if let Ok(msg) = serde_json::from_slice::<serde_json::Value>(&frame.payload) {
+                                return Ok(Some(msg));
+                            }
+                        } else {
+                            assembled = frame.payload;
+                        }
+                    }
+                    0x0 => {
+                        assembled.extend_from_slice(&frame.payload);
+                        if fin {
+                            let payload = std::mem::take(&mut assembled);
+                            if let Ok(msg) = serde_json::from_slice::<serde_json::Value>(&payload) {
+                                return Ok(Some(msg));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+            if Instant::now() > deadline {
+                return Ok(None);
+            }
+            self.stream
+                .set_read_timeout(Some(idle.min(Duration::from_secs(1))))
+                .ok();
+            let mut chunk = [0u8; 16384];
+            match self.stream.read(&mut chunk) {
+                Ok(0) => return Err(AppError::new("CDP_CLOSED", "stream closed")),
+                Ok(n) => self.buf.extend_from_slice(&chunk[..n]),
+                Err(e) => {
+                    // Read timeout just means "no data within the window" —
+                    // loop back to the deadline check.
+                    if e.kind() == std::io::ErrorKind::WouldBlock
+                        || e.kind() == std::io::ErrorKind::TimedOut
+                    {
+                        if Instant::now() > deadline {
+                            return Ok(None);
+                        }
+                        continue;
+                    }
+                    return Err(AppError::new("CDP_RECV_IO", e.to_string()));
+                }
+            }
+        }
     }
 
     /// Parse an assembled message; Ok(Some) when it carries our id.
@@ -323,14 +398,13 @@ pub fn http_get_json_version(port: u16) -> AppResult<serde_json::Value> {
     http_get_json(port, "/json/version")
 }
 
-/// Find the CDP target id whose URL matches `needle` (case-insensitive
-/// substring, display form).
+/// Find the CDP target id with the exact native target ID. URLs never identify a target.
 pub fn find_target(port: u16, needle: &str) -> AppResult<(String, String)> {
     let list = http_get_json(port, "/json")?;
-    let wanted = needle.to_lowercase();
+    let wanted = needle;
     for t in list.as_array().cloned().unwrap_or_default() {
         let url = t.get("url").and_then(|v| v.as_str()).unwrap_or("");
-        if url.to_lowercase().contains(&wanted)
+        if t.get("id").and_then(|v| v.as_str()) == Some(wanted)
             && t.get("type").and_then(|v| v.as_str()) == Some("page")
         {
             let id = t
@@ -445,6 +519,246 @@ fn target_id_repr(id: &str) -> &str {
         id
     }
 }
+
+/// Page targets (`type=page`) currently alive on this DevTools endpoint.
+pub fn list_page_targets(port: u16) -> AppResult<Vec<String>> {
+    let list = http_get_json(port, "/json")?;
+    Ok(list
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|t| t.get("type").and_then(|v| v.as_str()) == Some("page"))
+        .filter_map(|t| t.get("id").and_then(|v| v.as_str()).map(str::to_string))
+        .collect())
+}
+
+/// Run ONE page-level shield session (BLOCKS the caller until the ws
+/// dies): direct `Fetch.enable` on the page target — no Target domain,
+/// which WebView2's browser endpoint does not reliably deliver. Real
+/// network blocking: paused requests are failed (BlockedByClient) or
+/// continued by the caller's decision.
+pub fn run_page_fetch_filter(
+    port: u16,
+    target_id: &str,
+    decide: std::sync::Arc<dyn Fn(&str) -> bool + Send + Sync>,
+    on_block: std::sync::Arc<dyn Fn(&str) + Send + Sync>,
+) {
+    let Ok(mut ws) = WsConn::connect_path(port, &format!("/devtools/page/{target_id}")) else {
+        return;
+    };
+    if ws
+        .send_text(
+            r#"{"id":1,"method":"Fetch.enable","params":{"patterns":[{"urlPattern":"*","requestStage":"Request"}]}}"#,
+        )
+        .is_err()
+    {
+        return;
+    }
+    if ws.wait_reply(1, Duration::from_secs(5)).is_err() {
+        return;
+    }
+    log::info!("[SHIELD] page session attached target={}", target_id_repr(target_id));
+    let mut next_id: u64 = 10;
+    let target_id2 = target_id.to_string();
+    loop {
+        match ws.next_message(Duration::from_secs(30)) {
+            Err(e) => {
+                log::info!("[SHIELD] page session {} exit: {e}", target_id_repr(&target_id2));
+                return;
+            }
+            Ok(None) => continue,
+            Ok(Some(msg)) => {
+                let method = msg.get("method").and_then(|m| m.as_str()).unwrap_or("");
+                if method != "Fetch.requestPaused" {
+                    continue;
+                }
+                let url = msg
+                    .pointer("/params/request/url")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let request_id = msg
+                    .pointer("/params/requestId")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if request_id.is_empty() {
+                    continue;
+                }
+                let host = host_of_url(&url);
+                let (method, reason) = if !host.is_empty() && decide(&host) {
+                    on_block(&host);
+                    ("Fetch.failRequest", "BlockedByClient")
+                } else {
+                    ("Fetch.continueRequest", "")
+                };
+                let mut req = serde_json::json!({
+                    "id": next_id,
+                    "method": method,
+                    "params": { "requestId": request_id },
+                });
+                if !reason.is_empty() {
+                    req["params"]["errorReason"] = json!(reason);
+                }
+                if ws.send_text(&req.to_string()).is_err() {
+                    return;
+                }
+                next_id += 1;
+                if next_id > 100_000_000 {
+                    next_id = 10;
+                }
+            }
+        }
+    }
+}
+
+/// Extract the request HOST from a URL string (lowercase, no port).
+fn host_of_url(url: &str) -> String {
+    url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_string))
+        .map(|h| h.to_ascii_lowercase())
+        .unwrap_or_default()
+}
+
+/// BROWSER-LEVEL filter session — NOT USED on WebView2: verified live that
+/// its browser endpoint accepts `Target.setAutoAttach` (empty OK reply) but
+/// NEVER delivers `Target.attachedToTarget` sessions for page targets
+/// (only `Target.targetInfoChanged`). Kept as the documented fallback for
+/// a future wry/WebView2 that supports it; the ACTIVE path is
+/// `run_page_fetch_filter` (one direct session per page target).
+#[allow(dead_code)]
+pub fn run_fetch_filter(
+    port: u16,
+    decide: std::sync::Arc<dyn Fn(&str) -> bool + Send + Sync>,
+    on_block: std::sync::Arc<dyn Fn(&str) + Send + Sync>,
+) {
+    let Some(path) = browser_ws_path(port) else { return };
+    let mut ws = match WsConn::connect_path(port, &path) {
+        Ok(v) => v,
+        Err(e) => {
+            log::warn!("[SHIELD] browser ws connect failed: {e}");
+            return;
+        }
+    };
+    if ws
+        .send_text(
+            r#"{"id":1,"method":"Target.setAutoAttach","params":{"autoAttach":true,"waitForDebuggerOnStart":false,"flatten":true}}"#,
+        )
+        .is_err()
+    {
+        return;
+    }
+    match ws.wait_reply(1, Duration::from_secs(5)) {
+        Ok(reply) => log::info!("[SHIELD] setAutoAttach reply: {reply}"),
+        Err(e) => {
+            log::warn!("[SHIELD] setAutoAttach no reply: {e}");
+            return;
+        }
+    }
+    // WebView2 sometimes needs explicit discovery for EXISTING targets to
+    // (re)emit attachedToTarget on the browser-level connection.
+    if ws
+        .send_text(r#"{"id":2,"method":"Target.setDiscoverTargets","params":{"discover":true}}"#)
+        .is_ok()
+    {
+        let _ = ws.wait_reply(2, Duration::from_secs(5));
+    }
+    log::info!("[SHIELD] fetch filter attached to tab environment :{port}");
+    let mut next_id: u64 = 10;
+    loop {
+        match ws.next_message(Duration::from_secs(30)) {
+            Err(_) => return, // environment gone — supervisor respawns
+            Ok(None) => continue, // idle keepalive window elapsed
+            Ok(Some(msg)) => {
+                let method = msg.get("method").and_then(|m| m.as_str()).unwrap_or("");
+                match method {
+                    "Target.attachedToTarget" => {
+                        let session = msg
+                            .pointer("/params/sessionId")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let ttype = msg
+                            .pointer("/params/targetInfo/type")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        if ttype != "page" || session.is_empty() {
+                            continue;
+                        }
+                        let req = serde_json::json!({
+                            "id": next_id,
+                            "sessionId": session,
+                            "method": "Fetch.enable",
+                            "params": { "patterns": [{ "urlPattern": "*", "requestStage": "Request" }] },
+                        });
+                        if ws.send_text(&req.to_string()).is_err() {
+                            return;
+                        }
+                        next_id += 1;
+                    }
+                    "Fetch.requestPaused" => {
+                        let url = msg
+                            .pointer("/params/request/url")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let request_id = msg
+                            .pointer("/params/requestId")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let session = msg
+                            .get("sessionId")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        if request_id.is_empty() {
+                            continue;
+                        }
+                        let host = host_of_url(&url);
+                        let (method, reason) = if !host.is_empty() && decide(&host) {
+                            on_block(&host);
+                            ("Fetch.failRequest", "BlockedByClient")
+                        } else {
+                            ("Fetch.continueRequest", "")
+                        };
+                        let mut req = serde_json::json!({
+                            "id": next_id,
+                            "method": method,
+                            "params": { "requestId": request_id },
+                        });
+                        if !session.is_empty() {
+                            req["sessionId"] = json!(session);
+                        }
+                        if !reason.is_empty() {
+                            req["params"]["errorReason"] = json!(reason);
+                        }
+                        if ws.send_text(&req.to_string()).is_err() {
+                            return;
+                        }
+                        next_id += 1;
+                        if next_id > 100_000_000 {
+                            next_id = 10; // wrap far beyond any run
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+}
+
+/// The browser-level DevTools ws path (`/devtools/browser/<id>`) from
+/// `/json/version` — present only while the tab environment runs.
+fn browser_ws_path(port: u16) -> Option<String> {
+    let v = http_get_json_version(port).ok()?;
+    let ws = v.get("webSocketDebuggerUrl")?.as_str()?.to_string();
+    let idx = ws.find("/devtools/")?;
+    Some(ws[idx..].to_string())
+}
+
 
 fn base64_decode(input: &str) -> Vec<u8> {
     let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

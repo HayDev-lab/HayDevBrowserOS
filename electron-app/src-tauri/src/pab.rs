@@ -52,6 +52,22 @@ fn read_internal_page(name: &str) -> Option<String> {
     None
 }
 
+/// Read a page in the USER'S language: the build step emits
+/// `newtab.{en,ru,hy}.html` / `search.{en,ru,hy}.html` next to the plain
+/// (English) fallbacks. Unknown/missing locale falls back to the plain
+/// file — never a 404 (PROMPT 05 locale delivery).
+fn read_internal_page_localed(base_name: &str) -> Option<String> {
+    let locale = crate::commands::ui_locale();
+    if locale != "en" {
+        let dot = base_name.rfind('.')?; // "newtab.html" → "newtab" + ".html"
+        let (stem, ext) = base_name.split_at(dot);
+        if let Some(html) = read_internal_page(&format!("{stem}.{locale}{ext}")) {
+            return Some(html);
+        }
+    }
+    read_internal_page(base_name)
+}
+
 fn html_response(body: String) -> http::Response<Vec<u8>> {
     http::Response::builder()
         .header(http::header::CONTENT_TYPE, "text/html; charset=utf-8")
@@ -270,6 +286,7 @@ fn bridge_api(
     uri: &Uri,
     method: &str,
     body: &serde_json::Value,
+    owner: &str,
 ) -> Option<http::Response<Vec<u8>>> {
     let respond = |v: serde_json::Value, status: u16| -> http::Response<Vec<u8>> {
         let mut resp = json_response(v.to_string());
@@ -277,9 +294,17 @@ fn bridge_api(
         resp
     };
     match (path, method) {
+        ("/api/attachment/cancel", "POST") => {
+            crate::attachments::cancel_owner_parsing(app, owner);
+            Some(respond(serde_json::json!({"accepted":true}),200))
+        }
+        ("/api/attachment/release", "POST") => {
+            let result = crate::attachments::release(app, body["id"].as_str().unwrap_or(""), owner);
+            Some(match result { Ok(()) => respond(serde_json::json!({"released":true}),200), Err(e) => respond(serde_json::json!({"error":e.code}),400) })
+        }
         ("/api/attachment/pick", "POST") => {
             let kind = body.get("kind").and_then(|v| v.as_str()).unwrap_or("file");
-            let pick_id = crate::attachments::start_pick(app, kind);
+            let pick_id = crate::attachments::start_pick(app, kind, owner);
             Some(respond(serde_json::json!({ "pickId": pick_id }), 200))
         }
         ("/api/attachment/poll", "GET") => {
@@ -288,7 +313,7 @@ fn bridge_api(
                 .and_then(|q| q.split('&').find(|p| p.starts_with("id=")))
                 .map(|p| urldecode(&p[3..]));
             Some(match id {
-                Some(id) => match crate::attachments::poll_pick(app, &id) {
+                Some(id) => match crate::attachments::poll_pick(app, &id, owner) {
                     Some(v) => respond(v, 200),
                     None => respond(serde_json::json!({ "error": "NOT_FOUND" }), 404),
                 },
@@ -304,7 +329,7 @@ fn bridge_api(
                 .and_then(|v| v.as_array())
                 .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
                 .unwrap_or_default();
-            Some(respond(start_research_run(app, query, &ids), 200))
+            Some(respond(start_research_run(app, query, &ids, owner), 200))
         }
         ("/api/navigate", "POST") => {
             let Some(url) = body.get("url").and_then(|v| v.as_str()) else {
@@ -404,6 +429,7 @@ fn serve_newtab(
     path: &str,
     uri: &Uri,
     request: &tauri::http::Request<Vec<u8>>,
+    owner: &str,
 ) -> http::Response<Vec<u8>> {
     let path = path.trim_end_matches('/');
     let method = request.method().as_str();
@@ -412,11 +438,11 @@ fn serve_newtab(
     } else {
         serde_json::Value::Null
     };
-    if let Some(resp) = bridge_api(app, path, uri, method, &body) {
+    if let Some(resp) = bridge_api(app, path, uri, method, &body, owner) {
         return resp;
     }
     match (path, method) {
-        ("", "GET") | ("/", "GET") | ("/index.html", "GET") => match read_internal_page("newtab.html") {
+        ("", "GET") | ("/", "GET") | ("/index.html", "GET") => match read_internal_page_localed("newtab.html") {
             Some(html) => html_response(html),
             None => not_found("pab://newtab"),
         },
@@ -434,6 +460,7 @@ fn start_research_run(
     app: &AppHandle<tauri::Wry>,
     query: &str,
     attachment_ids: &[String],
+    owner: &str,
 ) -> serde_json::Value {
     use tauri::Manager;
     let query = query.trim();
@@ -468,7 +495,7 @@ fn start_research_run(
     // it settles. Honest refusals remain: a run is already active, or TAKE
     // CONTROL is latched mid-run and switch_to_agent() declines.
     let mut escalated = false;
-    {
+    let shared = {
         let mut cs = control.lock().unwrap_or_else(|p| p.into_inner());
         if !cs.mark_run_started() {
             if cs.switch_to_agent() && cs.mark_run_started() {
@@ -480,7 +507,8 @@ fn start_research_run(
                 });
             }
         }
-    }
+            crate::agent::begin_run(&shared)
+    };
     if escalated {
         use tauri::Emitter;
         let _ = app.emit(
@@ -489,15 +517,20 @@ fn start_research_run(
         );
         log::info!("[CONTROL] HUMAN -> AGENT auto-escalation for Deep Research");
     }
-    let digests = crate::attachments::digests_for(app, attachment_ids);
-    let images = crate::attachments::images_for(app, attachment_ids);
+    let attachments = match crate::attachments::for_run(app, attachment_ids, owner, shared.lease.as_ref().unwrap().id) {
+        Ok(a) => a,
+        Err(e) => { control.lock().unwrap_or_else(|p| p.into_inner()).mark_run_ended(); return serde_json::json!({"started":false,"error":e.code}); }
+    };
+    let digests = &attachments.digests;
+    let images = attachments.images.clone();
     let command = crate::attachments::compose_research_command(query, &digests);
     let handle = app.clone();
     std::thread::spawn(move || {
+        let _attachments = attachments;
         let profile = "DEEP_RESEARCH".to_string();
         let _ = crate::agent::run_loop(
             handle.clone(),
-            shared,
+            shared.clone(),
             &control,
             command,
             crate::agent::RESEARCH_MAX_STEPS_DEFAULT,
@@ -506,6 +539,7 @@ fn start_research_run(
         );
         {
             let mut cs = control.lock().unwrap_or_else(|p| p.into_inner());
+            if !shared.is_current() { return; }
             cs.mark_run_ended();
             // Revert the auto-escalation, but only if WE still own AGENT and
             // no new run started meanwhile (a manual HUMAN switch already
@@ -533,6 +567,7 @@ fn serve_search(
     app: &AppHandle<tauri::Wry>,
     uri: &Uri,
     request: &tauri::http::Request<Vec<u8>>,
+    owner: &str,
 ) -> http::Response<Vec<u8>> {
     // The search page is a BRIDGE document (Electron isBridgeDocumentUrl):
     // its Deep Research mode calls the same attachment/research API as the
@@ -542,13 +577,13 @@ fn serve_search(
     if method == "POST" {
         let body: serde_json::Value =
             serde_json::from_slice(request.body()).unwrap_or(serde_json::Value::Null);
-        if let Some(resp) = bridge_api(app, uri.path(), uri, method, &body) {
+        if let Some(resp) = bridge_api(app, uri.path(), uri, method, &body, owner) {
             return resp;
         }
-    } else if let Some(resp) = bridge_api(app, uri.path(), uri, method, &serde_json::Value::Null) {
+    } else if let Some(resp) = bridge_api(app, uri.path(), uri, method, &serde_json::Value::Null, owner) {
         return resp;
     }
-    let Some(mut html) = read_internal_page("search.html") else {
+    let Some(mut html) = read_internal_page_localed("search.html") else {
         return not_found("pab://search");
     };
     // Endpoint resolution order (parity with the Electron runtime):
@@ -628,7 +663,7 @@ fn urldecode(input: &str) -> String {
 /// Relative `/api/*` fetches from a page resolve to `http://pab.localhost/api/…`
 /// — they are attributed to the calling page via the Referer header
 /// (newtab vs darkweb both use `/api/*` namespaces).
-pub fn handle_pab(app: &AppHandle<tauri::Wry>, request: &tauri::http::Request<Vec<u8>>) -> http::Response<Vec<u8>> {
+pub fn handle_pab(app: &AppHandle<tauri::Wry>, request: &tauri::http::Request<Vec<u8>>, owner: &str) -> http::Response<Vec<u8>> {
     let uri = request.uri().clone();
     let raw_host = uri.host().unwrap_or("");
     let raw_path = uri.path();
@@ -658,9 +693,9 @@ pub fn handle_pab(app: &AppHandle<tauri::Wry>, request: &tauri::http::Request<Ve
         };
     log::info!("[WEBVIEW] pab request page={page} path={sub_path}");
     match page.as_str() {
-        "newtab" => serve_newtab(app, &sub_path, &uri, request),
-        "search" => serve_search(app, &uri, request),
-        "darkweb" => serve_darkweb(app, &sub_path, &uri, request),
+        "newtab" => serve_newtab(app, &sub_path, &uri, request, owner),
+        "search" => serve_search(app, &uri, request, owner),
+        "darkweb" => serve_darkweb(app, &sub_path, &uri, request, owner),
         _ => not_found("pab:// page"),
     }
 }
@@ -677,6 +712,7 @@ fn serve_darkweb(
     path: &str,
     uri: &Uri,
     request: &tauri::http::Request<Vec<u8>>,
+    _owner: &str,
 ) -> http::Response<Vec<u8>> {
     use tauri::Manager;
     let Some(service) = app.try_state::<crate::darkweb::SharedDarkWeb>() else {
@@ -693,7 +729,7 @@ fn serve_darkweb(
 
     // GET / → the generated page.
     if (path.is_empty() || path == "/") && method == "GET" {
-        return match read_internal_page("darkweb.html") {
+        return match read_internal_page_localed("darkweb.html") {
             Some(html) => html_response(html),
             None => not_found("pab://darkweb (run npm run build:internal-pages)"),
         };
@@ -715,6 +751,7 @@ fn serve_darkweb(
                     incognito: Some(false),
                     darkweb: Some(true),
                     background: None,
+            agent: None,
                     id: None,
                     title: None,
                 },

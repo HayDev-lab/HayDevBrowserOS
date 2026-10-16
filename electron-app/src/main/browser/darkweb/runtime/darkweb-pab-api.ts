@@ -34,6 +34,7 @@
  */
 import { buildDarkWebPageHtml } from '../pure/darkweb-page';
 import type { DarkWebService } from './darkweb-service';
+import { getAppLocale } from '../../../../shared/app-locale';
 import type { DarkWebDownloadInfo, DarkWebFetchMode, DarkWebSettingsPatch } from '@shared/darkweb-types';
 
 export interface DarkWebPabApiDeps {
@@ -66,7 +67,7 @@ export async function handleDarkWebPabRequest(
   try {
     // ---- page ------------------------------------------------------------
     if (path === '/' && method === 'GET') {
-      return htmlResponse(buildDarkWebPageHtml());
+      return htmlResponse(buildDarkWebPageHtml(undefined, { lang: getAppLocale() }));
     }
 
     // ---- open in Tor tab -------------------------------------------------

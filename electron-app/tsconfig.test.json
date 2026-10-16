@@ -3,7 +3,7 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "lib": ["ES2022", "ESNext"],
+    "lib": ["ES2022", "ESNext", "DOM"],
     "types": ["node", "vitest/globals"],
     "strict": true,
     "noEmit": true,
@@ -17,9 +17,10 @@
       "@shared/*": ["src/shared/*"],
       // Production-path tests import the REAL Perplexica sources (vitest
       // resolves the same alias from vitest.config.ts).
-      "@/*": ["D:/Projects/Perplexica/src/*"]
+      "@/*": [".cache/perplexica/src/*"]
     }
   },
+  "exclude": ["tests/gemini-thought-signature.test.ts", "tests/integration-runtime-contract.test.ts"],
   "include": [
     "tests/**/*.ts",
     "src/shared/**/*.ts",

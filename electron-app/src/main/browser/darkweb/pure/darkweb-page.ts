@@ -19,16 +19,335 @@
  * URL injected by scripts/build-internal-pages.mjs from a repo asset — a
  * build-time constant, never user input, so direct interpolation is safe.
  *
+ * `opts.lang` (optional, default 'en') picks the UI language ('en' | 'ru' |
+ * 'hy') for every user-visible string; all copy flows through tr(), so the
+ * 'en' output stays byte-identical to the pre-i18n page. The same
+ * dictionary is embedded into the page script as window.__PAB_STRINGS__
+ * (`</` escaped as `<\/`) for client-side rendered labels.
+ *
  * PURE — no Electron imports.
  */
 import { MATRIX_RAIN_CANVAS, buildMatrixRainScript } from '../../pure/matrix-rain';
+import { parseAppLocale, type AppLocale } from '../../../../shared/app-locale';
 
-export function buildDarkWebPageHtml(logoDataUrl?: string): string {
+export interface DarkWebPageOptions {
+  /** UI language for the page chrome. Defaults to 'en'. */
+  lang?: AppLocale;
+}
+
+const STRINGS: Record<AppLocale, Record<string, string>> = {
+  en: {
+    'page.title': 'Dark Web Search',
+    'brand.tagline': 'Dark Web Search · Tor',
+    'tor.checking': 'Tor: checking…',
+    'tor.online': 'ONLINE',
+    'tor.starting': 'STARTING…',
+    'tor.offline': 'OFFLINE',
+    'tor.checked': 'checked {t}',
+    'tor.statusUnavailable': 'Tor: status unavailable',
+    'dw.title': 'Dark Web Search',
+    'dw.disabled': 'disabled',
+    'search.placeholder': 'Search the dark web…',
+    'search.ariaLabel': 'Dark web search query',
+    'search.button': 'Search',
+    'providers.label': 'Providers:',
+    'filter.label': 'Filter',
+    'filter.all': 'All',
+    'filter.reachable': 'Reachable',
+    'filter.recent': 'Recently checked',
+    'sort.label': 'Sort',
+    'sort.relevance': 'Relevance',
+    'sort.availability': 'Availability',
+    'sort.recent': 'Recent',
+    'state.IDLE': 'IDLE',
+    'state.SEARCHING': 'SEARCHING',
+    'state.PARTIAL_RESULTS': 'PARTIAL_RESULTS',
+    'state.DONE': 'DONE',
+    'state.ERROR': 'ERROR',
+    'state.CANCELLED': 'CANCELLED',
+    'state.GONE': 'GONE',
+    'stop': 'STOP',
+    'empty.initial': 'Search is metadata-only — nothing opens until you click Open.',
+    'empty.noResults': 'No results.',
+    'empty.searching': 'Searching…',
+    'panel.crawl': 'Crawl jobs',
+    'crawl.none': 'No crawl jobs.',
+    'crawl.stats': 'depth {d} · pages {p}/{m} · docs {n}',
+    'crawl.dup': '(+{n} dup)',
+    'crawl.refused': 'Crawl refused: {e}',
+    'panel.downloads': 'Quarantined downloads',
+    'downloads.none': 'No downloads waiting. Onion downloads are quarantined and never auto-run.',
+    'dl.unknownType': 'unknown type',
+    'dl.bytes': '{n} bytes',
+    'dl.danger': 'EXECUTABLE/ARCHIVE — extra caution',
+    'dl.saveAs': 'Save as…',
+    'dl.discard': 'Discard',
+    'panel.history': 'Search history &amp; local index',
+    'history.clear': 'Clear Dark Web search history',
+    'history.none': 'No search history.',
+    'index.placeholder': 'Search local index…',
+    'index.search': 'Search index',
+    'index.clear': 'Clear local index',
+    'index.noMatches': 'No matches in the local index.',
+    'index.indexed': 'indexed {t}',
+    'panel.settings': 'Settings → Dark Web',
+    'settings.enable': 'Enable Dark Web Search',
+    'settings.socksHost': 'Tor SOCKS host',
+    'settings.port': 'port',
+    'settings.spawn': 'Start bundled/installed tor if offline',
+    'settings.timeout': 'Search timeout (ms)',
+    'settings.resultLimit': 'Result limit',
+    'settings.crawlDepth': 'Crawl depth',
+    'settings.crawlPages': 'Crawl pages',
+    'settings.checkAvail': 'Check onion availability through Tor after search',
+    'settings.storeHistory': 'Store search history',
+    'settings.storeIndex': 'Store local index',
+    'settings.save': 'Save settings',
+    'settings.saved': 'Saved.',
+    'settings.saveFailed': 'Save failed.',
+    'settings.safety': 'JavaScript is always OFF in onion tabs. Downloads are quarantined and never executed.',
+    'preview.title': 'Preview',
+    'preview.close': 'Close',
+    'preview.note': 'Sanitized HTML, scripts disabled (sandboxed). This is a cached copy rendered by the app — links stay inert.',
+    'preview.unavailable': 'Preview unavailable.',
+    'preview.unavailableWith': 'Preview unavailable: {e}',
+    'time.sAgo': '{n}s ago',
+    'time.minAgo': '{n} min ago',
+    'time.hAgo': '{n} h ago',
+    'time.dAgo': '{n} d ago',
+    'health.label': 'Health: {h}',
+    'unit.ms': 'ms',
+    'unit.s': 's',
+    'error.prefix': 'Error: {m}',
+    'search.failed': 'Search request failed.',
+    'prov.results': '{n} results',
+    'card.sources': 'Sources: {p}',
+    'card.reachable': 'Reachable: {v}',
+    'card.yes': 'Yes',
+    'card.no': 'No',
+    'card.unknown': 'Unknown',
+    'card.checked': 'Checked: {t}',
+    'card.lastSeen': 'Last seen: {t}',
+    'act.open': 'Open',
+    'act.preview': 'Preview',
+    'act.copyUrl': 'Copy URL',
+    'act.crawl': 'Crawl',
+    'act.addIndex': 'Add to index',
+  },
+  ru: {
+    'page.title': 'Поиск в даркнете',
+    'brand.tagline': 'Поиск в даркнете · Tor',
+    'tor.checking': 'Tor: проверка…',
+    'tor.online': 'ДОСТУПЕН',
+    'tor.starting': 'ЗАПУСК…',
+    'tor.offline': 'НЕДОСТУПЕН',
+    'tor.checked': 'проверено {t}',
+    'tor.statusUnavailable': 'Tor: статус недоступен',
+    'dw.title': 'Поиск в даркнете',
+    'dw.disabled': 'отключено',
+    'search.placeholder': 'Искать в даркнете…',
+    'search.ariaLabel': 'Поисковый запрос (даркнет)',
+    'search.button': 'Поиск',
+    'providers.label': 'Провайдеры:',
+    'filter.label': 'Фильтр',
+    'filter.all': 'Все',
+    'filter.reachable': 'Доступные',
+    'filter.recent': 'Недавно проверенные',
+    'sort.label': 'Сортировка',
+    'sort.relevance': 'Релевантность',
+    'sort.availability': 'Доступность',
+    'sort.recent': 'Недавние',
+    'state.IDLE': 'ОЖИДАНИЕ',
+    'state.SEARCHING': 'ПОИСК',
+    'state.PARTIAL_RESULTS': 'ЧАСТИЧНЫЕ РЕЗУЛЬТАТЫ',
+    'state.DONE': 'ГОТОВО',
+    'state.ERROR': 'ОШИБКА',
+    'state.CANCELLED': 'ОТМЕНЕНО',
+    'state.GONE': 'НЕ НАЙДЕНО',
+    'stop': 'СТОП',
+    'empty.initial': 'Поиск работает только с метаданными — ничего не откроется, пока вы не нажмёте «Открыть».',
+    'empty.noResults': 'Нет результатов.',
+    'empty.searching': 'Поиск…',
+    'panel.crawl': 'Задачи обхода',
+    'crawl.none': 'Задач обхода нет.',
+    'crawl.stats': 'глубина {d} · страниц {p}/{m} · документов {n}',
+    'crawl.dup': '(+{n} дубл.)',
+    'crawl.refused': 'Обход отклонён: {e}',
+    'panel.downloads': 'Загрузки в карантине',
+    'downloads.none': 'Ожидающих загрузок нет. Загрузки из onion-сайтов помещаются в карантин и никогда не запускаются автоматически.',
+    'dl.unknownType': 'неизвестный тип',
+    'dl.bytes': '{n} байт',
+    'dl.danger': 'ИСПОЛНЯЕМЫЙ/АРХИВ — повышенная осторожность',
+    'dl.saveAs': 'Сохранить как…',
+    'dl.discard': 'Удалить',
+    'panel.history': 'История поиска и локальный индекс',
+    'history.clear': 'Очистить историю поиска в даркнете',
+    'history.none': 'История поиска пуста.',
+    'index.placeholder': 'Поиск по локальному индексу…',
+    'index.search': 'Искать в индексе',
+    'index.clear': 'Очистить локальный индекс',
+    'index.noMatches': 'В локальном индексе нет совпадений.',
+    'index.indexed': 'проиндексировано {t}',
+    'panel.settings': 'Настройки → Даркнет',
+    'settings.enable': 'Включить поиск в даркнете',
+    'settings.socksHost': 'Хост Tor SOCKS',
+    'settings.port': 'порт',
+    'settings.spawn': 'Запускать комплектный/установленный tor, если он недоступен',
+    'settings.timeout': 'Тайм-аут поиска (мс)',
+    'settings.resultLimit': 'Лимит результатов',
+    'settings.crawlDepth': 'Глубина обхода',
+    'settings.crawlPages': 'Страниц обхода',
+    'settings.checkAvail': 'Проверять доступность onion-сайтов через Tor после поиска',
+    'settings.storeHistory': 'Сохранять историю поиска',
+    'settings.storeIndex': 'Сохранять локальный индекс',
+    'settings.save': 'Сохранить настройки',
+    'settings.saved': 'Сохранено.',
+    'settings.saveFailed': 'Не удалось сохранить.',
+    'settings.safety': 'В onion-вкладках JavaScript всегда отключён. Загрузки помещаются в карантин и никогда не выполняются.',
+    'preview.title': 'Предпросмотр',
+    'preview.close': 'Закрыть',
+    'preview.note': 'Очищенный HTML, скрипты отключены (песочница). Это кешированная копия, отображаемая приложением, — ссылки остаются неактивными.',
+    'preview.unavailable': 'Предпросмотр недоступен.',
+    'preview.unavailableWith': 'Предпросмотр недоступен: {e}',
+    'time.sAgo': '{n} с назад',
+    'time.minAgo': '{n} мин назад',
+    'time.hAgo': '{n} ч назад',
+    'time.dAgo': '{n} д назад',
+    'health.label': 'Состояние: {h}',
+    'unit.ms': 'мс',
+    'unit.s': 'с',
+    'error.prefix': 'Ошибка: {m}',
+    'search.failed': 'Не удалось выполнить запрос поиска.',
+    'prov.results': '{n} рез.',
+    'card.sources': 'Источники: {p}',
+    'card.reachable': 'Доступен: {v}',
+    'card.yes': 'Да',
+    'card.no': 'Нет',
+    'card.unknown': 'Неизвестно',
+    'card.checked': 'Проверено: {t}',
+    'card.lastSeen': 'Был(а) недавно: {t}',
+    'act.open': 'Открыть',
+    'act.preview': 'Предпросмотр',
+    'act.copyUrl': 'Копировать URL',
+    'act.crawl': 'Обход',
+    'act.addIndex': 'Добавить в индекс',
+  },
+  hy: {
+    'page.title': 'Որոնում Dark Web-ում',
+    'brand.tagline': 'Որոնում Dark Web-ում · Tor',
+    'tor.checking': 'Tor՝ ստուգում…',
+    'tor.online': 'ՀԱՍԱՆԵԼԻ',
+    'tor.starting': 'ՄԵԿՆԱՐԿՈՒՄ…',
+    'tor.offline': 'ԱՆՀԱՍԱՆԵԼԻ',
+    'tor.checked': 'ստուգված՝ {t}',
+    'tor.statusUnavailable': 'Tor՝ կարգավիճակը հասանելի չէ',
+    'dw.title': 'Որոնում Dark Web-ում',
+    'dw.disabled': 'անջատված',
+    'search.placeholder': 'Որոնել dark web-ում…',
+    'search.ariaLabel': 'Որոնման հարցում՝ Dark Web',
+    'search.button': 'Որոնում',
+    'providers.label': 'Պրովայդերներ՝',
+    'filter.label': 'Ֆիլտր',
+    'filter.all': 'Բոլորը',
+    'filter.reachable': 'Հասանելի',
+    'filter.recent': 'Վերջերս ստուգված',
+    'sort.label': 'Դասավորել',
+    'sort.relevance': 'Արդիականություն',
+    'sort.availability': 'Հասանելիություն',
+    'sort.recent': 'Վերջիններ',
+    'state.IDLE': 'ՍՊԱՍՈՒՄ',
+    'state.SEARCHING': 'ՈՐՈՆՈՒՄ',
+    'state.PARTIAL_RESULTS': 'ՄԱՍՆԱԿԻ ԱՐԴՅՈՒՆՔՆԵՐ',
+    'state.DONE': 'ՊԱՏՐԱՍՏ Է',
+    'state.ERROR': 'ՍԽԱԼ',
+    'state.CANCELLED': 'ՉԵՂԱՐԿՎԱԾ',
+    'state.GONE': 'ՉԿԱ',
+    'stop': 'ԿԱՆԳՆԵՑՆԵԼ',
+    'empty.initial': 'Որոնումը միայն մետատվյալներով է աշխատում՝ ոչինչ չի բացվի, մինչև սեղմեք «Բացել»։',
+    'empty.noResults': 'Արդյունք չկա։',
+    'empty.searching': 'Որոնում…',
+    'panel.crawl': 'Հավաքագրման առաջադրանքներ',
+    'crawl.none': 'Հավաքագրման առաջադրանքներ չկան։',
+    'crawl.stats': 'խորություն {d} · էջեր {p}/{m} · փաստաթղթեր {n}',
+    'crawl.dup': '(+{n} կրկ.)',
+    'crawl.refused': 'Հավաքագրումը մերժվեց՝ {e}',
+    'panel.downloads': 'Կարանտինում գտնվող ներբեռնումներ',
+    'downloads.none': 'Սպասող ներբեռնումներ չկան։ Onion ներբեռնումները կարանտինացվում են և երբեք ինքնաբերաբար չեն գործարկվում։',
+    'dl.unknownType': 'անհայտ տեսակ',
+    'dl.bytes': '{n} բայթ',
+    'dl.danger': 'ԳՈՐԾԱՐԿԵԼԻ/ԱՐԽԻՎ՝ լրացուցիչ զգուշություն',
+    'dl.saveAs': 'Պահպանել որպես…',
+    'dl.discard': 'Հեռացնել',
+    'panel.history': 'Որոնման պատմություն և տեղային ինդեքս',
+    'history.clear': 'Մաքրել Dark Web-ի որոնման պատմությունը',
+    'history.none': 'Որոնման պատմություն չկա։',
+    'index.placeholder': 'Որոնում տեղային ինդեքսում…',
+    'index.search': 'Որոնել ինդեքսում',
+    'index.clear': 'Մաքրել տեղային ինդեքսը',
+    'index.noMatches': 'Տեղային ինդեքսում համընկնումներ չկան։',
+    'index.indexed': 'ինդեքսավորված՝ {t}',
+    'panel.settings': 'Կարգավորումներ → Dark Web',
+    'settings.enable': 'Միացնել Dark Web որոնումը',
+    'settings.socksHost': 'Tor SOCKS հոսթ',
+    'settings.port': 'պորտ',
+    'settings.spawn': 'Գործարկել ներառված/տեղադրված tor-ը, եթե այն անհասանելի է',
+    'settings.timeout': 'Որոնման սպասման ժամանակ (մվ)',
+    'settings.resultLimit': 'Արդյունքների սահման',
+    'settings.crawlDepth': 'Հավաքագրման խորություն',
+    'settings.crawlPages': 'Հավաքագրվող էջեր',
+    'settings.checkAvail': 'Որոնումից հետո ստուգել onion կայքերի հասանելիությունը Tor-ով',
+    'settings.storeHistory': 'Պահել որոնման պատմությունը',
+    'settings.storeIndex': 'Պահել տեղային ինդեքսը',
+    'settings.save': 'Պահպանել կարգավորումները',
+    'settings.saved': 'Պահպանվեց։',
+    'settings.saveFailed': 'Չհաջողվեց պահպանել։',
+    'settings.safety': 'Onion ներդիրներում JavaScript-ը միշտ անջատված է։ Ներբեռնումները կարանտինացվում են և երբեք չեն կատարվում։',
+    'preview.title': 'Նախադիտում',
+    'preview.close': 'Փակել',
+    'preview.note': 'Մաքրված HTML, սկրիպտներն անջատված են (ավազատուփ)։ Սա հավելվածի ցուցադրած պահված պատճենն է՝ հղումները ոչ ակտիվ են։',
+    'preview.unavailable': 'Նախադիտումը հասանելի չէ։',
+    'preview.unavailableWith': 'Նախադիտումը հասանելի չէ՝ {e}',
+    'time.sAgo': '{n} վրց առաջ',
+    'time.minAgo': '{n} րոպե առաջ',
+    'time.hAgo': '{n} ժ առաջ',
+    'time.dAgo': '{n} օր առաջ',
+    'health.label': 'Վիճակ՝ {h}',
+    'unit.ms': 'մվ',
+    'unit.s': 'վ',
+    'error.prefix': 'Սխալ՝ {m}',
+    'search.failed': 'Որոնման հարցումը ձախողվեց։',
+    'prov.results': '{n} արդյունք',
+    'card.sources': 'Աղբյուրներ՝ {p}',
+    'card.reachable': 'Հասանելի է՝ {v}',
+    'card.yes': 'Այո',
+    'card.no': 'Ոչ',
+    'card.unknown': 'Անհայտ',
+    'card.checked': 'Ստուգված՝ {t}',
+    'card.lastSeen': 'Վերջին այց՝ {t}',
+    'act.open': 'Բացել',
+    'act.preview': 'Նախադիտում',
+    'act.copyUrl': 'Պատճենել URL-ը',
+    'act.crawl': 'Հավաքագրում',
+    'act.addIndex': 'Ավելացնել ինդեքսում',
+  },
+};
+
+function tr(lang: AppLocale, key: string, vars?: Record<string, string | number>): string {
+  let s = STRINGS[lang][key] ?? STRINGS.en[key] ?? key;
+  if (vars) for (const [k, v] of Object.entries(vars)) s = s.replaceAll(`{${k}}`, String(v));
+  return s;
+}
+
+/** Dictionary payload embedded into the page script (`</` escaped). */
+const PAB_STRINGS_JSON = JSON.stringify(STRINGS).replace(/<\//g, '<\\/');
+
+export function buildDarkWebPageHtml(logoDataUrl?: string, opts?: DarkWebPageOptions): string {
+  const lang: AppLocale = parseAppLocale(opts?.lang);
   return `<!doctype html>
-<html>
+<html lang="${lang}">
 <head>
 <meta charset="utf-8">
-<title>Dark Web Search</title>
+<title>${tr(lang, 'page.title')}</title>
 <style>
   :root { color-scheme: dark; }
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -127,77 +446,92 @@ export function buildDarkWebPageHtml(logoDataUrl?: string): string {
   ${MATRIX_RAIN_CANVAS}
   <div class="head">
     ${logoDataUrl ? `<img class="brand-logo" src="${logoDataUrl}" alt="HayDev Browser — DarkWebSearch logo">` : ''}
-    <div class="brand">Dark Web Search · Tor</div>
+    <div class="brand">${tr(lang, 'brand.tagline')}</div>
     <div class="statusline">
-      <span class="pill" id="tor-pill"><span class="dot"></span><span id="tor-label">Tor: checking…</span></span>
-      <span class="pill" id="dw-pill"><span id="dw-label">Dark Web Search</span></span>
+      <span class="pill" id="tor-pill"><span class="dot"></span><span id="tor-label">${tr(lang, 'tor.checking')}</span></span>
+      <span class="pill" id="dw-pill"><span id="dw-label">${tr(lang, 'dw.title')}</span></span>
     </div>
   </div>
   <form class="searchbar" id="form">
-    <input id="input" placeholder="Search the dark web…" autocomplete="off" spellcheck="false" aria-label="Dark web search query">
-    <button type="submit" id="go">Search</button>
+    <input id="input" placeholder="${tr(lang, 'search.placeholder')}" autocomplete="off" spellcheck="false" aria-label="${tr(lang, 'search.ariaLabel')}">
+    <button type="submit" id="go">${tr(lang, 'search.button')}</button>
   </form>
   <div class="controls">
-    <span>Providers:</span>
+    <span>${tr(lang, 'providers.label')}</span>
     <span id="prov-checks" class="row"></span>
     <span style="flex:1"></span>
-    <label>Filter <select id="filter"><option value="all">All</option><option value="reachable">Reachable</option><option value="recent">Recently checked</option></select></label>
-    <label>Sort <select id="sort"><option value="score">Relevance</option><option value="avail">Availability</option><option value="recent">Recent</option></select></label>
+    <label>${tr(lang, 'filter.label')} <select id="filter"><option value="all">${tr(lang, 'filter.all')}</option><option value="reachable">${tr(lang, 'filter.reachable')}</option><option value="recent">${tr(lang, 'filter.recent')}</option></select></label>
+    <label>${tr(lang, 'sort.label')} <select id="sort"><option value="score">${tr(lang, 'sort.relevance')}</option><option value="avail">${tr(lang, 'sort.availability')}</option><option value="recent">${tr(lang, 'sort.recent')}</option></select></label>
   </div>
   <div class="providerstrip" id="provstrip"></div>
   <div class="statebar" id="statebar">
-    <span class="st"><span class="dot"></span><span id="state-label">IDLE</span></span>
-    <button type="button" id="stop">STOP</button>
+    <span class="st"><span class="dot"></span><span id="state-label">${tr(lang, 'state.IDLE')}</span></span>
+    <button type="button" id="stop">${tr(lang, 'stop')}</button>
   </div>
-  <div class="results" id="results" aria-live="polite"><div class="empty">Search is metadata-only — nothing opens until you click Open.</div></div>
+  <div class="results" id="results" aria-live="polite"><div class="empty">${tr(lang, 'empty.initial')}</div></div>
 
   <details class="panel" id="crawl-panel">
-    <summary>Crawl jobs</summary>
-    <div class="inner" id="crawl-list"><span>No crawl jobs.</span></div>
+    <summary>${tr(lang, 'panel.crawl')}</summary>
+    <div class="inner" id="crawl-list"><span>${tr(lang, 'crawl.none')}</span></div>
   </details>
   <details class="panel" id="downloads-panel">
-    <summary>Quarantined downloads</summary>
-    <div class="inner" id="downloads-list"><span>No downloads waiting. Onion downloads are quarantined and never auto-run.</span></div>
+    <summary>${tr(lang, 'panel.downloads')}</summary>
+    <div class="inner" id="downloads-list"><span>${tr(lang, 'downloads.none')}</span></div>
   </details>
   <details class="panel" id="history-panel">
-    <summary>Search history &amp; local index</summary>
+    <summary>${tr(lang, 'panel.history')}</summary>
     <div class="inner">
       <div class="row" id="history-list"></div>
-      <div class="row"><button type="button" class="danger" id="clear-history">Clear Dark Web search history</button></div>
+      <div class="row"><button type="button" class="danger" id="clear-history">${tr(lang, 'history.clear')}</button></div>
       <div class="row">
-        <input type="text" id="idx-q" placeholder="Search local index…" style="flex:1;min-width:220px">
-        <button type="button" id="idx-go">Search index</button>
+        <input type="text" id="idx-q" placeholder="${tr(lang, 'index.placeholder')}" style="flex:1;min-width:220px">
+        <button type="button" id="idx-go">${tr(lang, 'index.search')}</button>
       </div>
       <div class="row" id="idx-out"></div>
       <div class="row">
-        <button type="button" class="danger" id="clear-index">Clear local index</button>
+        <button type="button" class="danger" id="clear-index">${tr(lang, 'index.clear')}</button>
       </div>
     </div>
   </details>
   <details class="panel" id="settings-panel">
-    <summary>Settings → Dark Web</summary>
+    <summary>${tr(lang, 'panel.settings')}</summary>
     <div class="inner">
-      <div class="row"><label><input type="checkbox" id="set-enabled"> Enable Dark Web Search</label></div>
-      <div class="row">Tor SOCKS host <input type="text" id="set-host" size="14"> port <input type="number" id="set-port" min="1" max="65535"> <label><input type="checkbox" id="set-spawn"> Start bundled/installed tor if offline</label></div>
-      <div class="row">Search timeout (ms) <input type="number" id="set-sto" min="3000" max="120000"> · Result limit <input type="number" id="set-max" min="1" max="200"> · Crawl depth <input type="number" id="set-depth" min="1" max="5"> · Crawl pages <input type="number" id="set-pages" min="1" max="200"></div>
-      <div class="row"><label><input type="checkbox" id="set-avail"> Check onion availability through Tor after search</label></div>
-      <div class="row"><label><input type="checkbox" id="set-hist"> Store search history</label> <label><input type="checkbox" id="set-idx"> Store local index</label></div>
-      <div class="row"><button type="button" id="set-save">Save settings</button><span id="set-msg"></span></div>
-      <div class="row" style="color:#a9bdd9">JavaScript is always OFF in onion tabs. Downloads are quarantined and never executed.</div>
+      <div class="row"><label><input type="checkbox" id="set-enabled"> ${tr(lang, 'settings.enable')}</label></div>
+      <div class="row">${tr(lang, 'settings.socksHost')} <input type="text" id="set-host" size="14"> ${tr(lang, 'settings.port')} <input type="number" id="set-port" min="1" max="65535"> <label><input type="checkbox" id="set-spawn"> ${tr(lang, 'settings.spawn')}</label></div>
+      <div class="row">${tr(lang, 'settings.timeout')} <input type="number" id="set-sto" min="3000" max="120000"> · ${tr(lang, 'settings.resultLimit')} <input type="number" id="set-max" min="1" max="200"> · ${tr(lang, 'settings.crawlDepth')} <input type="number" id="set-depth" min="1" max="5"> · ${tr(lang, 'settings.crawlPages')} <input type="number" id="set-pages" min="1" max="200"></div>
+      <div class="row"><label><input type="checkbox" id="set-avail"> ${tr(lang, 'settings.checkAvail')}</label></div>
+      <div class="row"><label><input type="checkbox" id="set-hist"> ${tr(lang, 'settings.storeHistory')}</label> <label><input type="checkbox" id="set-idx"> ${tr(lang, 'settings.storeIndex')}</label></div>
+      <div class="row"><button type="button" id="set-save">${tr(lang, 'settings.save')}</button><span id="set-msg"></span></div>
+      <div class="row" style="color:#a9bdd9">${tr(lang, 'settings.safety')}</div>
     </div>
   </details>
 
   <div id="preview-overlay">
     <div id="preview-box">
-      <div id="preview-head"><span id="preview-title">Preview</span><button type="button" id="preview-close">Close</button></div>
-      <div id="preview-note">Sanitized HTML, scripts disabled (sandboxed). This is a cached copy rendered by the app — links stay inert.</div>
+      <div id="preview-head"><span id="preview-title">${tr(lang, 'preview.title')}</span><button type="button" id="preview-close">${tr(lang, 'preview.close')}</button></div>
+      <div id="preview-note">${tr(lang, 'preview.note')}</div>
       <iframe id="preview-frame" sandbox=""></iframe>
     </div>
   </div>
 
 <script>
+  window.__PAB_LANG__ = ${JSON.stringify(lang)};
+  window.__PAB_STRINGS__ = ${PAB_STRINGS_JSON};
 (function () {
   'use strict';
+  var LANG = window.__PAB_LANG__ || 'en';
+  var DICTS = window.__PAB_STRINGS__ || {};
+  function tr(key, vars) {
+    var d = DICTS[LANG] || DICTS.en || {};
+    var s = d[key] != null ? d[key] : ((DICTS.en && DICTS.en[key] != null) ? DICTS.en[key] : key);
+    if (vars) for (var k in vars) s = s.split('{' + k + '}').join(String(vars[k]));
+    return s;
+  }
+  var STATE_TEXT = {
+    IDLE: tr('state.IDLE'), SEARCHING: tr('state.SEARCHING'), PARTIAL_RESULTS: tr('state.PARTIAL_RESULTS'),
+    DONE: tr('state.DONE'), ERROR: tr('state.ERROR'), CANCELLED: tr('state.CANCELLED'), GONE: tr('state.GONE')
+  };
+  function stateText(s) { return STATE_TEXT[s] || s; }
   var $ = function (id) { return document.getElementById(id); };
   var form = $('form'), input = $('input'), go = $('go'), stop = $('stop');
   var results = $('results'), provstrip = $('provstrip'), statebar = $('statebar'), stateLabel = $('state-label');
@@ -219,10 +553,10 @@ export function buildDarkWebPageHtml(logoDataUrl?: string): string {
   function relTime(ts) {
     if (!ts) return '—';
     var s = Math.max(0, (Date.now() - ts) / 1000);
-    if (s < 60) return Math.round(s) + 's ago';
-    if (s < 3600) return Math.round(s / 60) + ' min ago';
-    if (s < 86400) return Math.round(s / 3600) + ' h ago';
-    return Math.round(s / 86400) + ' d ago';
+    if (s < 60) return tr('time.sAgo', { n: Math.round(s) });
+    if (s < 3600) return tr('time.minAgo', { n: Math.round(s / 60) });
+    if (s < 86400) return tr('time.hAgo', { n: Math.round(s / 3600) });
+    return tr('time.dAgo', { n: Math.round(s / 86400) });
   }
 
   // ---- Tor status -------------------------------------------------------
@@ -232,18 +566,18 @@ export function buildDarkWebPageHtml(logoDataUrl?: string): string {
       torReady = t.state === 'READY';
       var pill = $('tor-pill');
       pill.className = 'pill ' + (torReady ? 'tor-ready' : (t.state === 'STARTING' ? 'tor-starting' : 'tor-offline'));
-      var label = 'Tor: ' + (t.state === 'READY' ? 'ONLINE' : t.state === 'STARTING' ? 'STARTING…' : 'OFFLINE');
+      var label = 'Tor: ' + (t.state === 'READY' ? tr('tor.online') : t.state === 'STARTING' ? tr('tor.starting') : tr('tor.offline'));
       if (t.socksHost) label += ' · ' + t.socksHost + ':' + t.socksPort;
-      if (torReady && t.latencyMs != null) label += ' · ' + t.latencyMs + ' ms';
-      if (t.lastCheckAt) label += ' · checked ' + relTime(t.lastCheckAt);
+      if (torReady && t.latencyMs != null) label += ' · ' + t.latencyMs + ' ' + tr('unit.ms');
+      if (t.lastCheckAt) label += ' · ' + tr('tor.checked', { t: relTime(t.lastCheckAt) });
       $('tor-label').textContent = label;
       $('tor-pill').title = t.detail || '';
       if (!$('dw-label').textContent.match(/·/)) {
-        $('dw-label').textContent = 'Dark Web Search' + (r.body.enabled ? '' : ' · disabled');
+        $('dw-label').textContent = tr('dw.title') + (r.body.enabled ? '' : ' · ' + tr('dw.disabled'));
       }
       renderProviderChecks(r.body.providers || []);
     }).catch(function () {
-      $('tor-label').textContent = 'Tor: status unavailable';
+      $('tor-label').textContent = tr('tor.statusUnavailable');
     });
   }
 
@@ -260,7 +594,7 @@ export function buildDarkWebPageHtml(logoDataUrl?: string): string {
       cb.disabled = !p.enabled && p.health === 'OFFLINE';
       label.appendChild(cb);
       label.appendChild(document.createTextNode(p.name + (p.requiresTor ? ' (Tor)' : '')));
-      label.title = 'Health: ' + p.health + (p.lastLatencyMs != null ? ' · ' + p.lastLatencyMs + ' ms' : '');
+      label.title = tr('health.label', { h: p.health }) + (p.lastLatencyMs != null ? ' · ' + p.lastLatencyMs + ' ' + tr('unit.ms') : '');
       box.appendChild(label);
       providerEls[p.id] = cb;
     });
@@ -283,7 +617,7 @@ export function buildDarkWebPageHtml(logoDataUrl?: string): string {
       renderProgress(r.body);
       renderResults(r.body);
       pollTimer = setInterval(function () { pollSearch(currentSearchId); }, 700);
-    }).catch(function () { showError('Search request failed.'); });
+    }).catch(function () { showError(tr('search.failed')); });
     input.value = '';
   });
 
@@ -301,7 +635,7 @@ export function buildDarkWebPageHtml(logoDataUrl?: string): string {
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = null;
     currentSearchId = null;
-    stateLabel.textContent = state || 'IDLE';
+    stateLabel.textContent = state ? stateText(state) : tr('state.IDLE');
     statebar.style.display = 'none';
     go.disabled = false;
     refreshStatus();
@@ -312,7 +646,7 @@ export function buildDarkWebPageHtml(logoDataUrl?: string): string {
 
   function showError(msg) {
     results.textContent = '';
-    results.appendChild(el('div', 'error', 'Error: ' + msg));
+    results.appendChild(el('div', 'error', tr('error.prefix', { m: msg })));
     stopPolling('ERROR');
   }
 
@@ -321,12 +655,12 @@ export function buildDarkWebPageHtml(logoDataUrl?: string): string {
     Object.keys(resp.providers || {}).forEach(function (id) {
       var p = resp.providers[id];
       var cls = p.status === 'ok' ? 'ok' : (p.status === 'disabled' ? '' : p.status);
-      var text = id + ' · ' + p.status + (p.status === 'ok' ? ' · ' + p.resultCount + ' results · ' + p.durationMs + ' ms' : (p.errorCode ? ' · ' + p.errorCode : ''));
+      var text = id + ' · ' + p.status + (p.status === 'ok' ? ' · ' + tr('prov.results', { n: p.resultCount }) + ' · ' + p.durationMs + ' ' + tr('unit.ms') : (p.errorCode ? ' · ' + p.errorCode : ''));
       provstrip.appendChild(el('span', 'prov ' + cls, text));
     });
     go.disabled = resp.state === 'SEARCHING' || resp.state === 'PARTIAL_RESULTS';
     statebar.style.display = go.disabled ? 'flex' : 'none';
-    stateLabel.textContent = resp.state + (resp.durationMs ? ' · ' + Math.round(resp.durationMs / 100) / 10 + 's' : '');
+    stateLabel.textContent = stateText(resp.state) + (resp.durationMs ? ' · ' + Math.round(resp.durationMs / 100) / 10 + tr('unit.s') : '');
   }
 
   // ---- result cards -------------------------------------------------------
@@ -347,7 +681,7 @@ export function buildDarkWebPageHtml(logoDataUrl?: string): string {
     results.textContent = '';
     if (list.length === 0) {
       results.appendChild(el('div', 'empty',
-        resp.state === 'DONE' && lastResults.length === 0 ? 'No results.' : (go.disabled ? 'Searching…' : 'No results.')));
+        resp.state === 'DONE' && lastResults.length === 0 ? tr('empty.noResults') : (go.disabled ? tr('empty.searching') : tr('empty.noResults'))));
       return;
     }
     list.forEach(function (r) { results.appendChild(card(r)); });
@@ -364,12 +698,12 @@ export function buildDarkWebPageHtml(logoDataUrl?: string): string {
     if (r.snippet) c.appendChild(el('div', 's', r.snippet));
     c.appendChild(el('div', 'u', r.url));
     var meta = el('div', 'meta');
-    meta.appendChild(el('span', null, 'Sources: ' + r.providers.join(' · ')));
+    meta.appendChild(el('span', null, tr('card.sources', { p: r.providers.join(' · ') })));
     var reach = el('span', 'r-' + r.reachable,
-      'Reachable: ' + (r.reachable === 'yes' ? 'Yes' : r.reachable === 'no' ? 'No' : 'Unknown'));
+      tr('card.reachable', { v: r.reachable === 'yes' ? tr('card.yes') : r.reachable === 'no' ? tr('card.no') : tr('card.unknown') }));
     meta.appendChild(reach);
-    meta.appendChild(el('span', null, 'Checked: ' + (r.checkedAt ? relTime(r.checkedAt) : '—')));
-    if (r.lastSeen) meta.appendChild(el('span', null, 'Last seen: ' + relTime(r.lastSeen)));
+    meta.appendChild(el('span', null, tr('card.checked', { t: r.checkedAt ? relTime(r.checkedAt) : '—' })));
+    if (r.lastSeen) meta.appendChild(el('span', null, tr('card.lastSeen', { t: relTime(r.lastSeen) })));
     c.appendChild(meta);
 
     var acts = el('div', 'acts');
@@ -380,11 +714,11 @@ export function buildDarkWebPageHtml(logoDataUrl?: string): string {
       b.addEventListener('click', fn);
       return b;
     };
-    acts.appendChild(Object.assign(document.createElement('a'), { href: '/open?url=' + encodeURIComponent(r.url), textContent: 'Open' }));
-    acts.appendChild(mk('Preview', function () { preview(r.url); }));
-    acts.appendChild(mk('Copy URL', function () { navigator.clipboard.writeText(r.url).catch(function () {}); }));
-    acts.appendChild(mk('Crawl', function () { crawl(r.url, 1, 25); }));
-    acts.appendChild(mk('Add to index', function () {
+    acts.appendChild(Object.assign(document.createElement('a'), { href: '/open?url=' + encodeURIComponent(r.url), textContent: tr('act.open') }));
+    acts.appendChild(mk(tr('act.preview'), function () { preview(r.url); }));
+    acts.appendChild(mk(tr('act.copyUrl'), function () { navigator.clipboard.writeText(r.url).catch(function () {}); }));
+    acts.appendChild(mk(tr('act.crawl'), function () { crawl(r.url, 1, 25); }));
+    acts.appendChild(mk(tr('act.addIndex'), function () {
       api('index/add', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: r.url }) });
     }));
     c.appendChild(acts);
@@ -395,11 +729,11 @@ export function buildDarkWebPageHtml(logoDataUrl?: string): string {
   function preview(url) {
     api('preview', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: url }) })
       .then(function (r) {
-        if (r.body.error) { window.alert('Preview unavailable: ' + r.body.error); return; }
+        if (r.body.error) { window.alert(tr('preview.unavailableWith', { e: r.body.error })); return; }
         $('preview-title').textContent = r.body.title || url;
         $('preview-frame').srcdoc = '<body style="font-family:system-ui;max-width:760px;margin:24px auto;padding:0 16px;line-height:1.6">' + r.body.html + '</body>';
         $('preview-overlay').style.display = 'flex';
-      }).catch(function () { window.alert('Preview unavailable.'); });
+      }).catch(function () { window.alert(tr('preview.unavailable')); });
   }
   $('preview-close').addEventListener('click', function () {
     $('preview-overlay').style.display = 'none';
@@ -410,7 +744,7 @@ export function buildDarkWebPageHtml(logoDataUrl?: string): string {
   function crawl(url, depth, pages) {
     api('crawl', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: url, maxDepth: depth, maxPages: pages }) })
       .then(function (r) {
-        if (r.body.error) { window.alert('Crawl refused: ' + r.body.error); return; }
+        if (r.body.error) { window.alert(tr('crawl.refused', { e: r.body.error })); return; }
         refreshCrawls();
         $('crawl-panel').open = true;
       });
@@ -420,17 +754,17 @@ export function buildDarkWebPageHtml(logoDataUrl?: string): string {
       var box = $('crawl-list');
       var jobs = r.body || [];
       box.textContent = '';
-      if (!jobs.length) { box.appendChild(el('span', null, 'No crawl jobs.')); return; }
+      if (!jobs.length) { box.appendChild(el('span', null, tr('crawl.none'))); return; }
       var anyRunning = false;
       jobs.slice().reverse().forEach(function (j) {
         anyRunning = anyRunning || j.state === 'RUNNING' || j.state === 'QUEUED' || j.state === 'STOPPING';
         var line = el('div', 'jobline');
         line.appendChild(el('span', 'st-' + j.state.toLowerCase(), j.state));
         line.appendChild(el('span', null, j.seedUrl));
-        line.appendChild(el('span', null, 'depth ' + j.maxDepth + ' · pages ' + j.pagesFetched + '/' + j.maxPages + ' · docs ' + j.docsAdded + (j.docsDuplicate ? ' (+' + j.docsDuplicate + ' dup)' : '')));
+        line.appendChild(el('span', null, tr('crawl.stats', { d: j.maxDepth, p: j.pagesFetched, m: j.maxPages, n: j.docsAdded }) + (j.docsDuplicate ? tr('crawl.dup', { n: j.docsDuplicate }) : '')));
         if (j.state === 'RUNNING' || j.state === 'QUEUED' || j.state === 'STOPPING') {
           var b = document.createElement('button');
-          b.type = 'button'; b.textContent = 'STOP'; b.className = 'danger';
+          b.type = 'button'; b.textContent = tr('stop'); b.className = 'danger';
           b.addEventListener('click', function () { api('crawl/' + j.jobId + '/cancel', { method: 'POST' }).then(refreshCrawls); });
           line.appendChild(b);
         }
@@ -447,20 +781,20 @@ export function buildDarkWebPageHtml(logoDataUrl?: string): string {
       var box = $('downloads-list');
       var items = r.body.downloads || [];
       box.textContent = '';
-      if (!items.length) { box.appendChild(el('span', null, 'No downloads waiting. Onion downloads are quarantined and never auto-run.')); return; }
+      if (!items.length) { box.appendChild(el('span', null, tr('downloads.none'))); return; }
       items.forEach(function (d) {
         var line = el('div', 'dl-line');
         line.appendChild(el('strong', null, d.filename));
-        line.appendChild(el('span', null, (d.mimeType || 'unknown type') + ' · ' + d.sizeBytes + ' bytes'));
+        line.appendChild(el('span', null, (d.mimeType || tr('dl.unknownType')) + ' · ' + tr('dl.bytes', { n: d.sizeBytes })));
         line.appendChild(el('span', null, d.sourceUrl));
-        if (d.dangerous) line.appendChild(el('span', 'st-error', 'EXECUTABLE/ARCHIVE — extra caution'));
+        if (d.dangerous) line.appendChild(el('span', 'st-error', tr('dl.danger')));
         line.appendChild(el('span', null, d.state));
         if (d.state === 'QUARANTINED') {
           var save = document.createElement('button');
-          save.type = 'button'; save.textContent = 'Save as…';
+          save.type = 'button'; save.textContent = tr('dl.saveAs');
           save.addEventListener('click', function () { api('downloads/' + d.id + '/save', { method: 'POST' }).then(refreshDownloads); });
           var discard = document.createElement('button');
-          discard.type = 'button'; discard.textContent = 'Discard'; discard.className = 'danger';
+          discard.type = 'button'; discard.textContent = tr('dl.discard'); discard.className = 'danger';
           discard.addEventListener('click', function () { api('downloads/' + d.id + '/discard', { method: 'POST' }).then(refreshDownloads); });
           line.appendChild(save); line.appendChild(discard);
         }
@@ -475,7 +809,7 @@ export function buildDarkWebPageHtml(logoDataUrl?: string): string {
       var box = $('history-list');
       box.textContent = '';
       var entries = r.body.entries || [];
-      if (!entries.length) { box.appendChild(el('span', null, 'No search history.')); return; }
+      if (!entries.length) { box.appendChild(el('span', null, tr('history.none'))); return; }
       entries.slice(0, 12).forEach(function (h) {
         var line = el('span', 'hline', h.query + ' — ' + new Date(h.at).toLocaleString());
         box.appendChild(line);
@@ -492,12 +826,12 @@ export function buildDarkWebPageHtml(logoDataUrl?: string): string {
     if (!q) return;
     api('index/search?q=' + encodeURIComponent(q)).then(function (r) {
       var hits = r.body.hits || [];
-      if (!hits.length) { out.appendChild(el('span', null, 'No matches in the local index.')); return; }
+      if (!hits.length) { out.appendChild(el('span', null, tr('index.noMatches'))); return; }
       hits.forEach(function (h) {
         var line = el('div', 'jobline');
         line.appendChild(el('strong', null, h.title));
         line.appendChild(el('span', null, h.url));
-        line.appendChild(el('span', null, 'indexed ' + relTime(h.fetchedAt)));
+        line.appendChild(el('span', null, tr('index.indexed', { t: relTime(h.fetchedAt) })));
         out.appendChild(line);
       });
     });
@@ -534,8 +868,8 @@ export function buildDarkWebPageHtml(logoDataUrl?: string): string {
     };
     patch.search.availability = { enabled: $('set-avail').checked };
     api('settings', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) })
-      .then(function () { $('set-msg').textContent = 'Saved.'; refreshStatus(); })
-      .catch(function () { $('set-msg').textContent = 'Save failed.'; });
+      .then(function () { $('set-msg').textContent = tr('settings.saved'); refreshStatus(); })
+      .catch(function () { $('set-msg').textContent = tr('settings.saveFailed'); });
   });
 
   // ---- boot -------------------------------------------------------------------

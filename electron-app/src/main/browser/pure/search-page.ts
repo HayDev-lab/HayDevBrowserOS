@@ -16,6 +16,7 @@
  */
 
 import { MATRIX_RAIN_CANVAS, buildMatrixRainScript } from './matrix-rain';
+import type { AppLocale } from '../../../shared/app-locale';
 
 export interface SearchPageOptions {
   /** Base URL of the local Perplexica instance. */
@@ -28,6 +29,9 @@ export interface SearchPageOptions {
   /** Brand hero image as a `data:image/*` URL injected by the build script
    * from a repo asset — a build-time constant, never user input. */
   logoDataUrl?: string;
+  /** UI language for every user-visible string on the page (default 'en';
+   * omitting it keeps the historical output unchanged). */
+  lang?: AppLocale;
 }
 
 /** Central page-side bounds — no magic numbers in the script (spec §5/§37). */
@@ -36,14 +40,146 @@ export const SEARCH_PAGE_BOUNDS = {
   searchTimeoutMs: 150_000,
 } as const;
 
+/** User-visible strings per locale. `en` values are the historical page
+ * strings verbatim (so the default output is unchanged); keys are resolved
+ * server-side via tr() and client-side via window.__PAB_STRINGS__. Brand
+ * names (HayDev, Perplexica, Tor, DuckDuckGo, Deep Research) stay as-is. */
+const STRINGS: Record<AppLocale, Record<string, string>> = {
+  en: {
+    'logo.alt': 'HayDev Browser — Search logo',
+    'search.placeholder': 'Спроси что угодно — поиск с ИИ-ответом…',
+    'input.aria': 'HayDev Search query',
+    'modes.aria': 'Search mode',
+    'status.searching': 'Searching the web and generating an answer…',
+    'answer.empty': '(empty answer)',
+    'error.aiUnavailable': 'AI search is unavailable. Web search instead: ',
+    'error.noModel': 'No usable chat model is configured.',
+    'error.emptyResponse': 'Empty response',
+    'error.search': 'Search error',
+    'error.searchFailed': 'Search failed.',
+    'error.unavailable': 'Search unavailable ({detail}).',
+    'mode.web': 'AI + Web',
+    'mode.discussions': 'Discussions',
+    'mode.academic': 'Academic',
+    'mode.research': 'Deep Research',
+    'mode.darkweb': 'Dark Web',
+    'tooltip.web': 'General AI + web search',
+    'tooltip.discussions': 'Community discussions and forums',
+    'tooltip.academic': 'Papers and academic sources',
+    'tooltip.research': 'Run this query through the Deep Research agent pipeline',
+    'tooltip.darkweb': 'Search the deep/dark web via Tor',
+    'note.mode': 'Mode: {mode}',
+    'note.darkwebNeedQuery': 'Type a query first — Dark Web search will use it.',
+    'note.researchUnavailable': 'Deep Research is unavailable on this page.',
+    'note.researchNeedQuery': 'Type a query first — Deep Research will use it.',
+    'note.researchStarting': 'Starting Deep Research — the answer will appear here…',
+    'note.researchRunningSteps': 'Deep Research running — steps shown below…',
+    'note.researchCouldNotStart': 'Deep Research could not start.',
+    'note.researchFailed': 'Deep Research request failed.',
+    'note.researchComplete': 'Deep Research complete — answer above, sources below.',
+    'research.progress': 'Deep Research running…',
+    'research.step': 'Deep Research running — step {n}… (invisible page fetches, your tabs are untouched)',
+    'research.finished': 'finished',
+    'research.noAnswer': 'Deep Research {state} — no answer was produced.',
+    'sources.head': 'SOURCES ({n})',
+  },
+  ru: {
+    'logo.alt': 'HayDev Browser — логотип поиска',
+    'search.placeholder': 'Спроси что угодно — поиск с ИИ-ответом…',
+    'input.aria': 'Поисковый запрос HayDev Search',
+    'modes.aria': 'Режим поиска',
+    'status.searching': 'Ищу в интернете и формирую ответ…',
+    'answer.empty': '(пустой ответ)',
+    'error.aiUnavailable': 'ИИ-поиск недоступен. Поиск в интернете вместо него: ',
+    'error.noModel': 'Ни одна пригодная чат-модель не настроена.',
+    'error.emptyResponse': 'Пустой ответ',
+    'error.search': 'Ошибка поиска',
+    'error.searchFailed': 'Поиск не удался.',
+    'error.unavailable': 'Поиск недоступен ({detail}).',
+    'mode.web': 'ИИ + Веб',
+    'mode.discussions': 'Обсуждения',
+    'mode.academic': 'Академический',
+    'mode.research': 'Глубокое исследование',
+    'mode.darkweb': 'Дарквеб',
+    'tooltip.web': 'Общий ИИ-поиск и поиск в интернете',
+    'tooltip.discussions': 'Обсуждения и форумы сообществ',
+    'tooltip.academic': 'Научные статьи и академические источники',
+    'tooltip.research': 'Прогнать этот запрос через конвейер агента Deep Research',
+    'tooltip.darkweb': 'Поиск в глубокой/тёмной сети через Tor',
+    'note.mode': 'Режим: {mode}',
+    'note.darkwebNeedQuery': 'Сначала введите запрос — поиск в Дарквебе будет использовать его.',
+    'note.researchUnavailable': 'Deep Research недоступен на этой странице.',
+    'note.researchNeedQuery': 'Сначала введите запрос — Deep Research будет использовать его.',
+    'note.researchStarting': 'Запуск Deep Research — ответ появится здесь…',
+    'note.researchRunningSteps': 'Deep Research выполняется — шаги показаны ниже…',
+    'note.researchCouldNotStart': 'Не удалось запустить Deep Research.',
+    'note.researchFailed': 'Запрос Deep Research не удался.',
+    'note.researchComplete': 'Deep Research завершён — ответ выше, источники ниже.',
+    'research.progress': 'Deep Research выполняется…',
+    'research.step': 'Deep Research выполняется — шаг {n}… (невидимые запросы страницы, ваши вкладки не затрагиваются)',
+    'research.finished': 'завершён',
+    'research.noAnswer': 'Deep Research {state} — ответ не получен.',
+    'sources.head': 'ИСТОЧНИКИ ({n})',
+  },
+  hy: {
+    'logo.alt': 'HayDev Browser — որոնման լոգո',
+    'search.placeholder': 'Հարցրեք ցանկացած բան — որոնում ԱԻ-պատասխանով…',
+    'input.aria': 'HayDev Search հարցում',
+    'modes.aria': 'Որոնման ռեժիմ',
+    'status.searching': 'Որոնում եմ համացանցում և պատասխան եմ կազմում…',
+    'answer.empty': '(դատարկ պատասխան)',
+    'error.aiUnavailable': 'ԱԻ որոնումը հասանելի չէ։ Փոխարենը որոնել համացանցում՝ ',
+    'error.noModel': 'Օգտագործելի չաթ-մոդել չի կազմաձևված։',
+    'error.emptyResponse': 'Դատարկ պատասխան',
+    'error.search': 'Որոնման սխալ',
+    'error.searchFailed': 'Որոնումը ձախողվեց։',
+    'error.unavailable': 'Որոնումը հասանելի չէ ({detail})։',
+    'mode.web': 'ԱԻ + Վեբ',
+    'mode.discussions': 'Քննարկումներ',
+    'mode.academic': 'Ակադեմիական',
+    'mode.research': 'Խորը հետազոտություն',
+    'mode.darkweb': 'Դարք վեբ',
+    'tooltip.web': 'Ընդհանուր ԱԻ և համացանցային որոնում',
+    'tooltip.discussions': 'Համայնքի քննարկումներ և ֆորումներ',
+    'tooltip.academic': 'Գիտական հոդվածներ և ակադեմիական աղբյուրներ',
+    'tooltip.research': 'Անցկացնել այս հարցումը Deep Research գործակալի խողովակաշարով',
+    'tooltip.darkweb': 'Որոնում խորը/մութ ցանցում Tor-ի միջոցով',
+    'note.mode': 'Ռեժիմ՝ {mode}',
+    'note.darkwebNeedQuery': 'Նախ մուտքագրեք հարցումը — Դարք վեբի որոնումը կօգտագործի այն։',
+    'note.researchUnavailable': 'Deep Research-ը հասանելի չէ այս էջում։',
+    'note.researchNeedQuery': 'Նախ մուտքագրեք հարցումը — Deep Research-ը կօգտագործի այն։',
+    'note.researchStarting': 'Մեկնարկում է Deep Research-ը — պատասխանը կհայտնվի այստեղ…',
+    'note.researchRunningSteps': 'Deep Research-ը աշխատում է — քայլերը ցուցադրվում են ստորև…',
+    'note.researchCouldNotStart': 'Deep Research-ը չհաջողվեց մեկնարկել։',
+    'note.researchFailed': 'Deep Research հարցումը ձախողվեց։',
+    'note.researchComplete': 'Deep Research-ն ավարտված է — պատասխանը վերևում, աղբյուրները՝ ստորև։',
+    'research.progress': 'Deep Research-ը աշխատում է…',
+    'research.step': 'Deep Research-ը աշխատում է — քայլ {n}… (էջի անտեսանելի հարցումներ, ձեր ներդիրները անփոփոխ են)',
+    'research.finished': 'ավարտված',
+    'research.noAnswer': 'Deep Research {state} — պատասխան չի ստացվել։',
+    'sources.head': 'ԱՂԲՅՈՒՐՆԵՐ ({n})',
+  },
+};
+
+/** Resolve a UI string for `lang`, with `{var}` interpolation. */
+function tr(lang: AppLocale, key: string, vars?: Record<string, string | number>): string {
+  let s = STRINGS[lang][key] ?? STRINGS.en[key] ?? key;
+  if (vars) for (const [k, v] of Object.entries(vars)) s = s.replaceAll(`{${k}}`, String(v));
+  return s;
+}
+
 export function buildSearchPageHtml(opts: SearchPageOptions): string {
+  const lang: AppLocale = opts.lang ?? 'en';
   const apiBase = JSON.stringify(opts.perplexicaURL.replace(/\/$/, ''));
   const modelKey = JSON.stringify(opts.modelKey);
   const providersTimeout = opts.providersTimeoutMs ?? SEARCH_PAGE_BOUNDS.providersTimeoutMs;
   const searchTimeout = opts.searchTimeoutMs ?? SEARCH_PAGE_BOUNDS.searchTimeoutMs;
+  // en strings merged under the locale so the page script always has a full
+  // key set; `</` escaped so a translation can never close the <script> tag.
+  const stringsJson = JSON.stringify({ ...STRINGS.en, ...STRINGS[lang] }).replace(/<\//g, '<\\/');
 
   return `<!doctype html>
-<html>
+<html lang="${lang}">
 <head>
 <meta charset="utf-8">
 <link rel="icon" type="image/png" href="data:image/png;base64,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">
@@ -170,16 +306,17 @@ export function buildSearchPageHtml(opts: SearchPageOptions): string {
 <body>
   ${MATRIX_RAIN_CANVAS}
   <div class="head">
-    ${opts.logoDataUrl ? `<img class="brand-logo" src="${opts.logoDataUrl}" alt="HayDev Browser — Search logo">` : ''}
+    ${opts.logoDataUrl ? `<img class="brand-logo" src="${opts.logoDataUrl}" alt="${tr(lang, 'logo.alt')}">` : ''}
     <div class="brand">HayDev Search</div>
     <form class="search" id="form">
-      <input id="input" placeholder="Спроси что угодно — поиск с ИИ-ответом…" autocomplete="off" spellcheck="false" aria-label="HayDev Search query">
+      <input id="input" placeholder="${tr(lang, 'search.placeholder')}" autocomplete="off" spellcheck="false" aria-label="${tr(lang, 'input.aria')}">
     </form>
   </div>
-  <div class="modes" id="modes" role="radiogroup" aria-label="Search mode"></div>
+  <div class="modes" id="modes" role="radiogroup" aria-label="${tr(lang, 'modes.aria')}"></div>
   <p class="mode-note" id="mode-note" role="status" aria-live="polite"></p>
   <div id="chat" aria-live="polite"></div>
 <script>
+  window.__PAB_STRINGS__ = ${stringsJson};
 (function () {
   var API = ${apiBase};
   var MODEL = ${modelKey};
@@ -191,6 +328,12 @@ export function buildSearchPageHtml(opts: SearchPageOptions): string {
   var history = [];   // [ [human, assistant], … ] for the API
   var busy = false;
   var providersCache = null;   // /api/providers payload for this session
+  var S = window.__PAB_STRINGS__ || {};   // UI strings for the current locale
+  function L(key, vars) {
+    var s = S[key] || key;
+    if (vars) for (var k in vars) s = s.split('{' + k + '}').join(String(vars[k]));
+    return s;
+  }
 
   function el(tag, cls, text) {
     var d = document.createElement(tag);
@@ -207,7 +350,7 @@ export function buildSearchPageHtml(opts: SearchPageOptions): string {
   function addStatus() {
     var d = el('div', 'status');
     d.innerHTML = '<span class="dot"></span>';
-    d.appendChild(document.createTextNode('Searching the web and generating an answer…'));
+    d.appendChild(document.createTextNode(L('status.searching')));
     chat.appendChild(d);
     return d;
   }
@@ -314,7 +457,7 @@ export function buildSearchPageHtml(opts: SearchPageOptions): string {
       var a = document.createElement('a');
       a.href = 'https://duckduckgo.com/?q=' + encodeURIComponent(q);
       a.textContent = q + ' — DuckDuckGo';
-      fb.appendChild(document.createTextNode('AI search is unavailable. Web search instead: '));
+      fb.appendChild(document.createTextNode(L('error.aiUnavailable')));
       fb.appendChild(a);
       chat.appendChild(fb);
     }
@@ -336,7 +479,7 @@ export function buildSearchPageHtml(opts: SearchPageOptions): string {
       var providers = providersCache.providers || [];
       var candidates = pickChatCandidates(providers);
       var embedModel = pickEmbedModel(providers);
-      if (!candidates.length) { throw new Error('No usable chat model is configured.'); }
+      if (!candidates.length) { throw new Error(L('error.noModel')); }
 
       var lastErr = null;
       // Bounded provider fallback: at most 2 distinct providers (spec §10).
@@ -367,10 +510,10 @@ export function buildSearchPageHtml(opts: SearchPageOptions): string {
           // Controlled provider failure (HTTP 502 + {message, error:{code}}):
           // treat as failure so the NEXT candidate provider is tried instead
           // of rendering the error text as the answer.
-          if (!j || j.error) throw new Error(j && j.error && j.error.code ? String(j.error.code) : (j && j.message === undefined ? 'Empty response' : 'Search error'));
-          if (j.message === undefined) throw new Error('Empty response');
+          if (!j || j.error) throw new Error(j && j.error && j.error.code ? String(j.error.code) : (j && j.message === undefined ? L('error.emptyResponse') : L('error.search')));
+          if (j.message === undefined) throw new Error(L('error.emptyResponse'));
           st.remove();
-          addAnswer(j.message || '(empty answer)');
+          addAnswer(j.message || L('answer.empty'));
           var sources = j.sources || [];
           if (sources.length) addSources(sources);
           history.push([q, j.message || '']);
@@ -382,10 +525,10 @@ export function buildSearchPageHtml(opts: SearchPageOptions): string {
           providersCache = null; // provider list may have changed server-side
         }
       }
-      throw lastErr || new Error('Search failed.');
+      throw lastErr || new Error(L('error.searchFailed'));
     } catch (err) {
       st.remove();
-      showError('Search unavailable (' + String(err && err.message ? err.message : err) + ').', q);
+      showError(L('error.unavailable', { detail: String(err && err.message ? err.message : err) }), q);
       busy = false;
       scroll();
     }
@@ -454,12 +597,8 @@ export function buildSearchPageHtml(opts: SearchPageOptions): string {
       var active = m.id === mode;
       b.setAttribute('aria-checked', active ? 'true' : 'false');
       if (m.id === 'research' && !bridge) b.disabled = true;
-      b.title = m.id === 'web' ? 'General AI + web search'
-        : m.id === 'discussions' ? 'Community discussions and forums'
-        : m.id === 'academic' ? 'Papers and academic sources'
-        : m.id === 'research' ? 'Run this query through the Deep Research agent pipeline'
-        : 'Search the deep/dark web via Tor';
-      b.textContent = m.label;
+      b.title = L('tooltip.' + m.id);
+      b.textContent = S['mode.' + m.id] || m.label;
       b.addEventListener('click', function () { selectMode(m.id); });
       modesBox.appendChild(b);
     });
@@ -470,7 +609,7 @@ export function buildSearchPageHtml(opts: SearchPageOptions): string {
     if (id === 'web' || id === 'discussions' || id === 'academic') {
       mode = id;
       renderModes();
-      modeNoteMsg('Mode: ' + id.toUpperCase());
+      modeNoteMsg(L('note.mode', { mode: id.toUpperCase() }));
       // Re-run the current query in the freshly selected mode.
       var cur = (new URLSearchParams(location.search).get('q') || '').trim();
       if (cur) {
@@ -480,7 +619,7 @@ export function buildSearchPageHtml(opts: SearchPageOptions): string {
     }
     if (id === 'darkweb') {
       var dq = (new URLSearchParams(location.search).get('q') || input.value || '').trim();
-      if (!dq) { modeNoteMsg('Type a query first — Dark Web search will use it.', true); return; }
+      if (!dq) { modeNoteMsg(L('note.darkwebNeedQuery'), true); return; }
       searchNavigate('darkweb', '?q=' + encodeURIComponent(dq));
       return;
     }
@@ -492,19 +631,19 @@ export function buildSearchPageHtml(opts: SearchPageOptions): string {
 
   /** Launch the Deep Research agent (mode chip OR src=research autoload). */
   function startResearch(rq) {
-    if (!bridge) { modeNoteMsg('Deep Research is unavailable on this page.', true); return; }
-    if (!rq) { modeNoteMsg('Type a query first — Deep Research will use it.', true); return; }
+    if (!bridge) { modeNoteMsg(L('note.researchUnavailable'), true); return; }
+    if (!rq) { modeNoteMsg(L('note.researchNeedQuery'), true); return; }
     input.value = rq;
     addUser(rq);
-    modeNoteMsg('Starting Deep Research — the answer will appear here…');
+    modeNoteMsg(L('note.researchStarting'));
     bridge.runResearch({ query: rq, attachmentIds: [] }).then(function (r) {
       if (r && r.started) {
-        modeNoteMsg('Deep Research running — steps shown below…');
+        modeNoteMsg(L('note.researchRunningSteps'));
         pollResearch();
       } else {
-        modeNoteMsg((r && r.error) || 'Deep Research could not start.', true);
+        modeNoteMsg((r && r.error) || L('note.researchCouldNotStart'), true);
       }
-    }).catch(function () { modeNoteMsg('Deep Research request failed.', true); });
+    }).catch(function () { modeNoteMsg(L('note.researchFailed'), true); });
   }
 
   /* Poll the run and render the RESULT ON THIS PAGE: answer block first,
@@ -521,10 +660,10 @@ export function buildSearchPageHtml(opts: SearchPageOptions): string {
           if (s.state === 'RUNNING' || s.state === 'STARTING' || s.state === 'WAITING_FOR_HUMAN') {
             if (!statusBox) {
               statusBox = el('div', 'research-progress');
-              statusBox.textContent = 'Deep Research running…';
+              statusBox.textContent = L('research.progress');
               chat.appendChild(statusBox);
             }
-            statusBox.textContent = 'Deep Research running — step ' + (s.stepCount || 0) + '… (invisible page fetches, your tabs are untouched)';
+            statusBox.textContent = L('research.step', { n: s.stepCount || 0 });
             scroll();
             if (tries < 600) setTimeout(tick, 2000);
             return;
@@ -540,7 +679,7 @@ export function buildSearchPageHtml(opts: SearchPageOptions): string {
     var answer = (s.answer && String(s.answer).trim()) ||
       (s.report && s.report.summary && String(s.report.summary).trim()) || '';
     if (!answer) {
-      modeNoteMsg('Deep Research ' + (s.state || 'finished') + ' — no answer was produced.', true);
+      modeNoteMsg(L('research.noAnswer', { state: s.state || L('research.finished') }), true);
       return;
     }
     addAnswer(answer);
@@ -549,7 +688,7 @@ export function buildSearchPageHtml(opts: SearchPageOptions): string {
       var box = el('div', 'sources');
       var head = document.createElement('div');
       head.className = 'sources__head';
-      head.textContent = 'SOURCES (' + srcs.length + ')';
+      head.textContent = L('sources.head', { n: srcs.length });
       box.appendChild(head);
       srcs.forEach(function (src) {
         var a = document.createElement('a');
@@ -561,12 +700,12 @@ export function buildSearchPageHtml(opts: SearchPageOptions): string {
       });
       chat.appendChild(box);
     }
-    modeNoteMsg('Deep Research complete — answer above, sources below.');
+    modeNoteMsg(L('note.researchComplete'));
     scroll();
   }
 
   renderModes();
-  if (mode !== 'web') modeNoteMsg('Mode: ' + mode.toUpperCase());
+  if (mode !== 'web') modeNoteMsg(L('note.mode', { mode: mode.toUpperCase() }));
 
   if (q) {
     // src=research (the HayDev engine chip): auto-launch the agent pipeline.

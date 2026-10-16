@@ -76,8 +76,10 @@ export interface VaultGenerateInput {
 }
 
 export interface VaultFillInput {
-  tabId: string;
-  domain: string;
+  /** The concrete vault record to fill from (PROMPT 03). */
+  id: string;
+  /** Target tab; omitted = the active tab. */
+  tabId?: string;
 }
 
 export interface VaultHasInput {

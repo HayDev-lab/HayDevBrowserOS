@@ -38,7 +38,7 @@ export interface UseAgentStore {
   // Actions
   run: (command: string, opts?: { maxSteps?: number; attachmentIds?: string[] }) => Promise<AgentRunResult>;
   /** DEEP_RESEARCH profile run (PROMPT 9) — same runtime, research report at the end. */
-  runResearch: (query: string) => Promise<AgentRunResult>;
+  runResearch: (query: string, opts?: { attachmentIds?: string[] }) => Promise<AgentRunResult>;
   /** Last research report (fetched after a research run settles). */
   researchReport: ResearchReport | null;
   /** True while a DEEP_RESEARCH run is active (drives the phase badge). */
@@ -135,10 +135,10 @@ export function useAgentStore(): UseAgentStore {
     []
   );
 
-  const runResearch = useCallback(async (query: string) => {
+  const runResearch = useCallback(async (query: string, opts?: { attachmentIds?: string[] }) => {
     setResearchMode(true);
     try {
-      return await platformApi.agent.run({ command: query, profile: 'DEEP_RESEARCH' });
+      return await platformApi.agent.run({ command: query, profile: 'DEEP_RESEARCH', attachmentIds: opts?.attachmentIds });
     } finally {
       setResearchMode(false);
       // Report is built when the run settles — fetch it either way.

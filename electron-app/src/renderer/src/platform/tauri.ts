@@ -17,6 +17,9 @@ const ALLOWED_LISTEN_CHANNELS = new Set<string>([
   'control:mode:update',
   'vault:prompt:update',
   'memory:prompt:update',
+  'shield:stats',
+  'storage:error',
+  'browser:downloads:changed',
 ]);
 
 export const tauriApi: ExposedApi = {
@@ -52,6 +55,7 @@ export const tauriApi: ExposedApi = {
     status: () => invoke('agent_status'),
     listTimeline: () => invoke('agent_timeline_list'),
     researchReport: () => invoke('agent_research_report'),
+    releaseAttachment: (id) => invoke('agent_release_attachment', { id }),
     pickAttachment: (kind) => invoke('agent_pick_attachment', { kind }),
   },
 
@@ -79,10 +83,39 @@ export const tauriApi: ExposedApi = {
     resolve: (answer) => invoke('memory_prompt_resolve', { answer }),
   },
 
+  privacy: {
+    status: () => invoke('privacy_status'),
+  },
+
+  shield: {
+    status: () => invoke('shield_status'),
+    setEnabled: (enabled: boolean) => invoke('shield_set_enabled', { enabled }),
+    allowSite: (host: string) => invoke('shield_allow_site', { host }),
+    disallowSite: (host: string) => invoke('shield_disallow_site', { host }),
+  },
+
   window: {
     minimize: () => invoke('window_minimize'),
     toggleMaximize: () => invoke('window_toggle_maximize'),
     close: () => invoke('window_close'),
+  },
+
+  // Push the chosen language to the host: persisted (ui-locale.json) and
+  // used to serve the matching prebuilt pab:// pages (read_internal_page_localed).
+  setLocale: (lang) => {
+    void invoke('set_locale', { locale: lang }).catch((err: unknown) => {
+      console.error('[platform:tauri] set_locale failed:', err);
+    });
+  },
+
+  // The host file is the durable locale store; the shell adopts it on boot
+  // so a fresh webview's empty localStorage cannot overwrite it.
+  getLocale: async () => {
+    const locale = await invoke<string>('ui_locale').catch((err: unknown) => {
+      console.error('[platform:tauri] ui_locale failed:', err);
+      return 'en';
+    });
+    return locale;
   },
 
   on: (channel: string, listener: (data: unknown) => void) => {

@@ -75,6 +75,7 @@ impl TabRegistry {
             is_dark_web: Some(req.darkweb.unwrap_or(false)),
             is_active: false,
             is_audio_playing: false,
+            profile: if req.agent == Some(true) { "agent" } else if req.incognito == Some(true) { "private" } else if req.darkweb == Some(true) { "darkweb" } else { "default" }.into(), egress: "direct".into(), owner_run: None,
             unread_count: 0,
             is_discarded: false,
             created_at: now,
@@ -199,6 +200,7 @@ mod tests {
             incognito: None,
             darkweb: None,
             background: None,
+            agent: None,
             id: Some(format!("tab-{url}")),
             title: None,
         }

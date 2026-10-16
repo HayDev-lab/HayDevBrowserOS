@@ -58,6 +58,12 @@ describe('static / reduced-motion CSS presence', () => {
 });
 
 describe('static / accessibility attributes', () => {
+  // Since the i18n refactor the components read user-facing strings from the
+  // locale dictionaries via t('key'), so the aria-label assertions below check
+  // the dictionary key wiring; the en dictionary itself is asserted to carry
+  // the human-readable text.
+  const enDict = readFileSync(join(RENDERER_DIR, 'i18n', 'locales', 'en.ts'), 'utf8');
+
   it('TabStrip uses role=tablist on the strip and role=tab on each tab', () => {
     const src = readComponent('TabStrip.tsx');
     expect(src).toContain('role="tablist"');
@@ -67,13 +73,15 @@ describe('static / accessibility attributes', () => {
 
   it('TabStrip close button has dynamic aria-label built from "Close" + title', () => {
     const src = readComponent('TabStrip.tsx');
-    // The close button uses a template literal: aria-label={`Close ${displayTitle}`}
-    expect(src).toMatch(/aria-label=\{`Close/);
+    // The close button uses the tabs.closeAria key with the {title} variable.
+    expect(src).toMatch(/aria-label=\{t\('tabs\.closeAria', \{ title: displayTitle \}\)\}/);
+    expect(enDict).toMatch(/'tabs\.closeAria': 'Close \{title\}'/);
   });
 
   it('TabStrip new-tab button has aria-label', () => {
     const src = readComponent('TabStrip.tsx');
-    expect(src).toContain('aria-label="Open new tab"');
+    expect(src).toContain("aria-label={t('tabs.newAria')}");
+    expect(enDict).toContain("'tabs.newAria': 'Open new tab'");
   });
 
   it('CommandBar uses role=search', () => {
@@ -90,15 +98,16 @@ describe('static / accessibility attributes', () => {
     const src = readComponent('CommandBar.tsx');
     // The NavButton subcomponent receives a `label` prop and binds it to aria-label.
     expect(src).toMatch(/aria-label=\{label\}/);
-    // And the call sites pass "Back" / "Forward" as labels.
-    expect(src).toMatch(/label="Back"/);
-    expect(src).toMatch(/label="Forward"/);
+    // And the call sites pass localized Back / Forward labels.
+    expect(src).toMatch(/label=\{t\('cmd\.back'\)\}/);
+    expect(src).toMatch(/label=\{t\('cmd\.forward'\)\}/);
   });
 
   it('ControlModule has role=group and aria-label', () => {
     const src = readComponent('ControlModule.tsx');
     expect(src).toContain('role="group"');
-    expect(src).toContain('aria-label="Agent control mode"');
+    expect(src).toContain("aria-label={t('control.groupAria')}");
+    expect(enDict).toContain("'control.groupAria': 'Agent control mode'");
   });
 
   it('ControlModule mode switch uses role=radiogroup', () => {
@@ -110,23 +119,27 @@ describe('static / accessibility attributes', () => {
 
   it('ControlModule TAKE CONTROL button has aria-label mentioning abort', () => {
     const src = readComponent('ControlModule.tsx');
-    expect(src).toMatch(/aria-label="Take control — abort/);
+    expect(src).toContain("ariaLabel={t('control.takeAria')}");
+    expect(enDict).toMatch(/'control\.takeAria': 'Take control — abort/);
   });
 
   it('AgentPanel uses aria-label and role=status for badge', () => {
     const src = readComponent('AgentPanel.tsx');
-    expect(src).toContain('aria-label="Agent panel"');
+    expect(src).toContain("aria-label={t('agent.panelAria')}");
     expect(src).toContain('aria-live="polite"');
+    expect(enDict).toContain("'agent.panelAria': 'Agent panel'");
   });
 
   it('AgentPanel STOP button has aria-label', () => {
     const src = readComponent('AgentPanel.tsx');
-    expect(src).toMatch(/aria-label="Stop the current agent task"/);
+    expect(src).toMatch(/aria-label=\{t\('agent\.stopAria'\)\}/);
+    expect(enDict).toContain("'agent.stopAria': 'Stop the current agent task'");
   });
 
   it('AgentPanel task input has aria-label', () => {
     const src = readComponent('AgentPanel.tsx');
-    expect(src).toContain('aria-label="Agent task input"');
+    expect(src).toContain("aria-label={t('agent.inputAria')}");
+    expect(enDict).toContain("'agent.inputAria': 'Agent task input'");
   });
 
   it('IncognitoBadge uses role=status and aria-label', () => {
@@ -137,12 +150,14 @@ describe('static / accessibility attributes', () => {
 
   it('HistoryPanel has aria-label and panel section', () => {
     const src = readPanel('HistoryPanel.tsx');
-    expect(src).toContain('aria-label="History panel"');
+    expect(src).toMatch(/aria-label=\{t\('panel\./);
+    expect(enDict).toContain("'panel.historyName': 'History'");
   });
 
   it('BookmarksPanel has aria-label', () => {
     const src = readPanel('BookmarksPanel.tsx');
-    expect(src).toContain('aria-label="Bookmarks panel"');
+    expect(src).toMatch(/aria-label=\{t\('panel\./);
+    expect(enDict).toContain("'panel.bookmarksName': 'Bookmarks'");
   });
 
   it('DownloadsPanel uses role=progressbar for in-progress downloads', () => {

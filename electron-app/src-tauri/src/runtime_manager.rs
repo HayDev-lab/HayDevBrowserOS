@@ -81,6 +81,8 @@ impl ServiceStatus {
 struct Svc {
     status: Option<ServiceStatus>,
     child_pid: Option<u32>,
+    #[cfg(windows)]
+    job: Option<Arc<RuntimeJob>>,
     restarts: u32,
 }
 
@@ -88,6 +90,7 @@ struct Svc {
 pub struct RuntimeManagerState {
     svcs: HashMap<&'static str, Svc>,
     started_at: Option<u64>,
+    stopping: bool,
 }
 
 impl RuntimeManagerState {
@@ -112,6 +115,14 @@ impl RuntimeManagerState {
     pub fn perplexica_endpoint(&self) -> Option<String> {
         self.svcs
             .get("perplexica")
+            .and_then(|s| s.status.as_ref())
+            .and_then(|s| s.endpoint.clone())
+    }
+
+    /// Managed SearXNG endpoint (http://127.0.0.1:PORT) when READY/adopted.
+    pub fn searxng_endpoint(&self) -> Option<String> {
+        self.svcs
+            .get("searxng")
             .and_then(|s| s.status.as_ref())
             .and_then(|s| s.endpoint.clone())
     }
@@ -151,20 +162,16 @@ fn app_data_dir() -> PathBuf {
 }
 
 fn runtimes_root() -> Option<PathBuf> {
-    let mut candidates = vec![
-        // dev: electron-app/resources/runtimes (cwd = electron-app or src-tauri)
-        PathBuf::from("resources/runtimes"),
-        PathBuf::from("../resources/runtimes"),
-    ];
+    let mut candidates = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            // packaged NSIS: <install>/resources/runtimes (bundle.resources)
-            candidates.push(dir.join("resources/runtimes"));
-            candidates.push(dir.join("../../../resources/runtimes"));
-        }
+        if let Some(dir) = exe.parent() { candidates.push(dir.join("resources/runtimes")); }
+    }
+    // Production never discovers executables from the caller's working directory.
+    #[cfg(debug_assertions)] {
+        candidates.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../resources/packaged-runtimes"));
     }
     for c in &candidates {
-        if c.join("tor").exists() || c.join("searxng").exists() {
+        if c.join("runtime-manifest.json").is_file() {
             // ALWAYS absolute — children resolve argv/cwd against it.
             // The \\?\ verbatim prefix from canonicalize BREAKS node's module
             // resolution (verified live: node EISDIR 'D:') — strip it.
@@ -232,13 +239,81 @@ pub(crate) fn find_free_port(preferred: u16) -> u16 {
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+// The browser joins a non-inheritable kill-on-close job BEFORE spawning an
+// engine. Descendants inherit membership atomically, including any children
+// created before the per-service job is assigned. The OS closes our job handle
+// on a crash; no command-line heuristics or foreign process enumeration.
+#[cfg(windows)]
+struct RuntimeJob(windows::Win32::Foundation::HANDLE);
+#[cfg(windows)]
+unsafe impl Send for RuntimeJob {} // Owned kernel handle; APIs are thread safe.
+#[cfg(windows)]
+unsafe impl Sync for RuntimeJob {}
+#[cfg(windows)]
+impl RuntimeJob {
+    fn new() -> std::io::Result<Self> {
+        use windows::Win32::System::JobObjects::*;
+        unsafe {
+            let job = Self(CreateJobObjectW(None, None)?);
+            let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            SetInformationJobObject(job.0, JobObjectExtendedLimitInformation,
+                &limits as *const _ as *const _, std::mem::size_of_val(&limits) as u32)?;
+            Ok(job)
+        }
+    }
+    fn assign(&self, process: windows::Win32::Foundation::HANDLE) -> std::io::Result<()> {
+        unsafe { windows::Win32::System::JobObjects::AssignProcessToJobObject(self.0, process)?; }
+        Ok(())
+    }
+    fn terminate(&self) {
+        unsafe { let _ = windows::Win32::System::JobObjects::TerminateJobObject(self.0, 1); }
+    }
+}
+#[cfg(windows)]
+impl Drop for RuntimeJob {
+    fn drop(&mut self) { unsafe { let _ = windows::Win32::Foundation::CloseHandle(self.0); } }
+}
+#[cfg(windows)]
+fn ensure_parent_job() -> std::io::Result<()> {
+    static JOB: std::sync::OnceLock<Result<RuntimeJob, String>> = std::sync::OnceLock::new();
+    JOB.get_or_init(|| {
+        let job = RuntimeJob::new().map_err(|e| e.to_string())?;
+        job.assign(unsafe { windows::Win32::System::Threading::GetCurrentProcess() }).map_err(|e| e.to_string())?;
+        Ok(job)
+    }).as_ref().map(|_| ()).map_err(|e| std::io::Error::other(e.clone()))
+}
+
+fn engines_disabled() -> bool { std::env::var("HAYDEV_NO_ENGINES").is_ok_and(|v| v.trim() == "1") }
+fn stopping(m: &SharedRuntimeManager) -> bool {
+    engines_disabled() || m.lock().unwrap_or_else(|p| p.into_inner()).stopping
+}
+
+struct ServiceLease { manager: SharedRuntimeManager, key: &'static str, pid: u32 }
+impl Drop for ServiceLease {
+    fn drop(&mut self) {
+        let mut guard = self.manager.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(svc) = guard.svcs.get_mut(self.key) {
+            if svc.child_pid == Some(self.pid) {
+                svc.child_pid = None;
+                #[cfg(windows)] { svc.job.take(); }
+            }
+        }
+    }
+}
+
 fn spawn_service(
+    manager: &SharedRuntimeManager,
+    key: &'static str,
     command: &Path,
     args: &[&str],
     cwd: &Path,
     envs: &[(&str, String)],
     log_name: &str,
 ) -> std::io::Result<Child> {
+    let mut guard = manager.lock().unwrap_or_else(|p| p.into_inner());
+    if guard.stopping || engines_disabled() { return Err(std::io::Error::other("RUNTIME_STOPPING")); }
+    #[cfg(windows)] ensure_parent_job()?;
     let log_file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -255,7 +330,20 @@ fn spawn_service(
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
-    cmd.spawn()
+    let mut child = cmd.spawn()?;
+    #[cfg(windows)] {
+        use std::os::windows::io::AsRawHandle;
+        let job = RuntimeJob::new().and_then(|job| {
+            job.assign(windows::Win32::Foundation::HANDLE(child.as_raw_handle()))?;
+            Ok(job)
+        });
+        match job {
+            Ok(job) => guard.svcs.entry(key).or_default().job = Some(Arc::new(job)),
+            Err(e) => { let _ = child.kill(); let _ = child.wait(); return Err(e); }
+        }
+    }
+    guard.svcs.entry(key).or_default().child_pid = Some(child.id());
+    Ok(child)
 }
 
 trait EnvClearOff {
@@ -271,39 +359,13 @@ impl EnvClearOff for Command {
     }
 }
 
-fn kill_tree(pid: u32) {
-    #[cfg(windows)]
-    {
-        let _ = Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
-            .creation_flags_if_windows()
-            .status();
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
-    }
-}
-
-#[cfg(windows)]
-trait CreationFlagsExt {
-    fn creation_flags_if_windows(&mut self) -> &mut Self;
-}
-
-#[cfg(windows)]
-impl CreationFlagsExt for Command {
-    fn creation_flags_if_windows(&mut self) -> &mut Self {
-        use std::os::windows::process::CommandExt;
-        self.creation_flags(CREATE_NO_WINDOW)
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Service starters
 // ---------------------------------------------------------------------------
 
 fn set_status(m: &SharedRuntimeManager, key: &'static str, f: impl FnOnce(&mut ServiceStatus)) {
     let mut guard = m.lock().unwrap_or_else(|p| p.into_inner());
+    if guard.stopping { return; }
     let svc = guard.svcs.entry(key).or_default();
     let status = svc.status.get_or_insert_with(ServiceStatus::not_started);
     f(status);
@@ -313,6 +375,7 @@ fn set_status(m: &SharedRuntimeManager, key: &'static str, f: impl FnOnce(&mut S
 /// (same engine policy as the TS service: keep_only bing/google, JSON on).
 fn start_searxng(m: SharedRuntimeManager, external_url: Option<String>) {
     std::thread::spawn(move || {
+        if stopping(&m) { return; }
         // External adopt (env-configured, healthy) — never spawn, never kill.
         if let Some(url) = external_url {
             if probe_searxng_healthy(&url) {
@@ -355,7 +418,7 @@ fn start_searxng(m: SharedRuntimeManager, external_url: Option<String>) {
             s.source = "managed".into();
         });
         match spawn_service(
-            &python_exe,
+            &m, "searxng", &python_exe,
             &[runner.to_string_lossy().as_ref()],
             &app_dir,
             &[
@@ -473,9 +536,11 @@ fn watch_until_ready(
     probe: fn(&str) -> bool,
     restart: fn(SharedRuntimeManager),
 ) {
+    let _lease = ServiceLease { manager: m.clone(), key, pid };
     let started = Instant::now();
     let deadline = started + timeout;
     loop {
+        if stopping(m) { let _ = child.kill(); let _ = child.wait(); return; }
         // Exit detection first (expected stop sets STOPPING/STOPPED upstream).
         match child.try_wait() {
             Ok(Some(exit)) => {
@@ -519,6 +584,7 @@ fn watch_until_ready(
             log::info!("[PROCESS] {key} READY at {endpoint}");
             // READY — keep watching for unexpected exit (crash detection).
             loop {
+                if stopping(m) { let _ = child.kill(); let _ = child.wait(); return; }
                 match child.try_wait() {
                     Ok(Some(exit)) => {
                         log::error!("[PROCESS] {key} crashed after READY ({exit:?})");
@@ -554,9 +620,8 @@ fn watch_until_ready(
                 s.state = ServiceState::Failed;
                 s.error_code = Some("START_TIMEOUT".into());
             });
-            let _ = Command::new("taskkill")
-                .args(["/PID", &pid.to_string(), "/T", "/F"])
-                .status();
+            let _ = child.kill();
+            let _ = child.wait();
             return;
         }
         std::thread::sleep(Duration::from_millis(750));
@@ -572,13 +637,14 @@ fn restarts_of(m: &SharedRuntimeManager, key: &str) -> u32 {
         .unwrap_or(0)
 }
 
-/// Perplexica managed spawn — Next standalone via system node.
+/// Perplexica managed spawn — Next standalone via its pinned bundled Node.
 fn start_perplexica(
     m: SharedRuntimeManager,
     external_url: Option<String>,
     searxng_url: Option<String>,
 ) {
     std::thread::spawn(move || {
+        if stopping(&m) { return; }
         if let Some(url) = external_url {
             if probe_http_ok(&format!("{url}/")) {
                 set_status(&m, "perplexica", |s| {
@@ -604,11 +670,11 @@ fn start_perplexica(
             set_status(&m, "perplexica", |s| *s = fail("RUNTIME_NOT_BUNDLED"));
             return;
         }
-        // Tauri ships no Node: use the system node. Missing → honest FAILED.
+        // Bundled Node is mandatory; never fall back to PATH.
         let Some(node_exe) = find_node() else {
-            set_status(&m, "perplexica", |s| *s = fail("NODE_RUNTIME_REQUIRED"));
+            set_status(&m, "perplexica", |s| *s = fail("NODE_RUNTIME_NOT_BUNDLED"));
             log::error!(
-                "[PROCESS] perplexica FAILED: no Node runtime on PATH (Tauri does not bundle Node)"
+                "[PROCESS] perplexica FAILED: bundled Node runtime is missing"
             );
             return;
         };
@@ -623,7 +689,7 @@ fn start_perplexica(
         });
         let server_js = standalone.join("server.js").to_string_lossy().to_string();
         match spawn_service(
-            &node_exe,
+            &m, "perplexica", &node_exe,
             &[server_js.as_str()],
             &standalone,
             &[
@@ -667,21 +733,6 @@ fn find_node() -> Option<PathBuf> {
         let bundled = root.join("node").join("node.exe");
         if bundled.exists() {
             return Some(bundled);
-        }
-    }
-    for candidate in ["node.exe", "node"] {
-        if let Ok(out) = Command::new("where").arg(candidate).output() {
-            if out.status.success() {
-                let first = String::from_utf8_lossy(&out.stdout)
-                    .lines()
-                    .next()
-                    .unwrap_or("")
-                    .trim()
-                    .to_string();
-                if !first.is_empty() {
-                    return Some(PathBuf::from(first));
-                }
-            }
         }
     }
     None
@@ -840,7 +891,9 @@ fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
 
 /// Tor managed spawn — bundled tor.exe on dynamic SOCKS/control ports.
 fn start_tor(m: SharedRuntimeManager) {
+    if stopping(&m) { return; }
     std::thread::spawn(move || {
+        if stopping(&m) { return; }
         if std::env::var("PAB_TOR_MODE").ok().as_deref() == Some("external") {
             let port = std::env::var("PAB_TOR_SOCKS_PORT")
                 .ok()
@@ -881,7 +934,7 @@ fn start_tor(m: SharedRuntimeManager) {
         let ctrl_arg = format!("127.0.0.1:{control_port}");
         let data_arg = data_dir.to_string_lossy().to_string();
         match spawn_service(
-            &tor_exe,
+            &m, "tor", &tor_exe,
             &[
                 "--SocksPort",
                 &socks_arg,
@@ -902,6 +955,7 @@ fn start_tor(m: SharedRuntimeManager) {
         ) {
             Ok(child) => {
                 let pid = child.id();
+                let _lease = ServiceLease { manager: m.clone(), key: "tor", pid };
                 set_status(&m, "tor", |s| s.pid = Some(pid));
                 log::info!(
                     "[PROCESS] tor spawned pid={pid} socks={socks_port} control={control_port}"
@@ -914,8 +968,9 @@ fn start_tor(m: SharedRuntimeManager) {
                 let endpoint = format!("socks5://127.0.0.1:{socks_port}");
                 let started = Instant::now();
                 let deadline = started + TOR_START_TIMEOUT;
-                let (mut child, pid) = (child, pid);
+                let mut child = child;
                 loop {
+                    if stopping(&m) { let _ = child.kill(); let _ = child.wait(); return; }
                     if let Ok(Some(exit)) = child.try_wait() {
                         log::error!("[PROCESS] tor exited during bootstrap ({exit:?})");
                         set_status(&m, "tor", |s| *s = fail("TOR_EXITED_DURING_BOOTSTRAP"));
@@ -930,6 +985,7 @@ fn start_tor(m: SharedRuntimeManager) {
                         });
                         log::info!("[PROCESS] tor READY (SOCKS end-to-end probe ok)");
                         loop {
+                            if stopping(&m) { let _ = child.kill(); let _ = child.wait(); return; }
                             match child.try_wait() {
                                 Ok(Some(_)) => {
                                     log::error!("[PROCESS] tor exited after READY");
@@ -950,9 +1006,8 @@ fn start_tor(m: SharedRuntimeManager) {
                             s.state = ServiceState::Failed;
                             s.error_code = Some("START_TIMEOUT".into());
                         });
-                        let _ = Command::new("taskkill")
-                            .args(["/PID", &pid.to_string(), "/T", "/F"])
-                            .status();
+                        let _ = child.kill();
+                        let _ = child.wait();
                         return;
                     }
                     std::thread::sleep(Duration::from_millis(1500));
@@ -1095,6 +1150,7 @@ fn follow_tor_bootstrap(m: SharedRuntimeManager, control_port: u16, data_dir: Pa
 /// limited so a UI polling loop cannot fork tor bombs; start_tor itself is
 /// idempotent (is_active guard) and runs on its own thread.
 pub fn request_tor_start(m: &SharedRuntimeManager) {
+    if stopping(m) { return; }
     use std::sync::atomic::{AtomicU64, Ordering};
     static LAST_TRY: AtomicU64 = AtomicU64::new(0);
     if is_active(m, "tor") {
@@ -1166,6 +1222,7 @@ fn is_active(m: &SharedRuntimeManager, key: &str) -> bool {
 }
 
 pub fn start_all(m: &SharedRuntimeManager) {
+    if stopping(m) { return; }
     {
         let mut guard = m.lock().unwrap_or_else(|p| p.into_inner());
         guard.started_at = Some(
@@ -1205,6 +1262,7 @@ pub fn start_all(m: &SharedRuntimeManager) {
     while Instant::now() < deadline {
         {
             let guard = m.lock().unwrap_or_else(|p| p.into_inner());
+            if guard.stopping { return; }
             if let Some(st) = guard.svcs.get("searxng").and_then(|s| s.status.as_ref()) {
                 if st.state == ServiceState::Failed {
                     break; // don't block Perplexica on a failed engine
@@ -1227,59 +1285,51 @@ pub fn start_all(m: &SharedRuntimeManager) {
 /// Stop every MANAGED child (tree-kill); adopted external endpoints are
 /// never touched. Called on app exit.
 pub fn stop_all(m: &SharedRuntimeManager) {
-    let pids: Vec<(String, u32)> = {
-        let guard = m.lock().unwrap_or_else(|p| p.into_inner());
-        guard.pids()
-    };
-    for (key, pid) in pids {
-        log::info!("[PROCESS] stopping {key} (tree-kill pid={pid})");
-        kill_tree(pid);
+    let mut guard = m.lock().unwrap_or_else(|p| p.into_inner());
+    guard.stopping = true; // Same lock as spawn + registration: no late children.
+    for svc in guard.svcs.values_mut() {
+        #[cfg(windows)] if let Some(job) = svc.job.take() { job.terminate(); }
+        #[cfg(not(windows))] if let Some(pid) = svc.child_pid { let _ = Command::new("kill").args(["-9", &pid.to_string()]).status(); }
+        svc.child_pid = None;
+        svc.status = Some(ServiceStatus::not_started());
     }
-    sweep_orphans();
 }
 
-/// Kill stray engine processes from PREVIOUS runs (e.g. the app was killed
-/// hard during dev hot-reload so ExitRequested never fired). Matches ONLY
-/// processes whose command line points into THIS APP's bundled runtimes tree
-/// (marker = the repository/product directory segment before
-/// `resources\runtimes`) — foreign projects with the same folder layout,
-/// system tor, docker and other Next servers are NEVER touched.
-pub fn sweep_orphans() {
-    #[cfg(windows)]
-    {
-        // SAFETY MARKER: match the full '*<product>*resources\runtimes*'
-        // shape. Verified live: a bare '*resources\runtimes*' marker killed
-        // an unrelated project's engine tree that shares the layout.
-        const MARKER: &str = "BrowserHayDev";
-        let filter = format!(
-            "Get-CimInstance Win32_Process | Where-Object {{ $_.CommandLine -like '*{MARKER}*resources\\runtimes*' -and ($_.Name -eq 'tor.exe' -or $_.Name -eq 'python.exe' -or $_.Name -eq 'node.exe') }} | ForEach-Object {{ \"$($_.ProcessId) $($_.Name)\" }}"
-        );
-        let Ok(out) = Command::new("powershell")
-            .args(["-NoProfile", "-Command", &filter])
-            .output()
-        else {
+#[cfg(all(test, windows))]
+mod lifecycle_tests {
+    use super::*;
+    use std::os::windows::process::CommandExt;
+    #[test]
+    fn browser_crash_closes_job_and_terminates_owned_child() {
+        const CHILD_MODE: &str = "HAYDEV_JOB_TEST_OUTPUT";
+        if let Ok(output) = std::env::var(CHILD_MODE) {
+            ensure_parent_job().unwrap();
+            let mut child = Command::new("powershell.exe")
+                .args(["-NoProfile", "-NonInteractive", "-Command", "Start-Sleep -Seconds 30"])
+                .creation_flags(CREATE_NO_WINDOW).spawn().unwrap();
+            std::fs::write(output, child.id().to_string()).unwrap();
+            let _ = child.wait();
             return;
-        };
-        let text = String::from_utf8_lossy(&out.stdout);
-        for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
-            let Some((pid, name)) = line.split_once(' ') else {
-                continue;
-            };
-            let Ok(pid) = pid.parse::<u32>() else {
-                continue;
-            };
-            log::info!("[PROCESS] sweeping orphan {name} pid={pid}");
-            kill_tree(pid);
         }
-    }
-}
-
-impl RuntimeManagerState {
-    fn pids(&self) -> Vec<(String, u32)> {
-        self.svcs
-            .iter()
-            .filter(|(_, s)| s.child_pid.is_some())
-            .map(|(k, s)| ((*k).to_string(), s.child_pid.unwrap()))
-            .collect()
+        let output = std::env::temp_dir().join(format!("haydev-job-test-{}", uuid::Uuid::new_v4()));
+        let mut owner = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "runtime_manager::lifecycle_tests::browser_crash_closes_job_and_terminates_owned_child", "--nocapture"])
+            .env(CHILD_MODE, &output).creation_flags(CREATE_NO_WINDOW)
+            .stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !output.exists() && Instant::now() < deadline { std::thread::sleep(Duration::from_millis(20)); }
+        if !output.exists() { let _ = owner.kill(); panic!("Job child did not start"); }
+        let pid = std::fs::read_to_string(&output).unwrap().parse::<u32>().unwrap();
+        unsafe {
+            use windows::Win32::System::Threading::*;
+            use windows::Win32::Foundation::*;
+            // Hold the actual process HANDLE before killing its owner (no PID reuse).
+            let process = OpenProcess(PROCESS_SYNCHRONIZE, false, pid).unwrap();
+            owner.kill().unwrap(); owner.wait().unwrap();
+            let result = WaitForSingleObject(process, 2000);
+            let _ = CloseHandle(process);
+            assert_eq!(result, WAIT_OBJECT_0, "Engine survived browser crash");
+        }
+        std::fs::remove_file(output).unwrap();
     }
 }

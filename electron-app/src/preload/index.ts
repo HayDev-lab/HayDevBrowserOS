@@ -243,13 +243,51 @@ const memoryApi: import('@shared/ipc-types').MemoryApi = {
     invoke<{ success: boolean }>('memory:prompt:resolve', answer),
 };
 
+// The legacy Electron runtime has no per-profile egress engine — the honest
+// shape is "unknown", never a fabricated Tor claim (Tauri runtime implements
+// this for real via the privacy_status command).
+const privacyApi: import('@shared/ipc-types').PrivacyApi = {
+  status: () =>
+    Promise.resolve({
+      privateEgress: 'unknown',
+      agentEgress: 'unknown',
+      fetchViaTor: false,
+      torAvailable: false,
+      torEndpoint: null,
+    }),
+};
+
+// The legacy Electron runtime has no shield engine — honest zeros, never a
+// fabricated block counter (Tauri runtime implements the real one).
+const shieldApi: import('@shared/ipc-types').ShieldApi = {
+  status: () =>
+    Promise.resolve({ enabled: false, totalBlocked: 0, byHost: [], allowlist: [] }),
+  setEnabled: () => Promise.resolve({ accepted: false, enabled: false }),
+  allowSite: (host: string) => Promise.resolve({ accepted: false, host }),
+  disallowSite: (host: string) => Promise.resolve({ accepted: false, host }),
+};
+
 const api: ExposedApi = {
   memory: memoryApi,
+  privacy: privacyApi,
+  shield: shieldApi,
   async getVersion(): Promise<AppVersionInfo> {
     return invoke<AppVersionInfo>('app:version');
   },
   runtimeStatus(): Promise<RuntimeStatus> {
     return invoke<RuntimeStatus>('app:runtimeStatus');
+  },
+
+  // UI locale — fire-and-forget; main keeps it for pab:// page builders.
+  setLocale(lang: import('@shared/app-locale').AppLocale): void {
+    ipcRenderer.send('ui:setLocale', lang);
+  },
+
+  // The legacy Electron runtime kept the locale only in this webview's
+  // storage; there is no host file to adopt.
+  getLocale(): Promise<string> {
+    try { return Promise.resolve(localStorage.getItem('pab.lang') ?? 'en'); }
+    catch { return Promise.resolve('en'); }
   },
 
   async ping(

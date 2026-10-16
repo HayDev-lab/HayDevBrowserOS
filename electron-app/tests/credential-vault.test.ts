@@ -207,9 +207,10 @@ describe('credential-vault / generateAndStore', () => {
 // ===========================================================================
 describe('credential-vault / fill', () => {
   it('fills the login form and returns safe result (no password)', async () => {
-    const { vault, fakeWc } = setup();
+    const { vault, fakeWc, storage } = setup();
     await vault.save({ domain: 'example.com', username: 'user@example.com', password: 'supersecret123' });
-    const result = await vault.fill({ tabId: 'tab_1', domain: 'example.com' });
+    const stored = await storage.read();
+    const result = await vault.fill({ id: stored[0]!.id, tabId: 'tab_1' });
     expect(result.success).toBe(true);
     expect(result.usernameFilled).toBe(true);
     expect(result.passwordFilled).toBe(true);
@@ -220,45 +221,46 @@ describe('credential-vault / fill', () => {
     expect(fakeWc.filledScripts.length).toBe(1);
   });
 
-  it('fills for a subdomain of the stored domain', async () => {
+  it('host-side domain authorization is the Tauri runtime policy now', async () => {
+    // The old TS "fill by domain + substring subdomain grant" is GONE:
+    // the shared contract is fill-by-id, and the Tauri runtime re-verifies
+    // the live tab host against the record domain (domain_policy.rs, Rust
+    // unit tests). This test pins the contract shape.
     const { vault } = setup();
     await vault.save({ domain: 'example.com', username: 'user', password: 'password123' });
-    const result = await vault.fill({ tabId: 'tab_1', domain: 'login.example.com' });
-    expect(result.success).toBe(true);
-    expect(result.matchedDomain).toBe('example.com');
+    const bad = await vault.fill({ id: 'no-such-record', tabId: 'tab_1' });
+    expect(bad.success).toBe(false);
+    expect(bad.error).toBe('no_credential_for_id');
   });
 
-  it('fails for mismatched domain (evil-example.com)', async () => {
-    const { vault } = setup();
+  it('fails without a target tab', async () => {
+    const { vault, storage } = setup();
     await vault.save({ domain: 'example.com', username: 'user', password: 'password123' });
-    const result = await vault.fill({ tabId: 'tab_1', domain: 'evil-example.com' });
+    const stored = await storage.read();
+    const result = await vault.fill({ id: stored[0]!.id });
     expect(result.success).toBe(false);
-  });
-
-  it('fails when no credential exists for the domain', async () => {
-    const { vault } = setup();
-    const result = await vault.fill({ tabId: 'tab_1', domain: 'example.com' });
-    expect(result.success).toBe(false);
-    expect(result.error).toBe('no_credential_for_domain');
+    expect(result.error).toBe('no_target_tab');
   });
 
   it('fails when tab is unknown', async () => {
-    const { vault } = setup();
+    const { vault, storage } = setup();
     await vault.save({ domain: 'example.com', username: 'user', password: 'password123' });
-    const result = await vault.fill({ tabId: 'unknown_tab', domain: 'example.com' });
+    const stored = await storage.read();
+    const result = await vault.fill({ id: stored[0]!.id, tabId: 'unknown_tab' });
     expect(result.success).toBe(false);
   });
 
   it('fails when tab WebContents is destroyed', async () => {
-    const { vault, fakeWc } = setup();
+    const { vault, fakeWc, storage } = setup();
     await vault.save({ domain: 'example.com', username: 'user', password: 'password123' });
     fakeWc.destroyed = true;
-    const result = await vault.fill({ tabId: 'tab_1', domain: 'example.com' });
+    const stored = await storage.read();
+    const result = await vault.fill({ id: stored[0]!.id, tabId: 'tab_1' });
     expect(result.success).toBe(false);
   });
 
   it('decrypts the password only during fill (not during list/has)', async () => {
-    const { vault, encryption } = setup();
+    const { vault, encryption, storage } = setup();
     await vault.save({ domain: 'example.com', username: 'user', password: 'password123' });
     // list should NOT decrypt
     await vault.list();
@@ -267,7 +269,8 @@ describe('credential-vault / fill', () => {
     await vault.has({ domain: 'example.com' });
     expect(encryption.decryptCalls.length).toBe(0);
     // fill SHOULD decrypt
-    await vault.fill({ tabId: 'tab_1', domain: 'example.com' });
+    const stored = await storage.read();
+    await vault.fill({ id: stored[0]!.id, tabId: 'tab_1' });
     expect(encryption.decryptCalls.length).toBe(1);
   });
 });
@@ -304,7 +307,7 @@ describe('credential-vault / encryption boundary', () => {
 // ===========================================================================
 describe('credential-vault / registration foundation', () => {
   it('generateAndStore → fill → safe completion', async () => {
-    const { vault } = setup();
+    const { vault, storage } = setup();
     // Step 1: Generate and store
     const genResult = await vault.generateAndStore({ domain: 'example.com', username: 'newuser@example.com' });
     expect(genResult.success).toBe(true);
@@ -312,8 +315,10 @@ describe('credential-vault / registration foundation', () => {
     // The generated password is NOT returned.
     expect((genResult as unknown as Record<string, unknown>).password).toBeUndefined();
 
-    // Step 2: Fill
-    const fillResult = await vault.fill({ tabId: 'tab_1', domain: 'example.com' });
+    // Step 2: Fill — from the CONCRETE record id (PROMPT 03 contract).
+    const stored = await storage.read();
+    expect(stored.length).toBe(1);
+    const fillResult = await vault.fill({ id: stored[0]!.id, tabId: 'tab_1' });
     expect(fillResult.success).toBe(true);
     expect(fillResult.usernameFilled).toBe(true);
     expect(fillResult.passwordFilled).toBe(true);
@@ -336,9 +341,10 @@ describe('credential-vault / agent security', () => {
   });
 
   it('VaultPort.fill returns no password', async () => {
-    const { vault } = setup();
+    const { vault, storage } = setup();
     await vault.save({ domain: 'example.com', username: 'user', password: 'password123' });
-    const result = await vault.fill({ tabId: 'tab_1', domain: 'example.com' });
+    const stored = await storage.read();
+    const result = await vault.fill({ id: stored[0]!.id, tabId: 'tab_1' });
     const json = JSON.stringify(result);
     expect(json).not.toContain('password123');
   });

@@ -1,5 +1,6 @@
 import type { HistoryEntry } from '@shared/browser-types';
-import { formatRelativeTime } from '../../store/ui-logic';
+import { useI18n } from '../../i18n';
+import { formatRelativeTime, type RelativeTimeLabels } from '../../store/ui-logic';
 
 interface HistoryPanelProps {
   open: boolean;
@@ -18,13 +19,20 @@ export function HistoryPanel({
   onClear,
   onOpenUrl,
 }: HistoryPanelProps) {
+  const { t } = useI18n();
   if (!open) return null;
+  const rel: Partial<RelativeTimeLabels> = {
+    justNow: t('rel.justNow'),
+    mAgo: t('rel.mAgo'),
+    hAgo: t('rel.hAgo'),
+    dAgo: t('rel.dAgo'),
+  };
   return (
-    <section className="panel panel--history" aria-label="History panel">
+    <section className="panel panel--history" aria-label={t('panel.historyName')}>
       <header className="panel__header">
         <div className="panel__title">
           <span className="panel__title-mark" aria-hidden />
-          <h2>HISTORY</h2>
+          <h2>{t('panel.history')}</h2>
           <span className="panel__count">{history.length}</span>
         </div>
         <div className="panel__actions">
@@ -33,15 +41,15 @@ export function HistoryPanel({
             className="panel__action"
             onClick={onClear}
             disabled={history.length === 0}
-            title="Clear all history"
+            title={t('panel.clearTip')}
           >
-            Clear
+            {t('panel.clear')}
           </button>
           <button
             type="button"
             className="panel__close"
             onClick={onClose}
-            aria-label="Close history panel"
+            aria-label={t('panel.closeAria', { name: t('panel.historyName') })}
           >
             ×
           </button>
@@ -49,7 +57,7 @@ export function HistoryPanel({
       </header>
       <div className="panel__body">
         {history.length === 0 ? (
-          <p className="panel__empty">No history entries.</p>
+          <p className="panel__empty">{t('panel.historyEmpty')}</p>
         ) : (
           <ul className="panel__list">
             {history.map((entry) => (
@@ -63,15 +71,15 @@ export function HistoryPanel({
                   <span className="list-item__title">{entry.title}</span>
                   <span className="list-item__url">{entry.url}</span>
                   <span className="list-item__meta">
-                    {formatRelativeTime(entry.visitedAt)} · ×{entry.visitCount}
+                    {formatRelativeTime(entry.visitedAt, Date.now(), rel)} · ×{entry.visitCount}
                   </span>
                 </button>
                 <button
                   type="button"
                   className="list-item__delete"
                   onClick={() => onDelete(entry.id)}
-                  aria-label={`Delete history entry: ${entry.title}`}
-                  title="Delete entry"
+                  aria-label={t('panel.deleteHistoryAria', { title: entry.title })}
+                  title={t('panel.deleteTip')}
                 >
                   ×
                 </button>

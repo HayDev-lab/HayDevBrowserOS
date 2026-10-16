@@ -35,7 +35,7 @@ export type AgentRunProfile = 'STANDARD' | 'DEEP_RESEARCH';
 // Source ledger
 // ---------------------------------------------------------------------------
 
-export type ResearchSourceStatus = 'visited' | 'failed';
+export type ResearchSourceStatus = 'visited' | 'failed' | 'extracted' | 'empty';
 
 export interface ResearchSource {
   /** 1-based visit order (also the citation index). */
@@ -86,7 +86,7 @@ export interface ResearchEvidence {
 // Claims / evidence / cross-check
 // ---------------------------------------------------------------------------
 
-export type CrossCheckStatus = 'SUPPORTED' | 'CONFLICTING' | 'INSUFFICIENT';
+export type CrossCheckStatus = 'SUPPORTED' | 'CONFLICTING' | 'INSUFFICIENT' | 'UNVERIFIED';
 
 /**
  * A research finding. `sourceIds` reference ResearchSource.id values that
@@ -94,6 +94,9 @@ export type CrossCheckStatus = 'SUPPORTED' | 'CONFLICTING' | 'INSUFFICIENT';
  * reported, not silently kept).
  */
 export interface ResearchClaim {
+  quote?: string;
+  verification?: 'excerpt-present';
+  interpretation?: 'model-claim';
   claim: string;
   sourceIds: number[];
   status: CrossCheckStatus;

@@ -11,6 +11,19 @@ pub struct NavStack {
     entries: Vec<String>,
     /// Current position; None until the first commit.
     index: Option<usize>,
+    /// Native-history window of THIS webview instance: the lowest and highest
+    /// stack indices committed since creation. Entries restored from a
+    /// previous session lie outside it, so native back/forward cannot reach
+    /// them and navigation must go through an explicit URL. Set by the first
+    /// commit; `from_session` resets both.
+    native_lo: Option<usize>,
+    native_hi: Option<usize>,
+    /// Set while an explicit-URL navigation (a hop into restored history) is
+    /// in flight. A `location.href` push reorders the webview's joint
+    /// history away from this stack's order, so the landing commit must be
+    /// recorded as a fresh navigation and the native window must collapse to
+    /// the landing entry — later hops re-evaluate reachability from there.
+    pending_explicit: Option<String>,
 }
 
 impl NavStack {
@@ -29,30 +42,77 @@ impl NavStack {
         }
     }
 
+    /// Announce that the next page-load commit will be an explicit-URL
+    /// navigation to `url` (used for restored-history hops).
+    pub fn begin_explicit(&mut self, url: &str) {
+        self.pending_explicit = Some(url.to_string());
+    }
+
     /// Record a committed navigation URL (page-load Finished).
     pub fn commit(&mut self, url: &str) {
+        if self.pending_explicit.as_deref() == Some(url) {
+            self.pending_explicit = None;
+            // An explicit hop into restored history moves to the landing
+            // entry WITHOUT truncating forward history — forward entries stay
+            // reachable through further explicit hops. The native window
+            // collapses to the landing: the webview's joint history was
+            // reordered by the URL navigation, so every neighbour
+            // re-evaluates reachability from here.
+            if let Some(i) = self.index {
+                let pos = (0..self.entries.len())
+                    .filter(|p| self.entries[*p] == url)
+                    .min_by_key(|p| p.abs_diff(i));
+                let pos = pos.unwrap_or_else(|| {
+                    self.entries.truncate(i + 1);
+                    self.entries.push(url.to_string());
+                    i + 1
+                });
+                self.index = Some(pos);
+                self.native_lo = Some(pos);
+                self.native_hi = Some(pos);
+            }
+            return;
+        }
+        self.pending_explicit = None;
         match self.index {
             None => {
                 self.entries.push(url.to_string());
                 self.index = Some(0);
+                self.native_lo = Some(0);
+                self.native_hi = Some(0);
             }
             Some(i) => {
                 if self.entries[i] == url {
-                    // Same URL re-committed (reload) — no stack change.
+                    // Same URL re-committed (reload or the restored current
+                    // page's first load) — the instance has now visited i.
+                    let lo = self.native_lo.get_or_insert(i);
+                    *lo = (*lo).min(i);
+                    let hi = self.native_hi.get_or_insert(i);
+                    *hi = (*hi).max(i);
                     return;
                 }
                 if i > 0 && self.entries[i - 1] == url {
-                    self.index = Some(i - 1); // history.back() landed
+                    self.index = Some(i - 1); // history.back() (or a direct nav to the back entry) landed
+                    let lo = self.native_lo.get_or_insert(i - 1);
+                    *lo = (*lo).min(i - 1);
+                    let hi = self.native_hi.get_or_insert(i - 1);
+                    *hi = (*hi).max(i - 1);
                     return;
                 }
                 if i + 1 < self.entries.len() && self.entries[i + 1] == url {
-                    self.index = Some(i + 1); // history.forward() landed
+                    self.index = Some(i + 1); // history.forward() (or a direct nav to the forward entry) landed
+                    let lo = self.native_lo.get_or_insert(i + 1);
+                    *lo = (*lo).min(i + 1);
+                    let hi = self.native_hi.get_or_insert(i + 1);
+                    *hi = (*hi).max(i + 1);
                     return;
                 }
                 // New navigation: truncate forward history and push.
                 self.entries.truncate(i + 1);
                 self.entries.push(url.to_string());
                 self.index = Some(i + 1);
+                let hi = self.native_hi.get_or_insert(i + 1);
+                *hi = (*hi).max(i + 1);
             }
         }
     }
@@ -78,6 +138,26 @@ impl NavStack {
     /// Current committed URL, if any.
     pub fn current(&self) -> Option<&str> {
         self.index.map(|i| self.entries[i].as_str())
+    }
+
+    /// Entry just behind/at-front of the current one, without moving.
+    pub fn back_target(&self) -> Option<(usize, &str)> {
+        self.index.filter(|i| *i > 0).map(|i| (i - 1, self.entries[i - 1].as_str()))
+    }
+
+    /// Entry just ahead of the current one, without moving.
+    pub fn forward_target(&self) -> Option<(usize, &str)> {
+        match self.index {
+            Some(i) if i + 1 < self.entries.len() => Some((i + 1, self.entries[i + 1].as_str())),
+            _ => None,
+        }
+    }
+
+    /// False for entries restored from a previous session that this webview
+    /// instance has never visited — native back/forward cannot reach them.
+    pub fn native_reachable(&self, stack_index: usize) -> bool {
+        self.native_lo.map_or(true, |lo| stack_index >= lo)
+            && self.native_hi.map_or(true, |hi| stack_index <= hi)
     }
 
     /// Session-persistable snapshot (matches `SessionTabNavigation`).
@@ -113,6 +193,9 @@ impl NavStack {
         Self {
             entries,
             index: current_idx,
+            native_lo: None,
+            native_hi: None,
+            pending_explicit: None,
         }
     }
 }
@@ -164,5 +247,64 @@ mod tests {
         assert_eq!(restored.current(), Some("b"));
         assert!(restored.can_go_back());
         assert!(restored.can_go_forward());
+    }
+
+    #[test]
+    fn restored_neighbours_outside_native_window_need_explicit_navigation() {
+        let mut s = NavStack::new();
+        s.commit("a");
+        s.commit("b");
+        s.commit("c");
+        s.go_back(); // at b
+        let mut restored = NavStack::from_session(&s.to_session());
+        // First commit in the new instance opens the restored current page.
+        restored.commit("b");
+        // Back entry predates this instance's native history...
+        let (back_idx, back_url) = restored.back_target().unwrap();
+        assert_eq!(back_url, "a");
+        assert!(!restored.native_reachable(back_idx));
+        // ...and the forward entry was never visited in this instance.
+        let (fwd_idx, fwd_url) = restored.forward_target().unwrap();
+        assert_eq!(fwd_url, "c");
+        assert!(!restored.native_reachable(fwd_idx));
+        // An explicit hop is recorded against the landing entry WITHOUT
+        // truncating forward history, and the native window collapses to the
+        // landing so later hops re-evaluate reachability from there.
+        restored.begin_explicit("a");
+        restored.commit("a");
+        assert_eq!(restored.current(), Some("a"));
+        assert!(restored.back_target().is_none());
+        let (fwd_idx, fwd_url) = restored.forward_target().unwrap();
+        assert_eq!(fwd_url, "b");
+        assert!(!restored.native_reachable(fwd_idx), "forward entry stays listed but needs an explicit hop");
+        // The next explicit hop restores forward traversal entry by entry.
+        restored.begin_explicit("b");
+        restored.commit("b");
+        assert_eq!(restored.current(), Some("b"));
+        let (fwd_idx, fwd_url) = restored.forward_target().unwrap();
+        assert_eq!(fwd_url, "c");
+        assert!(!restored.native_reachable(fwd_idx));
+        let (back_idx, back_url) = restored.back_target().unwrap();
+        assert_eq!(back_url, "a");
+        assert!(!restored.native_reachable(back_idx));
+        // A stale explicit intent never hijacks an unrelated commit.
+        restored.begin_explicit("nowhere");
+        restored.commit("b");
+        assert_eq!(restored.current(), Some("b"));
+    }
+
+    #[test]
+    fn in_session_forward_stays_native_reachable() {
+        let mut s = NavStack::new();
+        s.commit("a");
+        s.commit("b");
+        s.commit("c");
+        s.go_back(); // at b; c was visited in this instance
+        let (fwd_idx, fwd_url) = s.forward_target().unwrap();
+        assert_eq!(fwd_url, "c");
+        assert!(s.native_reachable(fwd_idx));
+        let (back_idx, back_url) = s.back_target().unwrap();
+        assert_eq!(back_url, "a");
+        assert!(s.native_reachable(back_idx));
     }
 }

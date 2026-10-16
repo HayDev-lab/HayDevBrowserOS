@@ -8,9 +8,11 @@
  * SECURITY: the prompt carries domain + username only. The captured
  * password never leaves the main process — Save just resolves the prompt.
  */
+import { useI18n } from '../i18n';
 import { usePasswordPrompt } from '../store/vault-store';
 
 export function PasswordPrompt() {
+  const { t } = useI18n();
   const { prompt, resolving, resolve } = usePasswordPrompt();
   if (!prompt) return null;
 
@@ -18,26 +20,26 @@ export function PasswordPrompt() {
     <aside
       className="password-prompt"
       role="alertdialog"
-      aria-label={`Save password for ${prompt.domain}`}
+      aria-label={t('pw.aria', { domain: prompt.domain })}
     >
       <div className="password-prompt__head">
         <span className="password-prompt__glyph" aria-hidden>
           🔒
         </span>
-        <span className="password-prompt__title">SAVE PASSWORD</span>
+        <span className="password-prompt__title">{t('pw.title')}</span>
         <button
           type="button"
           className="password-prompt__close"
           onClick={() => void resolve(false)}
           disabled={resolving}
-          aria-label="Dismiss save password prompt"
-          title="Not now"
+          aria-label={t('pw.closeAria')}
+          title={t('pw.closeTip')}
         >
           ×
         </button>
       </div>
       <p className="password-prompt__text">
-        Save login for <span className="password-prompt__domain">{prompt.domain}</span>?
+        {t('pw.text', { domain: prompt.domain })}
       </p>
       {prompt.username && (
         <p className="password-prompt__user">{prompt.username}</p>
@@ -48,9 +50,9 @@ export function PasswordPrompt() {
           className="password-prompt__btn password-prompt__btn--save"
           onClick={() => void resolve(true)}
           disabled={resolving}
-          title="Encrypt with OS key and store in the vault"
+          title={t('pw.saveTip')}
         >
-          Save
+          {t('pw.save')}
         </button>
         <button
           type="button"
@@ -58,7 +60,7 @@ export function PasswordPrompt() {
           onClick={() => void resolve(false)}
           disabled={resolving}
         >
-          Not now
+          {t('pw.notNow')}
         </button>
       </div>
     </aside>

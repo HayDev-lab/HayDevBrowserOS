@@ -1,3 +1,4 @@
+import { attachmentErrorStrings } from '../../../shared/attachment-errors';
 /**
  * New Tab Page — pure template builder for the internal pab://newtab page.
  *
@@ -30,6 +31,7 @@
  */
 import type { HistoryEntry } from '@shared/browser-types';
 import type { TechNewsItem } from './tech-news';
+import { parseAppLocale, type AppLocale } from '../../../shared/app-locale';
 import {
   MATRIX_RAIN_CANVAS,
   buildMatrixRainScript,
@@ -100,8 +102,214 @@ export function computeTopSites(history: HistoryEntry[], limit = 8): TopSite[] {
     }));
 }
 
+/** User-visible strings per locale. `en` values are the historical page
+ * strings verbatim (so the default output is unchanged); keys are resolved
+ * server-side via tr() and client-side via window.__PAB_STRINGS__. Brand
+ * names (HayDev, Perplexity, Perplexica, Tor, Deep Research) stay as-is. */
+const STRINGS: Record<AppLocale, Record<string, string>> = {
+  en: {
+    'page.title': 'New Tab',
+    'hero.tagline': 'Same Internet. Deeper Intelligence.',
+    'sites.label': 'FREQUENT SITES',
+    'news.leadTitle': 'Today in Tech',
+    'news.leadSub': 'Latest updates for your workflow',
+    'news.leadOffline': 'No connection — headlines will appear when online.',
+    'news.aria': 'Today in Tech',
+    'search.focus': 'Focus search',
+    'search.placeholder': 'Спроси HayDev Search…',
+    'search.aria': 'Universal search — ask HayDev Search',
+    'attach.file.aria': 'Attach file',
+    'attach.file.title': 'Attach file (PDF, DOC, TXT, CSV, JSON…)',
+    'attach.image.aria': 'Attach image',
+    'attach.image.title': 'Attach image (PNG, JPG, WEBP…)',
+    'search.go.aria': 'Run search',
+    'search.go.title': 'Search (Enter)',
+    'attach.chips.aria': 'Attachments',
+    'engines.aria': 'Search engine',
+    'engine.haydev.title':
+      'HayDev flagship — Deep Research agent pipeline (switches to AGENT mode automatically for the run)',
+    'engine.haydev.sub': 'Deep Research agent',
+    'engine.perplexity.title': 'Instant AI + Web answers via Perplexica (pab://search, web mode)',
+    'engine.perplexity.sub': 'AI + Web answers',
+    'engine.darkweb.name': 'Deep/Dark Web Search',
+    'engine.darkweb.title': 'Beyond the surface (pab://darkweb via Tor)',
+    'engine.darkweb.sub': 'Beyond the surface',
+    'cats.aria': 'Search category',
+    'cat.ai': 'AI',
+    'cat.research': 'Research',
+    'cat.code': 'Code',
+    'cat.legal': 'Legal',
+    'cat.business': 'Business',
+    'cat.tech': 'Tech',
+    'motto.left': '"A more capable<br>you, every day."<br><em>— HayDev</em>',
+    'motto.right': 'Intelligence<br>without limits',
+    'status.pageError': 'Page error: {m}',
+    'status.unknownError': 'unknown',
+    'attach.remove': 'Remove attachment {name}',
+    'attach.limit': 'Up to {n} attachments per query.',
+    'attach.attached': 'Attached {name}. When sent, extracted content goes to the selected LLM provider.',
+    'attach.cancel': 'Cancel reading',
+    'attach.pickerError': 'Could not open the file picker.',
+    'research.unavailable': 'Deep Research is unavailable on this page.',
+    'research.starting': 'Starting Deep Research…',
+    'research.started': 'Deep Research started — follow the AGENT panel.',
+    'research.couldNotStart': 'Deep Research could not start.',
+    'research.failed': 'Deep Research request failed.',
+    'search.needQuery': 'Type a query first — then press Search or Enter.',
+    'darkweb.opening': 'Opening Dark Web search…',
+    'search.perplexity': 'Searching — Perplexity (AI + Web)…',
+    'search.haydev': 'Starting Deep Research (HayDev agent)…',
+  },
+  ru: {
+    'page.title': 'Новая вкладка',
+    'hero.tagline': 'Тот же интернет. Более глубокий интеллект.',
+    'sites.label': 'Часто посещаемые',
+    'news.leadTitle': 'Технологии сегодня',
+    'news.leadSub': 'Последние обновления для вашего рабочего процесса',
+    'news.leadOffline': 'Нет подключения — заголовки появятся при выходе в сеть.',
+    'news.aria': 'Технологии сегодня',
+    'search.focus': 'Перейти к поиску',
+    'search.placeholder': 'Спроси HayDev Search…',
+    'search.aria': 'Универсальный поиск — спросите HayDev Search',
+    'attach.file.aria': 'Прикрепить файл',
+    'attach.file.title': 'Прикрепить файл (PDF, DOC, TXT, CSV, JSON…)',
+    'attach.image.aria': 'Прикрепить изображение',
+    'attach.image.title': 'Прикрепить изображение (PNG, JPG, WEBP…)',
+    'search.go.aria': 'Запустить поиск',
+    'search.go.title': 'Поиск (Enter)',
+    'attach.chips.aria': 'Вложения',
+    'engines.aria': 'Поисковая система',
+    'engine.haydev.title':
+      'Флагман HayDev — конвейер агента Deep Research (во время запуска автоматически переключается в режим AGENT)',
+    'engine.haydev.sub': 'Агент Deep Research',
+    'engine.perplexity.title': 'Мгновенные ответы ИИ + Веб через Perplexica (pab://search, веб-режим)',
+    'engine.perplexity.sub': 'Ответы ИИ + Веб',
+    'engine.darkweb.name': 'Поиск в глубокой/тёмной сети',
+    'engine.darkweb.title': 'Глубже поверхности (pab://darkweb через Tor)',
+    'engine.darkweb.sub': 'Глубже поверхности',
+    'cats.aria': 'Категория поиска',
+    'cat.ai': 'ИИ',
+    'cat.research': 'Исследования',
+    'cat.code': 'Код',
+    'cat.legal': 'Право',
+    'cat.business': 'Бизнес',
+    'cat.tech': 'Технологии',
+    'motto.left': '«Более способный<br>ты — с каждым днём.»<br><em>— HayDev</em>',
+    'motto.right': 'Интеллект<br>без границ',
+    'status.pageError': 'Ошибка страницы: {m}',
+    'status.unknownError': 'неизвестно',
+    'attach.remove': 'Удалить вложение {name}',
+    'attach.limit': 'До {n} вложений на один запрос.',
+    'attach.attached': 'Прикреплено: {name}. При отправке извлечённое содержимое получит выбранный LLM-провайдер.',
+    'attach.cancel': 'Отменить чтение',
+    'attach.pickerError': 'Не удалось открыть выбор файла.',
+    'research.unavailable': 'Deep Research недоступен на этой странице.',
+    'research.starting': 'Запуск Deep Research…',
+    'research.started': 'Deep Research запущен — следите за панелью AGENT.',
+    'research.couldNotStart': 'Не удалось запустить Deep Research.',
+    'research.failed': 'Запрос Deep Research не удался.',
+    'search.needQuery': 'Сначала введите запрос — затем нажмите «Поиск» или Enter.',
+    'darkweb.opening': 'Открываю поиск в даркнете…',
+    'search.perplexity': 'Ищу — Perplexity (ИИ + Веб)…',
+    'search.haydev': 'Запуск Deep Research (агент HayDev)…',
+  },
+  hy: {
+    'page.title': 'Նոր ներդիր',
+    'hero.tagline': 'Նույն ինտերնետը։ Ավելի խորը ինտելեկտ։',
+    'sites.label': 'Հաճախ այցելված',
+    'news.leadTitle': 'Տեխնոլոգիաներ այսօր',
+    'news.leadSub': 'Վերջին թարմացումները ձեր աշխատանքային հոսքի համար',
+    'news.leadOffline': 'Կապ չկա՝ վերնագրերը կհայտնվեն ցանցին միանալուց հետո։',
+    'news.aria': 'Տեխնոլոգիաներ այսօր',
+    'search.focus': 'Անցնել որոնմանը',
+    'search.placeholder': 'Հարցրեք HayDev Search-ին…',
+    'search.aria': 'Համընդհանուր որոնում՝ հարցրեք HayDev Search-ին',
+    'attach.file.aria': 'Կցել ֆայլ',
+    'attach.file.title': 'Կցել ֆայլ (PDF, DOC, TXT, CSV, JSON…)',
+    'attach.image.aria': 'Կցել պատկեր',
+    'attach.image.title': 'Կցել պատկեր (PNG, JPG, WEBP…)',
+    'search.go.aria': 'Գործարկել որոնումը',
+    'search.go.title': 'Որոնում (Enter)',
+    'attach.chips.aria': 'Կցված ֆայլեր',
+    'engines.aria': 'Որոնիչ',
+    'engine.haydev.title':
+      'HayDev-ի ֆլագմանը՝ Deep Research գործակալի խողովակաշար (գործարկման ընթացքում ինքնաբերաբար անցնում է AGENT ռեժիմի)',
+    'engine.haydev.sub': 'Deep Research գործակալ',
+    'engine.perplexity.title': 'Ակնթարթային ԱԻ + Վեբ պատասխաններ Perplexica-ի միջոցով (pab://search, վեբ ռեժիմ)',
+    'engine.perplexity.sub': 'ԱԻ + Վեբ պատասխաններ',
+    'engine.darkweb.name': 'Որոնում խորը/մութ ցանցում',
+    'engine.darkweb.title': 'Ավելի խորը մակերևույթից (pab://darkweb՝ Tor-ով)',
+    'engine.darkweb.sub': 'Ավելի խորը մակերևույթից',
+    'cats.aria': 'Որոնման կատեգորիա',
+    'cat.ai': 'ԱԻ',
+    'cat.research': 'Հետազոտություն',
+    'cat.code': 'Կոդ',
+    'cat.legal': 'Իրավունք',
+    'cat.business': 'Բիզնես',
+    'cat.tech': 'Տեխնոլոգիաներ',
+    'motto.left': '«Ավելի կարող<br>դու՝ ամեն օր։»<br><em>— HayDev</em>',
+    'motto.right': 'Բանականություն<br>առանց սահմանների',
+    'status.pageError': 'Էջի սխալ՝ {m}',
+    'status.unknownError': 'անհայտ',
+    'attach.remove': 'Հեռացնել կցված ֆայլը՝ {name}',
+    'attach.limit': 'Առավելագույնը {n} կցված ֆայլ մեկ հարցման համար։',
+    'attach.attached': 'Կցվեց՝ {name}։ Ուղարկելիս արտահանված բովանդակությունը կփոխանցվի ընտրված LLM մատակարարին։',
+    'attach.cancel': 'Չեղարկել ընթերցումը',
+    'attach.pickerError': 'Չհաջողվեց բացել ֆայլ ընտրելու պատուհանը։',
+    'research.unavailable': 'Deep Research-ը հասանելի չէ այս էջում։',
+    'research.starting': 'Մեկնարկում է Deep Research-ը…',
+    'research.started': 'Deep Research-ը մեկնարկեց — հետևեք AGENT վահանակին։',
+    'research.couldNotStart': 'Deep Research-ը չհաջողվեց մեկնարկել։',
+    'research.failed': 'Deep Research հարցումը ձախողվեց։',
+    'search.needQuery': 'Նախ մուտքագրեք հարցումը, ապա սեղմեք «Որոնում» կամ Enter։',
+    'darkweb.opening': 'Բացվում է որոնումը Dark Web-ում…',
+    'search.perplexity': 'Որոնում՝ Perplexity (ԱԻ + Վեբ)…',
+    'search.haydev': 'Մեկնարկում է Deep Research-ը (HayDev գործակալ)…',
+  },
+};
+
+/** Resolve a UI string for `lang`, with `{var}` interpolation. */
+function tr(lang: AppLocale, key: string, vars?: Record<string, string | number>): string {
+  let s = STRINGS[lang][key] ?? STRINGS.en[key] ?? key;
+  if (vars) for (const [k, v] of Object.entries(vars)) s = s.replaceAll(`{${k}}`, String(v));
+  return s;
+}
+
+/** Keys the embedded page script resolves at runtime (client-side render);
+ * only this subset is embedded as window.__PAB_STRINGS__ (template-only
+ * strings stay out of the JSON so e.g. the offline page omits them). */
+const CLIENT_STRING_KEYS = [
+  'news.leadTitle',
+  'news.leadSub',
+  'status.pageError',
+  'status.unknownError',
+  'attach.remove',
+  'attach.limit',
+  'attach.attached',
+  'attach.pickerError',
+  'research.unavailable',
+  'research.starting',
+  'research.started',
+  'research.couldNotStart',
+  'research.failed',
+  'search.needQuery',
+  'darkweb.opening',
+  'search.perplexity',
+  'search.haydev',
+] as const;
+
 /** Build the complete self-contained Matrix New Tab HTML. */
-export function buildNewTabHtml(topSites: TopSite[], news: TechNewsItem[] = []): string {
+export function buildNewTabHtml(
+  topSites: TopSite[],
+  news: TechNewsItem[] = [],
+  lang: AppLocale = 'en',
+): string {
+  const loc = parseAppLocale(lang);
+  // Strings the page script renders client-side; `</` escaped so no value
+  // can ever close the <script> tag.
+  const scriptStringsJson = JSON.stringify(
+    { ...Object.fromEntries(CLIENT_STRING_KEYS.map((k) => [k, STRINGS[loc][k] ?? STRINGS.en[k]])), ...attachmentErrorStrings(loc) },
+  ).replace(/<\//g, '<\\/');
   const tiles = topSites
     .map(
       (s) => `        <a class="tile" href="${escapeHtml(s.url)}" title="${escapeHtml(s.url)}">
@@ -113,7 +321,7 @@ export function buildNewTabHtml(topSites: TopSite[], news: TechNewsItem[] = []):
 
   const tilesBlock =
     topSites.length > 0
-      ? `      <div class="sites">\n        <div class="sites__label">FREQUENT SITES</div>\n        <div class="grid">\n${tiles}\n        </div>\n      </div>`
+      ? `      <div class="sites">\n        <div class="sites__label">${tr(loc, 'sites.label')}</div>\n        <div class="grid">\n${tiles}\n        </div>\n      </div>`
       : '';
 
   const newsCards = news
@@ -134,25 +342,25 @@ export function buildNewTabHtml(topSites: TopSite[], news: TechNewsItem[] = []):
       ? `  <a class="news__card news__card--lead" href="pab://search" >
     <span class="news__lead-dot" aria-hidden="true"></span>
     <span class="news__body">
-      <span class="news__lead-title">Today in Tech</span>
-      <span class="news__lead-sub">Latest updates for your workflow</span>
+      <span class="news__lead-title">${tr(loc, 'news.leadTitle')}</span>
+      <span class="news__lead-sub">${tr(loc, 'news.leadSub')}</span>
     </span>
   </a>
 ${newsCards}`
       : `  <div class="news__card news__card--lead news__card--static">
     <span class="news__lead-dot" aria-hidden="true"></span>
     <span class="news__body">
-      <span class="news__lead-title">Today in Tech</span>
-      <span class="news__lead-sub">No connection — headlines will appear when online.</span>
+      <span class="news__lead-title">${tr(loc, 'news.leadTitle')}</span>
+      <span class="news__lead-sub">${tr(loc, 'news.leadOffline')}</span>
     </span>
   </div>`;
 
   return `<!doctype html>
-<html>
+<html lang="${loc}">
 <head>
 <meta charset="utf-8">
 <link rel="icon" type="image/png" href="data:image/png;base64,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">
-<title>New Tab</title>
+<title>${tr(loc, 'page.title')}</title>
 <style>
   :root {
     color-scheme: dark;
@@ -488,7 +696,7 @@ ${newsCards}`
       <header class="hero">
         <div class="hero__logo" aria-hidden="true"><img src="data:image/png;base64,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"></div>
         <h1 class="hero__brand">HayDev Browser OS</h1>
-        <p class="hero__tag">Same Internet. Deeper Intelligence.</p>
+        <p class="hero__tag">${tr(loc, 'hero.tagline')}</p>
       </header>
       <div class="clock">
         <div class="clock__time" id="time">--:--</div>
@@ -496,35 +704,36 @@ ${newsCards}`
       </div>
       <form class="search-wrap" id="sform" action="pab://search/" method="get">
         <div class="search">
-          <button type="button" class="search__icon" id="sicon" aria-label="Focus search" tabindex="-1">
+          <button type="button" class="search__icon" id="sicon" aria-label="${tr(loc, 'search.focus')}" tabindex="-1">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
               <circle cx="11" cy="11" r="7"></circle><line x1="21" y1="21" x2="16.5" y2="16.5"></line>
             </svg>
           </button>
-          <input id="sinput" name="q" placeholder="Спроси HayDev Search…" autocomplete="off" spellcheck="false" aria-label="Universal search — ask HayDev Search">
-          <button type="button" class="search__btn" id="sattach" aria-label="Attach file" title="Attach file (PDF, DOC, TXT, CSV, JSON…)">
+          <input id="sinput" name="q" placeholder="${tr(loc, 'search.placeholder')}" autocomplete="off" spellcheck="false" aria-label="${tr(loc, 'search.aria')}">
+          <button type="button" class="search__btn" id="sattach" aria-label="${tr(loc, 'attach.file.aria')}" title="${tr(loc, 'attach.file.title')}">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
               <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
             </svg>
           </button>
-          <button type="button" class="search__btn" id="simage" aria-label="Attach image" title="Attach image (PNG, JPG, WEBP…)">
+          <button type="button" class="search__btn" id="simage" aria-label="${tr(loc, 'attach.image.aria')}" title="${tr(loc, 'attach.image.title')}">
             <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <rect x="3" y="3" width="18" height="18" rx="2"></rect>
               <circle cx="8.5" cy="8.5" r="1.5"></circle>
               <polyline points="21 15 16 10 5 21"></polyline>
             </svg>
           </button>
-          <button type="submit" class="search__btn search__submit" id="sgo" aria-label="Run search" title="Search (Enter)">
+          <button type="submit" class="search__btn search__submit" id="sgo" aria-label="${tr(loc, 'search.go.aria')}" title="${tr(loc, 'search.go.title')}">
             <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <line x1="4" y1="12" x2="19" y2="12"></line><polyline points="13 6 19 12 13 18"></polyline>
             </svg>
           </button>
         </div>
-        <div class="chips" id="schips" aria-label="Attachments"></div>
+        <button type="button" class="search__btn" id="scancel-attach" hidden>${tr(loc, 'attach.cancel')}</button>
+        <div class="chips" id="schips" aria-label="${tr(loc, 'attach.chips.aria')}"></div>
         <p class="status" id="sstatus" role="status" aria-live="polite"></p>
       </form>
-      <div class="engines" role="radiogroup" aria-label="Search engine">
-        <button type="button" class="engine" id="engine-haydev" role="radio" aria-checked="true" data-engine="haydev" title="HayDev flagship — Deep Research agent pipeline (switches to AGENT mode automatically for the run)">
+      <div class="engines" role="radiogroup" aria-label="${tr(loc, 'engines.aria')}">
+        <button type="button" class="engine" id="engine-haydev" role="radio" aria-checked="true" data-engine="haydev" title="${tr(loc, 'engine.haydev.title')}">
           <span class="engine__icon" aria-hidden="true">
             <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
               <path d="M12 2l7 4v6c0 4.4-3 8.4-7 10-4-1.6-7-5.6-7-10V6l7-4z"></path>
@@ -534,10 +743,10 @@ ${newsCards}`
           </span>
           <span class="engine__text">
             <span class="engine__title">HayDev Search</span>
-            <span class="engine__sub">Deep Research agent</span>
+            <span class="engine__sub">${tr(loc, 'engine.haydev.sub')}</span>
           </span>
         </button>
-        <button type="button" class="engine" id="engine-perplexity" role="radio" aria-checked="false" data-engine="perplexity" title="Instant AI + Web answers via Perplexica (pab://search, web mode)">
+        <button type="button" class="engine" id="engine-perplexity" role="radio" aria-checked="false" data-engine="perplexity" title="${tr(loc, 'engine.perplexity.title')}">
           <span class="engine__icon" aria-hidden="true">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
               <line x1="12" y1="3" x2="12" y2="21"></line>
@@ -548,10 +757,10 @@ ${newsCards}`
           </span>
           <span class="engine__text">
             <span class="engine__title">Perplexity Search</span>
-            <span class="engine__sub">AI + Web answers</span>
+            <span class="engine__sub">${tr(loc, 'engine.perplexity.sub')}</span>
           </span>
         </button>
-        <button type="button" class="engine" id="engine-darkweb" role="radio" aria-checked="false" data-engine="darkweb" title="Beyond the surface (pab://darkweb via Tor)">
+        <button type="button" class="engine" id="engine-darkweb" role="radio" aria-checked="false" data-engine="darkweb" title="${tr(loc, 'engine.darkweb.title')}">
           <span class="engine__icon" aria-hidden="true">
             <svg width="25" height="25" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
               <circle cx="12" cy="8" r="4"></circle>
@@ -561,25 +770,25 @@ ${newsCards}`
             </svg>
           </span>
           <span class="engine__text">
-            <span class="engine__title">Deep/Dark Web Search</span>
-            <span class="engine__sub">Beyond the surface</span>
+            <span class="engine__title">${tr(loc, 'engine.darkweb.name')}</span>
+            <span class="engine__sub">${tr(loc, 'engine.darkweb.sub')}</span>
           </span>
         </button>
       </div>
-      <div class="cats" role="group" aria-label="Search category">
-        <button type="button" class="cat" data-cat="AI" aria-pressed="false">✳ AI</button>
-        <button type="button" class="cat" data-cat="Research" aria-pressed="false">⚙ Research</button>
-        <button type="button" class="cat" data-cat="Code" aria-pressed="false">&lt;/&gt; Code</button>
-        <button type="button" class="cat" data-cat="Legal" aria-pressed="false">☰ Legal</button>
-        <button type="button" class="cat" data-cat="Business" aria-pressed="false">▦ Business</button>
-        <button type="button" class="cat" data-cat="Tech" aria-pressed="false">⚙ Tech</button>
+      <div class="cats" role="group" aria-label="${tr(loc, 'cats.aria')}">
+        <button type="button" class="cat" data-cat="AI" aria-pressed="false">✳ ${tr(loc, 'cat.ai')}</button>
+        <button type="button" class="cat" data-cat="Research" aria-pressed="false">⚙ ${tr(loc, 'cat.research')}</button>
+        <button type="button" class="cat" data-cat="Code" aria-pressed="false">&lt;/&gt; ${tr(loc, 'cat.code')}</button>
+        <button type="button" class="cat" data-cat="Legal" aria-pressed="false">☰ ${tr(loc, 'cat.legal')}</button>
+        <button type="button" class="cat" data-cat="Business" aria-pressed="false">▦ ${tr(loc, 'cat.business')}</button>
+        <button type="button" class="cat" data-cat="Tech" aria-pressed="false">⚙ ${tr(loc, 'cat.tech')}</button>
         <button type="button" class="cat" data-cat="More" aria-pressed="false">•••</button>
       </div>
 ${tilesBlock}
     </main>
-    <div class="motto motto--left" aria-hidden="true">"A more capable<br>you, every day."<br><em>— HayDev</em></div>
-    <div class="motto motto--right" aria-hidden="true">Intelligence<br>without limits<span class="motto__bar"></span></div>
-    <nav class="news" aria-label="Today in Tech">
+    <div class="motto motto--left" aria-hidden="true">${tr(loc, 'motto.left')}</div>
+    <div class="motto motto--right" aria-hidden="true">${tr(loc, 'motto.right')}<span class="motto__bar"></span></div>
+    <nav class="news" aria-label="${tr(loc, 'news.aria')}">
 ${newsBlock}
     </nav>
   </div>
@@ -590,7 +799,14 @@ ${newsBlock}
   ${buildPlanetScript()}
 </script>
 <script>
+  window.__PAB_STRINGS__ = ${scriptStringsJson};
   (function () {
+    var S = window.__PAB_STRINGS__ || {};   // UI strings for the current locale
+    function L(key, vars) {
+      var s = S[key] || key;
+      if (vars) for (var k in vars) s = s.split('{' + k + '}').join(String(vars[k]));
+      return s;
+    }
     var t = document.getElementById('time');
     var d = document.getElementById('date');
     function tick() {
@@ -627,7 +843,7 @@ ${newsBlock}
     // "nothing happens" is always explainable.
     window.addEventListener('error', function (e) {
       var el = document.getElementById('sstatus');
-      if (el) el.textContent = 'Page error: ' + (e.message || 'unknown');
+      if (el) el.textContent = L('status.pageError', { m: e.message || L('status.unknownError') });
     });
     var ENGINE_KEY = 'pab.newtab.engine';
     var ENGINES = ['haydev', 'perplexity', 'darkweb'];
@@ -721,11 +937,12 @@ ${newsBlock}
           var rm = document.createElement('button');
           rm.type = 'button';
           rm.className = 'chip__remove';
-          rm.setAttribute('aria-label', 'Remove attachment ' + c.name);
+          rm.setAttribute('aria-label', L('attach.remove', { name: c.name }));
           rm.textContent = '×';
           rm.addEventListener('click', function () {
-            chips = chips.filter(function (x) { return x.id !== c.id; });
-            renderChips();
+            Promise.resolve(bridge.releaseAttachment ? bridge.releaseAttachment(c.id) : null).then(function () {
+              chips = chips.filter(function (x) { return x.id !== c.id; }); renderChips();
+            }).catch(function () { status(L('attach.pickerError'), true); });
           });
           chip.appendChild(name);
           chip.appendChild(meta);
@@ -735,45 +952,53 @@ ${newsBlock}
       }
     }
 
+    var cancelAttach = document.getElementById('scancel-attach');
+    var picking = false;
+    cancelAttach.addEventListener('click', function () {
+      if (bridge && bridge.cancelAttachment) bridge.cancelAttachment();
+    });
     function pick(kind) {
-      if (!bridge) return;
+      if (!bridge || picking) return;
       if (chips.length >= MAX_CHIPS) {
-        status('Up to ' + MAX_CHIPS + ' attachments per query.', true);
+        status(L('attach.limit', { n: MAX_CHIPS }), true);
         return;
       }
+      picking = true;
+      cancelAttach.hidden = !bridge.cancelAttachment;
       bridge.pickAttachment(kind).then(function (r) {
         var a = r && r.attachment;
         if (!a) return;                       // cancelled
         chips.push(a);
         renderChips();
-        status('Attached ' + a.name + ' — will be analyzed by Deep Research.');
-      }).catch(function () {
-        status('Could not open the file picker.', true);
-      });
+        status(L('attach.attached', { name: a.name }));
+      }).catch(function (error) {
+        var code = String(error && error.message || '').match(/(?:DOCUMENT|ATTACHMENT)_[A-Z_]+/);
+        status(code && L(code[0]) !== code[0] ? L(code[0]) : L('attach.pickerError'), true);
+      }).finally(function () { picking = false; cancelAttach.hidden = true; });
     }
     attachBtn.addEventListener('click', function () { pick('file'); });
     imageBtn.addEventListener('click', function () { pick('image'); });
 
     function runResearch(q) {
       if (!bridge) {
-        status('Deep Research is unavailable on this page.', true);
+        status(L('research.unavailable'), true);
         return;
       }
-      status('Starting Deep Research…');
+      status(L('research.starting'));
       bridge.runResearch({
         query: q,
         attachmentIds: chips.map(function (c) { return c.id; })
       }).then(function (r) {
         if (r && r.started) {
-          status('Deep Research started — follow the AGENT panel.');
+          status(L('research.started'));
           input.value = '';
           chips = [];
           renderChips();
         } else {
-          status((r && r.error) || 'Deep Research could not start.', true);
+          status((r && r.error) || L('research.couldNotStart'), true);
         }
       }).catch(function () {
-        status('Deep Research request failed.', true);
+        status(L('research.failed'), true);
       });
     }
 
@@ -783,7 +1008,7 @@ ${newsBlock}
       // Empty query is a LOUD no-op — a silent one reads as "the button
       // is broken" (user-reported confusion).
       if (!v) {
-        status('Type a query first — then press Search or Enter.', true);
+        status(L('search.needQuery'), true);
         input.focus();
         return;
       }
@@ -795,19 +1020,19 @@ ${newsBlock}
         return;
       }
       if (engine === 'darkweb') {
-        status('Opening Dark Web search…');
+        status(L('darkweb.opening'));
         searchNavigate('darkweb', '?q=' + encodeURIComponent(v));
         return;
       }
       if (engine === 'perplexity') {
         // Perplexity chip = instant AI + Web answers (Perplexica, web mode).
-        status('Searching — Perplexity (AI + Web)…');
+        status(L('search.perplexity'));
         searchNavigate('search', '?q=' + encodeURIComponent(v) + '&src=web');
         return;
       }
       // HayDev chip = the flagship: Deep Research agent pipeline (src=research
       // auto-launches on the search page and auto-switches to AGENT mode).
-      status('Starting Deep Research (HayDev agent)…');
+      status(L('search.haydev'));
       searchNavigate('search', '?q=' + encodeURIComponent(v) + '&src=research');
     });
 
@@ -838,10 +1063,10 @@ ${newsBlock}
           leadBody.className = 'news__body';
           var leadTitle = document.createElement('span');
           leadTitle.className = 'news__lead-title';
-          leadTitle.textContent = 'Today in Tech';
+          leadTitle.textContent = L('news.leadTitle');
           var leadSub = document.createElement('span');
           leadSub.className = 'news__lead-sub';
-          leadSub.textContent = 'Latest updates for your workflow';
+          leadSub.textContent = L('news.leadSub');
           leadBody.appendChild(leadTitle);
           leadBody.appendChild(leadSub);
           lead.appendChild(leadDot);

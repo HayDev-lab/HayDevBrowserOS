@@ -52,7 +52,7 @@ describe.skipIf(!RUN)(`single-provider research probe (${PROVIDER})`, () => {
         const providers = (await (
           await fetch(`${P}/api/providers`)
         ).json()) as {
-          providers: Array<{ id: string; chatModels: Array<{ key: string }> }>;
+          providers: Array<{ id: string; chatModels: Array<{ key: string }>; embeddingModels?: Array<{ key: string }> }>;
         };
         const list = providers.providers || [];
         const target = list.find((p) => p.id === PROVIDER) ?? list[0]!;

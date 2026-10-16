@@ -1,4 +1,5 @@
 import type { DownloadItemState } from '@shared/browser-types';
+import { useI18n } from '../../i18n';
 import {
   formatBytes,
   formatPercent,
@@ -22,27 +23,28 @@ export function DownloadsPanel({
   onCancel,
   onRemove,
 }: DownloadsPanelProps) {
+  const { t } = useI18n();
   if (!open) return null;
   return (
-    <section className="panel panel--downloads" aria-label="Downloads panel">
+    <section className="panel panel--downloads" aria-label={t('panel.downloadsName')}>
       <header className="panel__header">
         <div className="panel__title">
           <span className="panel__title-mark" aria-hidden />
-          <h2>DOWNLOADS</h2>
+          <h2>{t('panel.downloads')}</h2>
           <span className="panel__count">{downloads.length}</span>
         </div>
         <button
           type="button"
           className="panel__close"
           onClick={onClose}
-          aria-label="Close downloads panel"
+          aria-label={t('panel.closeAria', { name: t('panel.downloadsName') })}
         >
           ×
         </button>
       </header>
       <div className="panel__body">
         {downloads.length === 0 ? (
-          <p className="panel__empty">No downloads yet.</p>
+          <p className="panel__empty">{t('panel.downloadsEmpty')}</p>
         ) : (
           <ul className="panel__list">
             {downloads.map((dl) => {
@@ -57,7 +59,7 @@ export function DownloadsPanel({
                       <span
                         className={`download-item__state ${getDownloadStateColorClass(dl.state)}`}
                       >
-                        {dl.state}
+                        {t(`state.${dl.state}`)}
                       </span>
                     </div>
                     <div className="download-item__meta">
@@ -72,7 +74,7 @@ export function DownloadsPanel({
                         aria-valuenow={pct}
                         aria-valuemin={0}
                         aria-valuemax={100}
-                        aria-label={`Download ${pct}% complete`}
+                        aria-label={t('panel.downloadPct', { pct })}
                       >
                         <div
                           className="download-item__progress-bar"
@@ -92,9 +94,9 @@ export function DownloadsPanel({
                         type="button"
                         className="download-item__action download-item__action--cancel"
                         onClick={() => onCancel(dl.id)}
-                        title="Cancel download"
+                        title={t('panel.cancelTip')}
                       >
-                        Cancel
+                        {t('panel.cancel')}
                       </button>
                     )}
                     {isDownloadTerminal(dl.state) && (
@@ -102,9 +104,9 @@ export function DownloadsPanel({
                         type="button"
                         className="download-item__action download-item__action--remove"
                         onClick={() => onRemove(dl.id)}
-                        title="Remove from list"
+                        title={t('panel.removeTip')}
                       >
-                        Remove
+                        {t('panel.remove')}
                       </button>
                     )}
                   </div>

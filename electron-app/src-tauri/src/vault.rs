@@ -49,35 +49,20 @@ impl Vault {
         }
     }
 
-    fn load(&self) -> Vec<CredentialRecord> {
-        let Ok(raw) = std::fs::read_to_string(&self.path) else {
-            return Vec::new();
-        };
-        match serde_json::from_str::<PersistedVault>(&raw) {
-            Ok(v) if v.version == 1 => v.records,
-            _ => Vec::new(), // corrupt → empty, file preserved (parity with TS)
+    fn load(tx: &crate::atomic_store::Transaction) -> AppResult<Vec<CredentialRecord>> {
+        match tx.read_json::<PersistedVault>()? {
+            Some(v) if v.version == 1 => Ok(v.records),
+            None => Ok(Vec::new()),
+            _ => Err(crate::atomic_store::corrupt()),
         }
     }
 
-    fn persist(&self, records: &[CredentialRecord]) -> AppResult<()> {
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| AppError::new("IO_ERROR", e.to_string()))?;
-        }
+    fn persist(tx: &crate::atomic_store::Transaction, records: &[CredentialRecord]) -> AppResult<()> {
         let payload = PersistedVault {
             version: 1,
             records: records.to_vec(),
         };
-        // atomic write: temp + rename (Windows rename refuses overwrite)
-        let tmp = self.path.with_extension("vault.tmp");
-        std::fs::write(&tmp, serde_json::to_string_pretty(&payload)?)
-            .map_err(|e| AppError::new("IO_ERROR", e.to_string()))?;
-        if self.path.exists() {
-            std::fs::remove_file(&self.path)
-                .map_err(|e| AppError::new("IO_ERROR", e.to_string()))?;
-        }
-        std::fs::rename(&tmp, &self.path).map_err(|e| AppError::new("IO_ERROR", e.to_string()))?;
-        Ok(())
+        tx.write_json(&payload)
     }
 
     pub fn save(
@@ -88,7 +73,8 @@ impl Vault {
         id_gen: impl Fn() -> String,
     ) -> AppResult<CredentialRecord> {
         let encrypted = dpapi_encrypt(password)?;
-        let mut records = self.load();
+        let tx = crate::atomic_store::transaction(&self.path)?;
+        let mut records = Self::load(&tx)?;
         // Upsert by (domain, username) — same semantics as the TS vault.
         let now = now_millis();
         if let Some(existing) = records
@@ -98,7 +84,7 @@ impl Vault {
             existing.encrypted_password = encrypted;
             existing.updated_at = now;
             let out = existing.clone();
-            self.persist(&records)?;
+            Self::persist(&tx, &records)?;
             return Ok(out);
         }
         let record = CredentialRecord {
@@ -111,33 +97,37 @@ impl Vault {
             metadata: None,
         };
         records.push(record.clone());
-        self.persist(&records)?;
+        Self::persist(&tx, &records)?;
         Ok(record)
     }
 
     /// Safe metadata list (no encrypted blobs — parity with TS `vault:list`).
     pub fn list(&self) -> AppResult<Vec<CredentialRecord>> {
-        let mut records = self.load();
+        let tx = crate::atomic_store::transaction(&self.path)?;
+        let mut records = Self::load(&tx)?;
         for r in &mut records {
             r.encrypted_password = String::new();
+            // Legacy free-form metadata is untrusted and can contain secrets.
+            r.metadata = None;
         }
         Ok(records)
     }
 
     pub fn has(&self, domain: &str, username: Option<&str>) -> AppResult<bool> {
-        Ok(self
-            .load()
+        let tx = crate::atomic_store::transaction(&self.path)?;
+        Ok(Self::load(&tx)?
             .iter()
             .any(|r| r.domain == domain && username.map(|u| r.username == u).unwrap_or(true)))
     }
 
     pub fn delete(&self, id: &str) -> AppResult<bool> {
-        let mut records = self.load();
+        let tx = crate::atomic_store::transaction(&self.path)?;
+        let mut records = Self::load(&tx)?;
         let before = records.len();
         records.retain(|r| r.id != id);
         let removed = before != records.len();
         if removed {
-            self.persist(&records)?;
+            Self::persist(&tx, &records)?;
         }
         Ok(removed)
     }
@@ -145,7 +135,8 @@ impl Vault {
     /// Decrypt a record's password (vault-internal use only — never sent to
     /// LLM/UI; the TS contract exposes it only to fill-in flows).
     pub fn decrypt_password(&self, id: &str) -> AppResult<String> {
-        let records = self.load();
+        let tx = crate::atomic_store::transaction(&self.path)?;
+        let records = Self::load(&tx)?;
         let record = records
             .iter()
             .find(|r| r.id == id)

@@ -20,6 +20,8 @@
 //! download cancel mid-flight (wry exposes no cancel handle — verified).
 
 pub mod agent;
+pub mod atomic_store;
+pub mod run_guard;
 pub mod attachments;
 pub mod bridge;
 pub mod cdp;
@@ -29,19 +31,26 @@ pub mod control;
 pub mod core;
 pub mod crawl;
 pub mod darkweb;
+pub mod domain_policy;
 pub mod downloads;
+pub mod documents;
 pub mod error;
+pub mod extract;
 pub mod layout;
 pub mod llm;
 pub mod mcp;
 pub mod memory;
 pub mod navstack;
+#[cfg(windows)]
+pub mod native_webview;
+pub mod netguard;
 pub mod pab;
 pub mod privacy;
 pub mod privacy_init;
 pub mod profiles;
 pub mod registry;
 pub mod runtime_manager;
+pub mod shield;
 pub mod site_ua;
 pub mod socks_http;
 pub mod stores;
@@ -84,8 +93,9 @@ pub fn run() {
         // replies through UriSchemeResponder.
         .register_asynchronous_uri_scheme_protocol("pab", |ctx, request, responder| {
             let app = ctx.app_handle().clone();
+            let owner = ctx.webview_label().to_string();
             std::thread::spawn(move || {
-                let response = pab::handle_pab(&app, &request);
+                let response = pab::handle_pab(&app, &request, &owner);
                 responder.respond(response);
             });
         })
@@ -101,9 +111,11 @@ pub fn run() {
         .manage(darkweb_index.clone())
         .manage(crawl::CrawlRegistry::new(darkweb_index))
         .manage(downloads::SharedQuarantine::default())
+        .manage(shield::new_shield(crate::privacy::global().shield_enabled))
         .manage(core::shared(initial_state()))
         .invoke_handler(tauri::generate_handler![
             commands::app_version,
+            commands::build_identity,
             commands::foundation_ping,
             commands::app_runtime_status,
             commands::runtime_manager_status,
@@ -148,9 +160,17 @@ pub fn run() {
             commands::agent_timeline_list,
             commands::agent_research_report,
             commands::agent_pick_attachment,
+            commands::agent_release_attachment,
             commands::control_set_mode,
             commands::control_take_control,
             commands::control_get_mode,
+            commands::privacy_status,
+            commands::set_locale,
+            commands::ui_locale,
+            commands::shield_status,
+            commands::shield_set_enabled,
+            commands::shield_allow_site,
+            commands::shield_disallow_site,
             commands::vault_save,
             commands::vault_has,
             commands::vault_list,
@@ -202,11 +222,8 @@ pub fn run() {
             // NOTHING across launches.
             wipe_ephemeral_profiles();
 
-            // Create the main window + chrome webview programmatically so the
-            // CHROME environment also gets an explicit debug port via
-            // additional_browser_args (env-var + option concat CONFLICTS when
-            // both set --remote-debugging-port — verified live). This keeps
-            // automation CDP available in PRODUCTION without env vars.
+            // DevTools is opt-in for isolated release QA. Runtime automation
+            // uses the concrete native WebView and requires no TCP listener.
             let chrome_port = core::chrome_debug_port();
             let window = tauri::WindowBuilder::new(&handle, "main")
                 .title("HayDev Browser OS")
@@ -215,18 +232,27 @@ pub fn run() {
                 .decorations(false)
                 .resizable(true)
                 .build()?;
+            // The shell must NOT use the engine's global user-data folder:
+            // it shares the DEFAULT profile's folder (inside the selected
+            // data-root) so WebView2 keeps one environment for shell +
+            // default tabs. Remote tabs keep zero invoke capability (IPC is
+            // per-webview); Agent/Private/DarkWeb keep their own
+            // environments and egress. A directory failure aborts startup —
+            // falling back to the global profile is not allowed.
+            let shell_profile_dir = {
+                let manager = crate::profiles::BrowserProfileManager::new(&crate::lib_app_data_dir());
+                manager
+                    .ensure(crate::profiles::ProfileKind::Default)
+                    .and_then(|()| manager.data_dir(crate::profiles::ProfileKind::Default).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "profile dir unavailable")))
+                    .map_err(|e| format!("shell profile directory failed: {e}"))?
+            };
             let chrome_webview = tauri::WebviewBuilder::new(
                 "main",
                 WebviewUrl::App("index.html".into()),
             )
+            .data_directory(shell_profile_dir)
             .additional_browser_args(&format!(
-                // remote-allow-origins: the tab webviews' CDP port already
-                // accepts scriptable loopback automation (wry defaults);
-                // without it the chrome port's websocket rejects every
-                // Origin — keep BOTH automation ports symmetric.
-                // Hardening tail: no component updates / domain-reliability
-                // pings / crash-reporter phoning home (privacy.rs).
-                "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --remote-debugging-port={chrome_port} --remote-allow-origins=* --disable-component-update --disable-domain-reliability --disable-breakpad"
+                "{}{}", crate::privacy::PRIVACY_BROWSER_ARGS, core::debug_args(chrome_port)
             ));
             window.add_child(
                 chrome_webview,
@@ -252,12 +278,18 @@ pub fn run() {
             // the window never waits for backends (parity with the Electron
             // runtime's runtimeManager.start()). Stale children from a hard-
             // killed previous run are swept first so they never hold ports.
-            runtime_manager::sweep_orphans();
             let manager = handle
                 .state::<runtime_manager::SharedRuntimeManager>()
                 .inner()
                 .clone();
-            std::thread::spawn(move || runtime_manager::start_all(&manager));
+            if std::env::var("HAYDEV_NO_ENGINES").is_ok_and(|v| v.trim() == "1") {
+                // QA/E2E isolation: no bundled engines spawn at all (the
+                // suite drives its own local fixtures). Never set by the
+                // app itself; production always starts engines.
+                log::info!("[TAURI] HAYDEV_NO_ENGINES=1 — managed engines skipped (QA)");
+            } else {
+                std::thread::spawn(move || runtime_manager::start_all(&manager));
+            }
             log::info!("[TAURI] browser core ready");
             Ok(())
         })
@@ -399,6 +431,14 @@ pub fn lib_app_data_dir() -> std::path::PathBuf {
 }
 
 fn app_data_dir() -> std::path::PathBuf {
+    // QA/E2E isolation: an explicit absolute data root (temp profile dir)
+    // keeps automated runs off the real user profile. Unset in production —
+    // the OS default below applies (never set by the app itself).
+    if let Some(dir) = std::env::var_os("HAYDEV_DATA_DIR") {
+        if !dir.is_empty() {
+            return std::path::PathBuf::from(dir);
+        }
+    }
     // %APPDATA%\<identifier> on Windows; XDG on Linux; Library on macOS.
     let ident = "com.haydev.browser";
     if cfg!(target_os = "windows") {
@@ -466,3 +506,6 @@ fn load_dev_env() {
         break;
     }
 }
+
+#[cfg(windows)]
+mod run_host;

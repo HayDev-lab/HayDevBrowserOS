@@ -17,8 +17,8 @@
  *   - critical (AGENT, running — strong glow + pulse; or takeover latched)
  */
 import { useState, useCallback } from 'react';
+import { useI18n } from '../i18n';
 import {
-  getControlModeLabel,
   getControlModeAccent,
   getTakeControlVisibility,
   type ControlMode,
@@ -48,6 +48,7 @@ export function ControlModule({
   compact = false,
   slim = false,
 }: ControlModuleProps) {
+  const { t } = useI18n();
   // Local takeover latch — set immediately on TAKE CONTROL for instant
   // visual feedback; cleared when the mode flips back to AGENT (user
   // explicitly switches back). The runtime AgentController also tracks
@@ -91,7 +92,7 @@ export function ControlModule({
         compact ? 'control-module--compact' : ''
       } ${slim ? 'control-module--slim' : ''}`}
       role="group"
-      aria-label="Agent control mode"
+      aria-label={t('control.groupAria')}
     >
       {!slim && (
         <div className="control-module__mode-pill" aria-live="polite">
@@ -103,31 +104,32 @@ export function ControlModule({
             className="control-module__mode-label"
             style={{ ['--nc-mode-accent' as string]: `var(${getControlModeAccent(mode)})` }}
           >
-            {getControlModeLabel(mode)}
+            {mode === 'HUMAN' ? t('control.human') : t('control.agent')}
           </span>
           {agentRunning && (
-            <span
-              className="control-module__agent-status"
-              aria-label="Agent task running"
-            >
-              ACTIVE
+            <span className="control-module__agent-status" aria-label={t('control.active')}>
+              {t('control.active')}
             </span>
           )}
         </div>
       )}
 
       {(!compact || slim) && (
-        <div className="control-module__mode-switch" role="radiogroup" aria-label="Control mode selector">
+        <div className="control-module__mode-switch" role="radiogroup" aria-label={t('control.switchAria')}>
           <ModeSwitchButton
             mode="HUMAN"
             active={mode === 'HUMAN'}
             disabled={mode === 'HUMAN'}
+            label={t('control.human')}
+            title={t('control.toHuman')}
             onClick={() => handleSwitchMode('HUMAN')}
           />
           <ModeSwitchButton
             mode="AGENT"
             active={mode === 'AGENT'}
             disabled={mode === 'AGENT' && !agentRunning ? false : agentRunning}
+            label={t('control.agent')}
+            title={t('control.toAgent')}
             onClick={() => handleSwitchMode('AGENT')}
           />
         </div>
@@ -136,6 +138,9 @@ export function ControlModule({
       {!slim && (
         <TakeControlButton
           visibility={visibility}
+          label={t('control.takeLabel')}
+          ariaLabel={t('control.takeAria')}
+          title={t('control.takeTip')}
           onClick={handleTakeControl}
           compact={compact}
         />
@@ -148,10 +153,12 @@ interface ModeSwitchButtonProps {
   mode: ControlMode;
   active: boolean;
   disabled: boolean;
+  label: string;
+  title: string;
   onClick: () => void;
 }
 
-function ModeSwitchButton({ mode, active, disabled, onClick }: ModeSwitchButtonProps) {
+function ModeSwitchButton({ mode, active, disabled, label, title, onClick }: ModeSwitchButtonProps) {
   return (
     <button
       type="button"
@@ -160,23 +167,26 @@ function ModeSwitchButton({ mode, active, disabled, onClick }: ModeSwitchButtonP
       }`}
       role="radio"
       aria-checked={active}
-      aria-label={`Switch to ${mode} mode`}
-      title={`Switch to ${mode} mode`}
+      aria-label={title}
+      title={title}
       disabled={disabled}
       onClick={onClick}
     >
-      {mode}
+      {label}
     </button>
   );
 }
 
 interface TakeControlButtonProps {
   visibility: TakeControlVisibility;
+  label: string;
+  ariaLabel: string;
+  title: string;
   onClick: () => void;
   compact: boolean;
 }
 
-function TakeControlButton({ visibility, onClick, compact }: TakeControlButtonProps) {
+function TakeControlButton({ visibility, label, ariaLabel, title, onClick, compact }: TakeControlButtonProps) {
   if (visibility === 'hidden') {
     // Render a placeholder so layout doesn't shift when visibility escalates.
     return <div className="takecontrol takecontrol--placeholder" aria-hidden />;
@@ -188,13 +198,13 @@ function TakeControlButton({ visibility, onClick, compact }: TakeControlButtonPr
         compact ? 'takecontrol--compact' : ''
       }`}
       onClick={onClick}
-      aria-label="Take control — abort agent and switch to HUMAN mode"
-      title="TAKE CONTROL — abort agent task and return to HUMAN mode"
+      aria-label={ariaLabel}
+      title={title}
     >
       <span className="takecontrol__icon" aria-hidden>
         ◆
       </span>
-      <span className="takecontrol__label">TAKE CONTROL</span>
+      <span className="takecontrol__label">{label}</span>
     </button>
   );
 }

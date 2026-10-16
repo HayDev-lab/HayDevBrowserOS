@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "platform": "win32-x64",
+  "archives": {
+    "node": {
+      "version": "24.18.0",
+      "url": "https://nodejs.org/dist/v24.18.0/node-v24.18.0-win-x64.zip",
+      "sha256": "0ae68406b42d7725661da979b1403ec9926da205c6770827f33aac9d8f26e821",
+      "license": "MIT",
+      "filename": "node-v24.18.0-win-x64.zip"
+    },
+    "python": {
+      "version": "3.13.16",
+      "url": "https://www.python.org/ftp/python/3.13.16/python-3.13.16-embed-amd64.zip",
+      "license": "PSF-2.0",
+      "sha256": "97dae5274cc54867065e8d5a3226e48c35017ed332a0fdb0e27d5b5821961297",
+      "filename": "python-3.13.16-embed-amd64.zip"
+    },
+    "tor": {
+      "version": "15.0.25",
+      "url": "https://dist.torproject.org/torbrowser/15.0.25/tor-expert-bundle-windows-x86_64-15.0.25.tar.gz",
+      "license": "BSD-3-Clause",
+      "sha256": "c1988c701de2f24f7d098d1d6d7f507b58f27740d097f29c246e0524d639b252",
+      "filename": "tor-expert-bundle-windows-x86_64-15.0.25.tar.gz"
+    },
+    "searxng": {
+      "commit": "22c64b8d394b680c7ea96be25f36dad14126420a",
+      "url": "https://codeload.github.com/searxng/searxng/tar.gz/22c64b8d394b680c7ea96be25f36dad14126420a",
+      "license": "AGPL-3.0-or-later",
+      "sha256": "8a037582fea10538e54dbcb4fabb11038c912ba3c887fd403fcdd8e5ddc36df8",
+      "filename": "22c64b8d394b680c7ea96be25f36dad14126420a.tar.gz"
+    },
+    "pip": {
+      "version": "26.2.1",
+      "url": "https://files.pythonhosted.org/packages/f3/6e/1736e5b4ae2b778ef2f81c47d797de9f891d4d8acb047a24ca37a60294dd/pip-26.2.1-py3-none-any.whl",
+      "sha256": "71138adf1f4ca900cdb7d289c21b7494329f2332b6d85f0e1c42108c0384ed3e",
+      "license": "MIT",
+      "filename": "pip-26.2.1-py3-none-any.whl"
+    }
+  }
+}

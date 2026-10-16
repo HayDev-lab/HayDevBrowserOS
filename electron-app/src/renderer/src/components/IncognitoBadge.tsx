@@ -1,35 +1,54 @@
 /**
  * IncognitoBadge — visual indicator for incognito mode.
  *
- * PROMPT 3 scope: VISUAL STATE ONLY.
- * Real session isolation (separate Electron partition, history exclusion,
- * cookie clear-on-close) is implemented in the Browser Core (PROMPT 2) and
- * will be extended in PROMPT 7. This component does NOT make privacy claims
- * — it only reflects the `isIncognito` flag from the active tab.
+ * The badge reflects the `isIncognito` flag from the active tab AND the
+ * REAL egress policy/state (privacy_status) in its tooltip — never a
+ * "Tor" claim derived from the incognito flag alone (PROMPT 02).
  */
+import { useEffect, useState } from 'react';
 import type { IncognitoVisualState } from '../store/ui-logic';
+import type { PrivacyStatus } from '@shared/ipc-types';
+import { useI18n } from '../i18n';
+import { platformApi } from '../platform';
 
 interface IncognitoBadgeProps {
   state: IncognitoVisualState;
 }
 
 export function IncognitoBadge({ state }: IncognitoBadgeProps) {
+  const { t } = useI18n();
+  const [privacy, setPrivacy] = useState<PrivacyStatus | null>(null);
+  useEffect(() => {
+    if (!state.anyIncognito || privacy) return;
+    let cancelled = false;
+    void platformApi.privacy
+      .status()
+      .then((s) => {
+        if (!cancelled) setPrivacy(s);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [state.anyIncognito, privacy]);
+
   if (!state.anyIncognito) return null;
   const isActive = state.activeIncognito;
+  const baseTip = isActive ? t('inc.activeTip') : t('inc.anyTip');
+  const egressTip = privacy
+    ? ` — egress: ${privacy.privateEgress}${
+        privacy.torAvailable
+          ? ` (Tor up${privacy.torEndpoint ? ` ${privacy.torEndpoint}` : ''})`
+          : ' (Tor gateway down)'
+      }`
+    : '';
+  const tip = `${baseTip}${egressTip}`;
   return (
     <div
       className={`incognito-badge ${isActive ? 'incognito-badge--active' : 'incognito-badge--any'}`}
       role="status"
-      aria-label={
-        isActive
-          ? 'Incognito mode active on current tab'
-          : 'One or more tabs are in incognito mode'
-      }
-      title={
-        isActive
-          ? 'Incognito mode active on current tab'
-          : 'Incognito tabs are open'
-      }
+      aria-label={isActive ? t('inc.activeAria') : t('inc.anyAria')}
+      title={tip}
     >
       <svg
         className="incognito-badge__icon"
@@ -54,7 +73,7 @@ export function IncognitoBadge({ state }: IncognitoBadgeProps) {
         />
       </svg>
       <span className="incognito-badge__label">
-        {isActive ? 'INCOGNITO' : 'INCOGNITO TAB'}
+        {isActive ? t('inc.active') : t('inc.any')}
       </span>
     </div>
   );

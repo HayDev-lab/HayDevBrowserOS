@@ -54,3 +54,9 @@ server.log
 /skills/
 # mimosa scanner state (session-local)
 .mimosa/
+
+# Reproducible integration checkout (generated from source-lock.json)
+/electron-app/.cache/
+
+# Closure run evidence (logs, snapshots, synthetic fixtures) — stays local
+/artifacts/

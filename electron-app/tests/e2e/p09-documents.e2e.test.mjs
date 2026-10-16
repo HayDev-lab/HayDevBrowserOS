@@ -1,0 +1,35 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, cpSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { AppHandle } from '../../scripts/e2e/harness.mjs';
+const corpus=path.resolve(process.env.HAYDEV_DOCUMENT_FIXTURES || '../artifacts/closure/20261015-stabilization-r08/documents');
+const pause=ms=>new Promise(r=>setTimeout(r,ms));
+for(const ext of ['pdf','docx']) test(`P09: ${ext} content through AgentPanel and internal bridge, owner and cleanup`,{timeout:90000},async t=>{
+  const root=mkdtempSync(path.join(tmpdir(),'haydev-docs-'));
+  const file=path.join(root,`fixture.${ext}`); cpSync(path.join(corpus,`multilingual.${ext}`),file);
+  const app=new AppHandle(); t.after(async()=>{await app.stop();rmSync(root,{recursive:true,force:true});});
+  await app.launch({dataRoot:root,envOverrides:{HAYDEV_TEST_PICK_FILE:file}});
+  const chrome=app.chromePage(); await chrome.waitForSelector('.commandbar__input');
+  const invoke=(c,a={})=>chrome.evaluate(async ([c,a])=>{try{return await window.__TAURI_INTERNALS__.invoke(c,a);}catch(e){throw new Error(typeof e==='string'?e:JSON.stringify(e));}},[c,a]);
+  await invoke('control_set_mode',{mode:'AGENT'});
+  const selected=await invoke('agent_pick_attachment',{kind:'file'});
+  assert.equal(selected.attachment.status,'ready');
+  const question='!!document What total and cities appear in the document?';
+  const result=await invoke('agent_run',{req:{command:question,maxSteps:2,attachmentIds:[selected.attachment.id]}});
+  assert.match(result.answer,/7319 AMD.*Москва.*Երևան/);
+  await assert.rejects(()=>invoke('agent_run',{req:{command:question,attachmentIds:[selected.attachment.id]}}),/ATTACHMENT_NOT_FOUND/);
+  const tab=await app.waitTabPage(/pab.newtab|pab:\/\/newtab/);
+  const internal=await tab.evaluate(()=>window.__pabNewTab.pickAttachment('file'));
+  assert.equal(internal.attachment.status,'ready');
+  await assert.rejects(()=>invoke('agent_run',{req:{command:question,attachmentIds:[internal.attachment.id]}}),/ATTACHMENT_OWNER_MISMATCH/);
+  const started=await tab.evaluate(([query,id])=>window.__pabNewTab.runResearch({query,attachmentIds:[id]}),[question,internal.attachment.id]);
+  assert.equal(started.started,true);
+  const deadline=Date.now()+10000; let timeline=[];
+  while(Date.now()<deadline){timeline=await invoke('agent_timeline_list');if(timeline.some(x=>x.kind==='final_answer'))break;await pause(50);}
+  assert.match(JSON.stringify(timeline.filter(x=>x.kind==='final_answer')),/7319 AMD.*Москва.*Երևան/);
+  const stale=await tab.evaluate(([query,id])=>window.__pabNewTab.runResearch({query,attachmentIds:[id]}),[question,internal.attachment.id]);
+  assert.equal(stale.started,false); assert.match(stale.error,/ATTACHMENT_NOT_FOUND/);
+  console.log(JSON.stringify({gate:'document-bridges',format:ext,selection:'debug fixture; native dialog not exercised',content:true,owner:true,cleanup:true}));
+});

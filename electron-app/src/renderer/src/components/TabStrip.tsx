@@ -2,6 +2,7 @@ import { useState, useCallback, type KeyboardEvent, type MouseEvent } from 'reac
 import type { TabState, WebAppPin } from '@shared/browser-types';
 import { WEB_APP_PINS } from '@shared/browser-types';
 import { parseUnreadTitle } from '@shared/tab-unread';
+import { useI18n } from '../i18n';
 import {
   getTabModifiers,
   getTabDisplayTitle,
@@ -29,11 +30,12 @@ export function TabStrip({
   onCloseTab,
   onActivateTab,
 }: TabStripProps) {
+  const { t } = useI18n();
   const activeTabUrl = tabs.find((t) => t.id === activeTabId)?.url ?? '';
 
   return (
-    <div className="tabstrip" role="tablist" aria-label="Browser tabs">
-      <div className="tabstrip__apps" role="group" aria-label="Pinned web apps">
+    <div className="tabstrip" role="tablist" aria-label={t('tabs.listAria')}>
+      <div className="tabstrip__apps" role="group" aria-label={t('tabs.appsAria')}>
         {WEB_APP_PINS.map((app) => (
           <button
             key={app.id}
@@ -42,7 +44,7 @@ export function TabStrip({
               isWebAppTabActive(activeTabUrl, app) ? 'webapp-pin--active' : ''
             }`}
             onClick={() => onOpenWebApp(app)}
-            aria-label={`Open ${app.label}`}
+            aria-label={t('tabs.openApp', { app: app.label })}
             aria-pressed={isWebAppTabActive(activeTabUrl, app)}
             title={app.label}
           >
@@ -78,8 +80,8 @@ export function TabStrip({
         type="button"
         className="tabstrip__new"
         onClick={onOpenTab}
-        aria-label="Open new tab"
-        title="Open new tab (Ctrl+T)"
+        aria-label={t('tabs.newAria')}
+        title={t('tabs.newTip')}
       >
         <span aria-hidden>+</span>
       </button>
@@ -179,6 +181,7 @@ interface TabButtonProps {
 }
 
 function TabButton({ tab, active, onClose, onActivate }: TabButtonProps) {
+  const { t } = useI18n();
   const [hovered, setHovered] = useState(false);
   const onClick = useCallback(() => onActivate(), [onActivate]);
   const onCloseClick = useCallback(
@@ -198,7 +201,7 @@ function TabButton({ tab, active, onClose, onActivate }: TabButtonProps) {
     [onActivate]
   );
 
-  const displayTitle = getTabDisplayTitle(tab);
+  const displayTitle = getTabDisplayTitle(tab, t('tabs.newTab'));
   const displayUrl = tab.url || tab.pendingUrl || '';
   const faviconText = getFaviconFallback(displayUrl);
   // With an unread badge showing the count, strip the "(N)" prefix the
@@ -237,7 +240,7 @@ function TabButton({ tab, active, onClose, onActivate }: TabButtonProps) {
       </span>
       <span className="tab__title">{truncatedTitle}</span>
       {tab.isDarkWeb && (
-        <span className="tab__onion" aria-label="Dark web (Tor) tab" title="Dark web — routed through Tor, JavaScript off">
+        <span className="tab__onion" aria-label={t('tabs.onionAria')} title={t('tabs.onionTip')}>
           ONION
         </span>
       )}
@@ -247,8 +250,8 @@ function TabButton({ tab, active, onClose, onActivate }: TabButtonProps) {
       {tab.unreadCount > 0 && (
         <span
           className="tab__badge"
-          aria-label={`${tab.unreadCount} unread notifications`}
-          title={`${tab.unreadCount} unread`}
+          aria-label={t('tabs.unreadAria', { count: tab.unreadCount })}
+          title={t('tabs.unreadTip', { count: tab.unreadCount })}
         >
           {tab.unreadCount > 99 ? '99+' : tab.unreadCount}
         </span>
@@ -257,8 +260,8 @@ function TabButton({ tab, active, onClose, onActivate }: TabButtonProps) {
         type="button"
         className={`tab__close ${hovered || active ? 'tab__close--visible' : ''}`}
         onClick={onCloseClick}
-        aria-label={`Close ${displayTitle}`}
-        title="Close tab (Ctrl+W)"
+        aria-label={t('tabs.closeAria', { title: displayTitle })}
+        title={t('tabs.closeTip')}
       >
         ×
       </button>

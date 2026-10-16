@@ -7,6 +7,7 @@ import { platformApi } from '../platform';
  */
 import { useEffect, useState, useCallback } from 'react';
 import type { MemorySavePrompt } from '@shared/memory-types';
+import { useI18n } from '../i18n';
 
 export function useMemoryPrompt(): {
   prompt: MemorySavePrompt | null;
@@ -47,6 +48,7 @@ export function useMemoryPrompt(): {
 }
 
 export function MemoryPrompt() {
+  const { t } = useI18n();
   const { prompt, resolve } = useMemoryPrompt();
   if (!prompt) return null;
 
@@ -54,16 +56,16 @@ export function MemoryPrompt() {
     <aside
       className="memory-prompt"
       role="alertdialog"
-      aria-label="Remember a fact about you"
+      aria-label={t('mem.aria')}
     >
       <div className="memory-prompt__head">
-        <span className="memory-prompt__title">REMEMBER THIS?</span>
+        <span className="memory-prompt__title">{t('mem.title')}</span>
         <button
           type="button"
           className="memory-prompt__close"
           onClick={() => void resolve(false)}
-          aria-label="Dismiss"
-          title="Skip"
+          aria-label={t('mem.closeAria')}
+          title={t('mem.closeTip')}
         >
           ×
         </button>
@@ -74,16 +76,16 @@ export function MemoryPrompt() {
           type="button"
           className="memory-prompt__btn memory-prompt__btn--save"
           onClick={() => void resolve(true)}
-          title="Store this fact for future agent runs"
+          title={t('mem.rememberTip')}
         >
-          Remember
+          {t('mem.remember')}
         </button>
         <button
           type="button"
           className="memory-prompt__btn"
           onClick={() => void resolve(false)}
         >
-          Skip
+          {t('mem.skip')}
         </button>
       </div>
     </aside>

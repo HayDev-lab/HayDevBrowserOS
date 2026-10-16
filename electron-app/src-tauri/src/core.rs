@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
 
 use tauri::{
-    AppHandle, LogicalPosition, LogicalSize, Manager, Position, Rect, Runtime, Size, State,
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Position, Rect, Runtime, Size, State,
     WebviewUrl, WindowEvent, Wry,
 };
 
@@ -28,6 +28,9 @@ use crate::urlnorm;
 pub struct BrowserState {
     pub registry: TabRegistry,
     pub navstacks: HashMap<String, NavStack>,
+    pub target_ids: HashMap<String, String>,
+    pub ready_tabs: std::collections::HashSet<String>,
+    pub creation_errors: HashMap<String, AppError>,
     pub history: HistoryStore,
     pub bookmarks: BookmarksStore,
     pub session: SessionStore,
@@ -41,6 +44,7 @@ impl BrowserState {
         Self {
             registry: TabRegistry::new(),
             navstacks: HashMap::new(),
+            target_ids: HashMap::new(), ready_tabs: std::collections::HashSet::new(), creation_errors: HashMap::new(),
             history: HistoryStore::new(data_dir.join("history.json")),
             bookmarks: BookmarksStore::new(data_dir.join("bookmarks.json")),
             session: SessionStore::new(data_dir.join("session.json")),
@@ -122,23 +126,39 @@ fn content_bounds<R: Runtime>(win: &tauri::Window<R>) -> Rect {
     }
 }
 
-/// Debug/automation port for the TAB WebView2 environment (loopback only).
-/// Tab webviews live in a dedicated user-data folder (profile), i.e. a
-/// SEPARATE browser process from the chrome webview — it needs its own
-/// remote-debugging port. This port is ALSO the BrowserAutomationBridge
-/// attach point (Phase D): click/type/extract/screenshot run over it.
-pub fn tab_debug_port() -> u16 {
-    static PORT: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
-    *PORT.get_or_init(|| crate::runtime_manager::find_free_port(9330))
-}
-
-/// Debug/automation port for the CHROME WebView2 environment (the React
-/// shell, default user-data folder). Separate from the tab environment's
-/// port — env-var args and per-webview args CONCAT, and two different
-/// --remote-debugging-port switches silently kill debugging (verified live).
-pub fn chrome_debug_port() -> u16 {
+/// The ONE automation/debug port (loopback only) for the SHARED default
+/// WebView2 environment: shell + Default-profile tabs use identical
+/// environment options (same data_directory, same args), so WebView2 keeps
+/// ONE browser process for both — and one DevTools endpoint serves all
+/// targets. Agent/Private/DarkWeb keep their own environments (proxy/egress
+/// args differ); with automation on, their port value collides exactly as
+/// before this change (only the first environment binds it).
+pub fn automation_debug_port() -> u16 {
     static PORT: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
     *PORT.get_or_init(|| crate::runtime_manager::find_free_port(9220))
+}
+
+/// Tab-environment automation port. Since the shell/default-environment
+/// merge (N01/N02) this is the SAME shared port as the shell's — kept as a
+/// named alias for the BrowserAutomationBridge diagnostic command.
+pub fn tab_debug_port() -> u16 {
+    automation_debug_port()
+}
+
+/// Chrome(shell)-environment automation port — shared default environment
+/// alias of `automation_debug_port`.
+pub fn chrome_debug_port() -> u16 {
+    automation_debug_port()
+}
+
+/// Production automation uses in-process WebView2 APIs. The unauthenticated
+/// DevTools listener is available only in development or explicit isolated QA.
+pub fn automation_debug_enabled() -> bool {
+    cfg!(debug_assertions) || (std::env::var("HAYDEV_AUTOMATION_DEBUG").as_deref() == Ok("1")
+        && std::env::var_os("HAYDEV_DATA_DIR").is_some())
+}
+pub fn debug_args(port: u16) -> String {
+    if automation_debug_enabled() { format!(" --remote-debugging-port={port}") } else { String::new() }
 }
 
 /// The site-facing User-Agent applied to TAB webviews (anti-detect parity
@@ -147,6 +167,7 @@ pub fn chrome_debug_port() -> u16 {
 /// environment's CDP /json/version; when unresolvable the engine default
 /// is used unchanged (honest — no spoofing).
 pub fn site_user_agent() -> Option<&'static str> {
+    if !automation_debug_enabled() { return None; }
     static SITE_UA: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     SITE_UA
         .get_or_init(|| {
@@ -167,6 +188,7 @@ pub fn site_user_agent() -> Option<&'static str> {
 /// Resolve the site UA on a worker thread at startup (CDP connect is
 /// blocking); tab webviews created before resolution use the engine default.
 pub fn warm_site_user_agent() {
+    if !automation_debug_enabled() { return; }
     std::thread::spawn(|| {
         // Small grace period: the chrome webview must attach its debugger
         // before /json/version answers.
@@ -197,17 +219,17 @@ fn create_tab_webview(
     let tab_for_load = tab_id.to_string();
     let handle_for_title = app.clone();
     let tab_for_title = tab_id.to_string();
-    let handle_for_download = app.clone();
 
-    let mut builder = tauri::WebviewBuilder::new(label.clone(), WebviewUrl::External(parsed))
+
+    let mut builder = tauri::WebviewBuilder::new(label.clone(), WebviewUrl::External(url::Url::parse("about:blank")?))
+        .initialization_script(crate::run_host::INIT)
         .on_navigation(urlnorm::navigation_allowed)
         .on_page_load(move |_wv, payload| {
             on_page_load(&handle_for_load, &tab_for_load, &payload);
         })
         .on_document_title_changed(move |_wv, title| {
             on_title_changed(&handle_for_title, &tab_for_title, &title);
-        })
-        .on_download(move |wv, event| on_download_event(&handle_for_download, event, wv.label()));
+        });
 
     // Anti-detect (Electron parity, site-user-agent.ts): tab webviews
     // present the ENGINE's UA with embedding-shell tokens removed.
@@ -238,18 +260,38 @@ fn create_tab_webview(
         crate::profiles::ProfileKind::Private
     } else if darkweb {
         crate::profiles::ProfileKind::DarkWeb
+    } else if with_state(app, |s| s.registry.get(tab_id).is_some_and(|t| t.profile == "agent"))? {
+        crate::profiles::ProfileKind::Agent
     } else {
         crate::profiles::ProfileKind::Default
     };
     let privacy_cfg = crate::privacy::global().clone();
-    let tor_endpoint = crate::darkweb::tor_endpoint(app, &crate::darkweb::config_of(app))
-        .map(|(host, port)| crate::privacy::SocksEndpoint { host, port });
+    // A WebView2 environment has immutable proxy arguments. Resolve exactly
+    // once per profile; the displayed route and actual environment share it.
+    static ROUTES: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, Option<crate::privacy::SocksEndpoint>>>> = std::sync::OnceLock::new();
+    let route = {
+        let mut routes = ROUTES.get_or_init(Default::default).lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(route) = routes.get(profile.dir_name()) { route.clone() } else {
+            let egress = match profile {
+                crate::profiles::ProfileKind::Default => crate::privacy::Egress::Direct,
+                crate::profiles::ProfileKind::Agent => privacy_cfg.agent_egress.clone(),
+                crate::profiles::ProfileKind::Private => privacy_cfg.private_egress.clone(),
+                crate::profiles::ProfileKind::DarkWeb => crate::privacy::Egress::TorStrict,
+            };
+            let tor = if matches!(egress, crate::privacy::Egress::TorStrict | crate::privacy::Egress::TorIfAvailable) {
+                crate::darkweb::tor_endpoint(app, &crate::darkweb::config_of(app)).map(|(host,port)| crate::privacy::SocksEndpoint {host,port})
+            } else { None };
+            let route = crate::privacy::resolve_egress(&egress, tor).map_err(|m| AppError::new("EGRESS_UNAVAILABLE",m))?;
+            routes.insert(profile.dir_name().into(), route.clone()); route
+        }
+    };
+    let proxy_args = route.as_ref().map(|ep| format!(" --proxy-server=socks5://{}:{} --proxy-bypass-list=<-loopback>",ep.host,ep.port)).unwrap_or_default();
     let manager = crate::profiles::BrowserProfileManager::new(&crate::lib_app_data_dir());
 
     // Anonymity hardening (privacy.rs): WebRTC must never bypass proxies
     // (real-IP leak), no component updates / domain-reliability pings /
     // crash-reporter phoning home. SmartScreen stays off (wry default).
-    const PRIVACY_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --force-webrtc-ip-handling-policy=disable_non_proxied_udp --disable-component-update --disable-domain-reliability --disable-breakpad";
+    use crate::privacy::PRIVACY_BROWSER_ARGS as PRIVACY_ARGS;
 
     match profile {
         crate::profiles::ProfileKind::Private => {
@@ -262,25 +304,16 @@ fn create_tab_webview(
             // InPrivate keeps browsing data off disk; the folder itself is
             // wiped at every startup (lib.rs wipe_ephemeral_profiles).
             builder = builder.incognito(true);
-            builder = builder.additional_browser_args(PRIVACY_ARGS);
-            // Egress (Tor-when-up by default, user SOCKS5, or direct).
-            match crate::privacy::resolve_egress(&privacy_cfg.private_egress, tor_endpoint.clone())
-            {
-                Ok(Some(ep)) => {
-                    let proxy = url::Url::parse(&format!("socks5://{}:{}", ep.host, ep.port))
-                        .map_err(|e| {
-                            AppError::new("INVALID_URL", format!("privacy socks url: {e}"))
-                        })?;
-                    builder = builder.proxy_url(proxy);
-                    log::info!(
-                        "[PRIVACY] private tab egress: socks5://{}:{}",
-                        ep.host,
-                        ep.port
-                    );
-                }
-                Ok(None) => log::info!("[PRIVACY] private tab egress: direct"),
-                Err(msg) => return Err(AppError::new("TOR_UNAVAILABLE", msg)),
-            }
+            // Single-source args builder (privacy.rs, unit-tested): the
+            // egress proxy RIDES IN the args string — wry drops a separately
+            // set proxy_url when additional_browser_args exists — and a
+            // strict egress without Tor fails closed.
+            let args = format!("{PRIVACY_ARGS}{proxy_args}");
+            log::info!(
+                "[PRIVACY] private tab egress: {}",
+                if args.contains("--proxy-server") { "proxied (see args)" } else { "direct" }
+            );
+            builder = builder.additional_browser_args(&args);
             // Fingerprint-noise layer: stable for the profile lifetime.
             let seed = u64::from_le_bytes(
                 uuid::Uuid::new_v4().into_bytes()[..8].try_into().unwrap(),
@@ -298,21 +331,7 @@ fn create_tab_webview(
             if let Some(dir) = manager.data_dir(profile) {
                 builder = builder.data_directory(dir);
             }
-            // FAIL CLOSED: no Tor endpoint → no darkweb tab (never leak
-            // onion traffic outside Tor).
-            let socks = tor_endpoint.ok_or_else(|| {
-                AppError::new(
-                    "TOR_UNAVAILABLE",
-                    "the Tor gateway is not running — open pab://darkweb and start it first",
-                )
-            })?;
-            // Explicit args INCLUDING the proxy: wry only appends
-            // --proxy-server when additional_browser_args is unset, and the
-            // privacy flags must live in the same environment definition.
-            builder = builder.additional_browser_args(&format!(
-                "{PRIVACY_ARGS} --proxy-server=socks5://{}:{}",
-                socks.host, socks.port
-            ));
+            builder = builder.additional_browser_args(&format!("{PRIVACY_ARGS}{proxy_args}"));
         }
         kind => {
             manager
@@ -321,30 +340,16 @@ fn create_tab_webview(
             if let Some(dir) = manager.data_dir(kind) {
                 builder = builder.data_directory(dir);
             }
-            // Dedicated browser process (own UDF) → keep the automation /
-            // debug port + the privacy hardening flags. AGENT tabs honor a
-            // custom egress from privacy.json (strict Tor unreachable →
-            // logged and ignored, the agent identity stays honest/direct).
-            let mut args = format!(
-                "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --remote-debugging-port={} --disable-component-update --disable-domain-reliability --disable-breakpad",
-                tab_debug_port()
-            );
-            if kind == crate::profiles::ProfileKind::Agent {
-                match crate::privacy::resolve_egress(&privacy_cfg.agent_egress, tor_endpoint.clone())
-                {
-                    Ok(Some(ep)) => {
-                        args.push_str(&format!(
-                            " --proxy-server=socks5://{}:{}",
-                            ep.host, ep.port
-                        ));
-                    }
-                    Ok(None) => {}
-                    Err(msg) => log::warn!("[PRIVACY] agent egress unavailable: {msg}"),
-                }
-            }
+            // The Default profile shares its environment options (folder +
+            // args, including the SAME automation port) with the shell
+            // webview — one browser process serves both. Agent keeps its own
+            // egress args and therefore its own environment.
+            let args = format!("{PRIVACY_ARGS}{proxy_args}{}", debug_args(automation_debug_port()));
             builder = builder.additional_browser_args(&args);
         }
     }
+
+    with_state(app, |s| { if let Some(tab) = s.registry.get_mut(tab_id) { tab.egress = route.map(|r| format!("socks5://{}:{}",r.host,r.port)).unwrap_or_else(|| "direct".into()); } })?;
 
     let (x, y, cw, ch) = {
         let (w, h) = window_logical_size(win);
@@ -360,6 +365,26 @@ fn create_tab_webview(
         )
         .map_err(|e| AppError::new("WEBVIEW_CREATE_FAILED", e.to_string()))?;
 
+    let handle = app.clone(); let id = tab_id.to_owned();
+    let destination = crate::urlnorm::to_webview_display_url(parsed.as_str())?;
+    webview.with_webview(move |native| {
+        let result = unsafe {
+            crate::native_webview::install(&handle, &native, &id).and_then(|_| {
+                native.controller().CoreWebView2().and_then(|wv| wv.Navigate(&windows::core::HSTRING::from(destination)))
+                    .map_err(|_| AppError::new("WEBVIEW_CREATE_FAILED", "Initial navigation failed"))
+            })
+        };
+        let failed = result.is_err();
+        let _ = with_state(&handle, |s| match result {
+            Ok(()) => { if s.registry.get(&id).is_some() { s.ready_tabs.insert(id.clone()); } },
+            Err(e) => { s.registry.close(&id, ActivateAfterClose::Right); s.creation_errors.insert(id.clone(), e); },
+        });
+        if failed || with_state(&handle, |s| s.registry.get(&id).is_none()).unwrap_or(true) {
+            if let Some(wv) = handle.get_webview(&BrowserState::tab_label(&id)) { let _ = wv.close(); }
+            let active = with_state(&handle, |s| s.registry.active_id().map(str::to_owned)).unwrap_or_default();
+            apply_activation(&handle, active.as_deref());
+        }
+    })?;
     if active {
         webview.show().ok();
     } else {
@@ -426,6 +451,7 @@ fn on_page_load<R: Runtime>(
     tab_id: &str,
     payload: &tauri::webview::PageLoadPayload<'_>,
 ) {
+    if payload.url().as_str() == "about:blank" { return; }
     let event = payload.event();
     // WebView2 reports custom-scheme pages in display form (http://pab.newtab/)
     // — canonicalize back to pab://newtab for state/session/history.
@@ -470,10 +496,11 @@ fn on_page_load<R: Runtime>(
                 tab.can_go_forward = can_fwd;
             }
             if let Some(entry) = history_entry {
-                state.history.add(&entry);
+                if let Err(e) = state.history.add(&entry) { log::error!("[HISTORY] {}", e.code); report_storage_error(app, &e); }
             }
         }
     });
+    if matches!(event, tauri::webview::PageLoadEvent::Finished) { persist_session(app); }
 }
 
 fn on_title_changed<R: Runtime>(app: &AppHandle<R>, tab_id: &str, raw_title: &str) {
@@ -489,11 +516,13 @@ fn on_title_changed<R: Runtime>(app: &AppHandle<R>, tab_id: &str, raw_title: &st
     });
 }
 
+#[allow(dead_code)]
 fn on_download_event(
     app: &AppHandle<Wry>,
     event: tauri::webview::DownloadEvent<'_>,
     webview_label: &str,
 ) -> bool {
+    log::info!("[DOWNLOAD] event on {webview_label}");
     // Which tab fired? Labels look like browser-tab-{uuid}. Dark-web tabs
     // quarantine their downloads (spec §14) instead of the OS Downloads
     // folder — nothing auto-runs, Save/Discard is explicit.
@@ -570,6 +599,7 @@ pub fn prepare_open_tab(
     app: &AppHandle<Wry>,
     req: &OpenTabRequest,
 ) -> AppResult<(String, bool, bool, bool, String)> {
+    if req.agent == Some(true) && (req.incognito == Some(true) || req.darkweb == Some(true)) { return Err(AppError::new("PROFILE_CONFLICT", "Choose exactly one profile")); }
     let darkweb = req.darkweb.unwrap_or(false);
     if darkweb {
         // Only .onion addresses and the darkweb internal page may open in
@@ -602,6 +632,7 @@ pub fn prepare_open_tab(
             incognito: req.incognito,
             darkweb: req.darkweb,
             background: req.background,
+            agent: req.agent,
             id: req.id.clone(),
             title: req.title.clone(),
         };
@@ -643,7 +674,10 @@ pub fn materialize_open_tab(
     })
     .unwrap_or(false);
     let win = main_window(app)?;
-    create_tab_webview(app, &win, tab_id, target, incognito, darkweb, activated)?;
+    if let Err(e) = create_tab_webview(app, &win, tab_id, target, incognito, darkweb, activated) {
+        let _ = with_state(app, |s| { s.registry.close(tab_id, ActivateAfterClose::Right); s.creation_errors.insert(tab_id.to_owned(), e.clone()); });
+        return Err(e);
+    }
 
     let active_id =
         with_state(app, |state| state.registry.active_id().map(str::to_string)).unwrap_or_default();
@@ -658,6 +692,32 @@ pub fn open_tab(app: &AppHandle<Wry>, req: &OpenTabRequest) -> AppResult<String>
     let (tab_id, activated, incognito, _darkweb, target) = prepare_open_tab(app, req)?;
     materialize_open_tab(app, &tab_id, &target, incognito, activated)?;
     Ok(tab_id)
+}
+
+/// A routed agent must use its own WebView environment, never a direct human tab.
+pub fn ensure_agent_tab(app: &AppHandle<Wry>, active: &str, lease: &crate::run_guard::RunGuard) -> AppResult<String> {
+    let existing = with_state(app, |s| s.registry.get(active).cloned())?
+        .ok_or_else(|| AppError::new("TAB_NOT_FOUND", "Active tab is gone"))?;
+    if existing.profile == "agent" { return Ok(existing.id); }
+    lease.check()?;
+    let req = OpenTabRequest { url: if existing.url.is_empty() { existing.pending_url } else { existing.url },
+        activate: Some(true), incognito: None, darkweb: None, background: None, agent: Some(true), id: None, title: None };
+    let (id, active, private, _, target) = prepare_open_tab(app, &req)?;
+    let handle = app.clone(); let created = id.clone(); let guard = lease.clone();
+    app.run_on_main_thread(move || {
+        if guard.check().is_err() { let _ = close_tab(&handle, &created); return; }
+        let _ = materialize_open_tab(&handle, &created, &target, private, active);
+    })?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        lease.check()?;
+        if with_state(app, |s| {
+            if let Some(error) = s.creation_errors.remove(&id) { return Err(error); }
+            Ok(s.ready_tabs.contains(&id))
+        })?? { return Ok(id); }
+        if std::time::Instant::now() >= deadline { return Err(AppError::new("WEBVIEW_CREATE_TIMEOUT", "Agent tab did not initialize")); }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
 }
 
 pub fn close_tab(app: &AppHandle<Wry>, tab_id: &str) -> AppResult<bool> {
@@ -676,10 +736,12 @@ pub fn close_tab(app: &AppHandle<Wry>, tab_id: &str) -> AppResult<bool> {
     }
     with_state(app, |state| {
         state.navstacks.remove(&tab_id);
+        state.target_ids.remove(&tab_id); state.ready_tabs.remove(&tab_id);
+        if let Some(shield) = app.try_state::<crate::shield::SharedShield>() { shield.attached.lock().unwrap_or_else(|p| p.into_inner()).remove(&tab_id); }
         let tabs = state.registry.list();
         let order = state.registry.order().to_vec();
         let active = state.registry.active_id().map(str::to_string);
-        state.session.save(&tabs, &order, active.as_deref());
+        if let Err(e) = state.session.save(&tabs, &state.navstacks, &order, active.as_deref()) { log::error!("[SESSION] {}", e.code); report_storage_error(app, &e); }
     })?;
     apply_activation(app, next_active.as_deref());
     log::info!("[TAB] closed id={tab_id} next={:?}", next_active);
@@ -712,6 +774,11 @@ pub fn navigate(app: &AppHandle<Wry>, req: &NavigateRequest) -> AppResult<bool> 
     // display form it understands (http://pab.<page>/…).
     let navigate_url = urlnorm::to_webview_display_url(&target)?;
     let parsed = url::Url::parse(&navigate_url)?;
+    #[cfg(windows)]
+    if let Some(guard) = crate::run_guard::current() {
+        return crate::bridge::navigate_guarded(app, &req.tab_id, parsed.as_str(), guard);
+    }
+
 
     let label = BrowserState::tab_label(&req.tab_id);
     let wv = app
@@ -740,44 +807,55 @@ fn eval_script(app: &AppHandle<Wry>, tab_id: &str, script: &str) -> AppResult<()
         .map_err(|e| AppError::new("EVAL_FAILED", e.to_string()))
 }
 
-fn shift_nav_stack(app: &AppHandle<Wry>, tab_id: &str, forward: bool) -> AppResult<()> {
+/// Shift the stack for a native history hop and report whether the landing
+/// entry lies outside this webview instance's native history (restored from
+/// a previous session) — such hops need an explicit URL navigation instead.
+fn nav_direction(app: &AppHandle<Wry>, tab_id: &str, forward: bool) -> AppResult<Option<String>> {
     with_state(app, |state| {
-        let (moved, can_back, can_fwd) = {
+        let direct = {
             let stack = state.navstack_mut(tab_id);
-            let moved = if forward {
-                stack.can_go_forward()
-            } else {
-                stack.can_go_back()
-            };
-            if moved {
-                if forward {
-                    stack.go_forward();
-                } else {
-                    stack.go_back();
+            let target = if forward { stack.forward_target() } else { stack.back_target() };
+            let direct = target.filter(|(i, _)| !stack.native_reachable(*i)).map(|(_, url)| url.to_string());
+            match direct {
+                Some(url) => { stack.begin_explicit(&url); Some(url) }
+                None => {
+                    let moved = if forward { stack.can_go_forward() } else { stack.can_go_back() };
+                    if moved { if forward { stack.go_forward(); } else { stack.go_back(); } }
+                    None
                 }
             }
-            (moved, stack.can_go_back(), stack.can_go_forward())
         };
         if let Some(tab) = state.registry.get_mut(tab_id) {
-            tab.can_go_back = can_back;
-            tab.can_go_forward = can_fwd;
+            let stack = state.navstacks.get(tab_id);
+            tab.can_go_back = stack.map(|s| s.can_go_back()).unwrap_or(false);
+            tab.can_go_forward = stack.map(|s| s.can_go_forward()).unwrap_or(false);
         }
-        moved
+        direct
     })
-    .map(|_| ())
 }
 
 /// history.back()/forward() via page-context script — Tauri's webview API
-/// has no native go_back/go_forward on WebView2.
+/// has no native go_back/go_forward on WebView2. Entries restored from a
+/// previous session navigate by URL: a fresh webview's native history cannot
+/// reach them, and an explicit navigation reorders the joint history, so the
+/// stack records it as a fresh navigation (navstack.rs begin_explicit).
 pub fn nav_back(app: &AppHandle<Wry>, tab_id: &str) -> AppResult<bool> {
-    shift_nav_stack(app, tab_id, false)?;
-    eval_script(app, tab_id, "history.back();")?;
+    let direct = nav_direction(app, tab_id, false)?;
+    let script = direct.map_or_else(
+        || "history.back();".to_string(),
+        |url| format!("location.href = {};", serde_json::to_string(&url).unwrap_or_else(|_| "\"about:blank\"".into())),
+    );
+    eval_script(app, tab_id, &script)?;
     Ok(true)
 }
 
 pub fn nav_forward(app: &AppHandle<Wry>, tab_id: &str) -> AppResult<bool> {
-    shift_nav_stack(app, tab_id, true)?;
-    eval_script(app, tab_id, "history.forward();")?;
+    let direct = nav_direction(app, tab_id, true)?;
+    let script = direct.map_or_else(
+        || "history.forward();".to_string(),
+        |url| format!("location.href = {};", serde_json::to_string(&url).unwrap_or_else(|_| "\"about:blank\"".into())),
+    );
+    eval_script(app, tab_id, &script)?;
     Ok(true)
 }
 
@@ -791,7 +869,16 @@ pub fn stop_tab(app: &AppHandle<Wry>, tab_id: &str) -> AppResult<bool> {
     Ok(true)
 }
 
+static STORAGE_ERRORS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+fn report_storage_error<R: Runtime>(app: &AppHandle<R>, error: &AppError) {
+    let mut errors = STORAGE_ERRORS.lock().unwrap_or_else(|p| p.into_inner());
+    if !errors.contains(&error.code) { errors.push(error.code.clone()); }
+    let _ = app.emit("storage:error", &error.code);
+}
 pub fn list_tabs(app: &AppHandle<Wry>) -> AppResult<Vec<TabState>> {
+    // Replay startup failures after the renderer subscribes; polling cannot
+    // accidentally turn an unreadable session into a silent empty session.
+    for code in STORAGE_ERRORS.lock().unwrap_or_else(|p| p.into_inner()).iter() { let _ = app.emit("storage:error", code); }
     with_state(app, |state| state.registry.list())
 }
 
@@ -802,7 +889,7 @@ pub fn list_tabs(app: &AppHandle<Wry>) -> AppResult<Vec<TabState>> {
 /// Restore persisted session on startup; open the new-tab page when empty
 /// (mirrors BrowserCore.attachToWindow).
 pub fn bootstrap_session(app: &AppHandle<Wry>) {
-    let snapshot = with_state(app, |state| state.session.load()).unwrap_or_default();
+    let snapshot = match with_state(app, |state| state.session.load()).and_then(|v| v) { Ok(v) => v, Err(e) => { log::error!("[SESSION] {}", e.code); report_storage_error(app, &e); None } };
     let mut count = 0;
     if let Some(snap) = snapshot {
         for tab in &snap.tabs {
@@ -820,10 +907,19 @@ pub fn bootstrap_session(app: &AppHandle<Wry>) {
                 incognito: Some(false), // session never persists incognito
                 darkweb: Some(false),
                 background: None,
+            agent: Some(tab.agent),
                 id: Some(tab.id.clone()),
                 title: Some(tab.title.clone()),
             };
             if open_tab(app, &req).is_ok() {
+                // Parity with the TS runtime: restore the tab's navigation
+                // stack so back/forward survive a restart.
+                let nav = &tab.navigation;
+                if !nav.back_stack.is_empty() || nav.current.is_some() || !nav.forward_stack.is_empty() {
+                let _ = with_state(app, |state| {
+                    state.navstacks.insert(tab.id.clone(), crate::navstack::NavStack::from_session(nav));
+                });
+                }
                 count += 1;
             }
         }
@@ -837,6 +933,7 @@ pub fn bootstrap_session(app: &AppHandle<Wry>) {
             incognito: None,
             darkweb: None,
             background: None,
+            agent: None,
             id: None,
             title: None,
         };
@@ -847,12 +944,12 @@ pub fn bootstrap_session(app: &AppHandle<Wry>) {
 }
 
 /// Save the current session (called on quit and on window_close).
-pub fn persist_session(app: &AppHandle<Wry>) {
+pub fn persist_session<R: Runtime>(app: &AppHandle<R>) {
     let _ = with_state(app, |state| {
         let tabs = state.registry.list();
         let order = state.registry.order().to_vec();
         let active = state.registry.active_id().map(str::to_string);
-        state.session.save(&tabs, &order, active.as_deref());
+        if let Err(e) = state.session.save(&tabs, &state.navstacks, &order, active.as_deref()) { log::error!("[SESSION] {}", e.code); report_storage_error(app, &e); }
     });
 }
 
@@ -871,31 +968,31 @@ pub fn watch_window_events(app: &AppHandle<Wry>) {
 // Convenience passthroughs used by commands -------------------------------
 
 pub fn query_history(app: &AppHandle<Wry>, q: &HistoryQuery) -> AppResult<Vec<HistoryEntry>> {
-    with_state(app, |state| state.history.query(q))
+    with_state(app, |state| state.history.query(q))?
 }
 
 pub fn add_history(app: &AppHandle<Wry>, req: &HistoryAddRequest) -> AppResult<HistoryEntry> {
-    with_state(app, |state| state.history.add(req))
+    with_state(app, |state| state.history.add(req))?
 }
 
 pub fn delete_history(app: &AppHandle<Wry>, id: &str) -> AppResult<bool> {
-    with_state(app, |state| state.history.delete(id))
+    with_state(app, |state| state.history.delete(id))?
 }
 
 pub fn clear_history(app: &AppHandle<Wry>) -> AppResult<()> {
-    with_state(app, |state| state.history.clear())
+    with_state(app, |state| state.history.clear())?
 }
 
 pub fn list_bookmarks(app: &AppHandle<Wry>) -> AppResult<Vec<Bookmark>> {
-    with_state(app, |state| state.bookmarks.list())
+    with_state(app, |state| state.bookmarks.list())?
 }
 
 pub fn add_bookmark(app: &AppHandle<Wry>, req: &BookmarkAddRequest) -> AppResult<Bookmark> {
-    with_state(app, |state| state.bookmarks.add(req))
+    with_state(app, |state| state.bookmarks.add(req))?
 }
 
 pub fn delete_bookmark(app: &AppHandle<Wry>, id: &str) -> AppResult<bool> {
-    with_state(app, |state| state.bookmarks.delete(id))
+    with_state(app, |state| state.bookmarks.delete(id))?
 }
 
 pub fn list_downloads(app: &AppHandle<Wry>) -> AppResult<Vec<DownloadItemState>> {

@@ -51,6 +51,7 @@ import { AgentOverlay } from './browser/agent/runtime/agent-overlay';
 import { computeTopSites, buildNewTabHtml } from './browser/pure/newtab-page';
 import { fetchTechNews } from './browser/pure/tech-news';
 import { buildSearchPageHtml } from './browser/pure/search-page';
+import { getAppLocale, parseAppLocale, setAppLocale } from '../shared/app-locale';
 import { buildSelectionPrompt } from './browser/agent/pure/selection-actions';
 import { MemoryStore } from './browser/agent/pure/memory-store';
 import { fileStorageFor } from './browser/storage/file-storage-adapter';
@@ -433,6 +434,7 @@ async function handlePabRequest(request: Request): Promise<Response> {
           modelKey: verifiedModel
             ?? process.env.PAB_PERPLEXICA_MODEL?.trim()
             ?? 'deepseek-v4-pro:0813',
+          lang: getAppLocale(),
         }),
         { headers: { 'content-type': 'text/html; charset=utf-8' } },
       );
@@ -451,7 +453,7 @@ async function handlePabRequest(request: Request): Promise<Response> {
       );
       // Today-in-Tech strip — REAL Hacker News top stories (offline → []).
       const news = await fetchTechNews(fetch);
-      return new Response(buildNewTabHtml(topSites, news), {
+      return new Response(buildNewTabHtml(topSites, news, getAppLocale()), {
         headers: { 'content-type': 'text/html; charset=utf-8' },
       });
     }
@@ -478,6 +480,11 @@ function registerWindowIpcHandlers(): void {
   });
   ipcMain.on('window:close', (event) => {
     BrowserWindow.fromWebContents(event.sender)?.close();
+  });
+  // UI locale push from the chrome renderer (I18nProvider) — read by the
+  // pab:// protocol handler when it builds internal pages.
+  ipcMain.on('ui:setLocale', (_event, lang: unknown) => {
+    setAppLocale(parseAppLocale(lang));
   });
 }
 

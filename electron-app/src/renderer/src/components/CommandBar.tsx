@@ -16,6 +16,7 @@
  */
 import { useState, useEffect, useCallback, type KeyboardEvent } from 'react';
 import type { TabState } from '@shared/browser-types';
+import { useI18n } from '../i18n';
 import {
   getCommandBarState,
   getCommandBarStateModifier,
@@ -40,6 +41,7 @@ export function CommandBar({
 }: CommandBarProps) {
   const [input, setInput] = useState('');
   const [isFocused, setFocused] = useState(false);
+  const { t } = useI18n();
 
   // Sync the input field with the active tab's URL when it changes (and the
   // user is NOT actively editing).
@@ -90,50 +92,51 @@ export function CommandBar({
     <div
       className={`commandbar ${getCommandBarStateModifier(state)}`}
       role="search"
-      aria-label="Address and command bar"
+      aria-label={t('cmd.barAria')}
     >
       <NavButton
         glyph="◀"
-        label="Back"
+        label={t('cmd.back')}
         shortcut="Alt+Left"
         disabled={!canGoBack}
         onClick={() => tab && onBack(tab.id)}
       />
       <NavButton
         glyph="▶"
-        label="Forward"
+        label={t('cmd.forward')}
         shortcut="Alt+Right"
         disabled={!canGoForward}
         onClick={() => tab && onForward(tab.id)}
       />
       <NavButton
         glyph={isLoading ? '✕' : '⟳'}
-        label={isLoading ? 'Stop' : 'Reload'}
+        label={isLoading ? t('cmd.stop') : t('cmd.reload')}
         shortcut={isLoading ? undefined : 'Ctrl+R'}
         disabled={!tab}
         onClick={() => tab && (isLoading ? onStop(tab.id) : onReload(tab.id))}
       />
 
       <div className="commandbar__field">
+        {tab?.egress && <span className="commandbar__route" title={`${tab.profile}: ${tab.egress}`}>{tab.egress === 'direct' ? 'DIRECT' : 'SOCKS5'}</span>}
         <StateIndicator state={state} isIncognito={!!tab?.isIncognito} />
         <input
           className="commandbar__input"
           type="text"
           value={input}
-          placeholder={getPlaceholder(tab)}
+          placeholder={getPlaceholder(tab, t)}
           onChange={(e) => setInput(e.target.value)}
           onFocus={() => setFocused(true)}
           onBlur={() => setFocused(false)}
           onKeyDown={onKeyDown}
           spellCheck={false}
           autoComplete="off"
-          aria-label="URL or search query"
+          aria-label={t('cmd.inputAria')}
           aria-invalid={state === 'invalid'}
         />
         {state === 'invalid' && (
           <span
             className="commandbar__invalid-icon"
-            title="Blocked protocol — javascript:, data:, vbscript:, blob: are not allowed"
+            title={t('cmd.invalidTip')}
             aria-hidden
           >
             ⚠
@@ -196,7 +199,10 @@ function StateIndicator({
   return <span className="commandbar__state-icon" aria-hidden />;
 }
 
-function getPlaceholder(tab: TabState | null): string {
-  if (!tab) return 'No tab active';
-  return 'Search or enter address';
+function getPlaceholder(
+  tab: TabState | null,
+  t: (key: 'cmd.noTab' | 'cmd.placeholder') => string
+): string {
+  if (!tab) return t('cmd.noTab');
+  return t('cmd.placeholder');
 }

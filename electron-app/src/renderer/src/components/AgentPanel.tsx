@@ -1,9 +1,10 @@
+import { attachmentErrorMessage } from '@shared/attachment-errors';
 import { platformApi } from '../platform';
 /**
  * AgentPanel — Matrix agent dock (concept 1:1).
  *
  * Structure:
- *   header    ● AGENT .................... ● HUMAN MODE / AGENT MODE
+ *   header    ● AGENT .................... HUMAN MODE / AGENT MODE
  *   hint      "Switch to AGENT mode…" collapsible (click = switch mode)
  *   tabs      CONVERSATION | TOOLS | SOURCES   (+ compact DEEP RESEARCH)
  *   body      conversation bubbles / tool timeline / research sources
@@ -24,6 +25,7 @@ import type { NewTabAttachment } from '@shared/newtab-bridge';
 import type { ChatMessage } from '../store/chat-logic';
 import { isAwaitingAnswer } from '../store/chat-logic';
 import { researchPhaseFrom } from '../research-phase-view';
+import { useI18n } from '../i18n';
 
 export interface AgentPanelProps {
   mode: ControlMode;
@@ -32,7 +34,7 @@ export interface AgentPanelProps {
   timeline: AgentTimelineEntry[];
   onRun: (command: string, opts?: { attachmentIds?: string[] }) => void;
   /** DEEP_RESEARCH profile run (PROMPT 9). */
-  onResearch: (query: string) => void;
+  onResearch: (query: string, opts?: { attachmentIds?: string[] }) => void;
   researchReport: ResearchReport | null;
   researchActive: boolean;
   onStop: () => void;
@@ -59,10 +61,12 @@ export function AgentPanel({
   chat = [],
   onClearChat,
 }: AgentPanelProps) {
+  const { t, lang } = useI18n();
   const [task, setTask] = useState('');
   const [tab, setTab] = useState<PanelTab>('conversation');
   const [hintOpen, setHintOpen] = useState(false);
   const [attachments, setAttachments] = useState<NewTabAttachment[]>([]);
+  const [attaching, setAttaching] = useState(false);
   const [attachError, setAttachError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -77,7 +81,7 @@ export function AgentPanel({
     const trimmed = task.trim();
     if (trimmed.length === 0) return;
     if (mode !== 'AGENT') return;
-    if (agentRunning) return;
+    if (agentRunning || attaching) return;
     onRun(trimmed, attachments.length > 0 ? { attachmentIds: attachments.map((a) => a.id) } : undefined);
     setTask('');
     setAttachments([]);
@@ -87,9 +91,10 @@ export function AgentPanel({
     const trimmed = task.trim();
     if (trimmed.length === 0) return;
     if (mode !== 'AGENT') return;
-    if (agentRunning) return;
-    onResearch(trimmed);
+    if (agentRunning || attaching) return;
+    onResearch(trimmed, { attachmentIds: attachments.map(a => a.id) });
     setTask('');
+    setAttachments([]);
   };
 
   const handleKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
@@ -104,44 +109,43 @@ export function AgentPanel({
   };
 
   const handleAttach = async () => {
+    if (attaching) return;
     setAttachError(null);
     if (attachments.length >= 4) {
-      setAttachError('Up to 4 attachments per message.');
+      setAttachError(t('agent.attachMax'));
       return;
     }
+    setAttaching(true);
     try {
       const res = await platformApi.agent.pickAttachment('file');
       if (res.attachment) {
         setAttachments((prev) => [...prev, res.attachment as NewTabAttachment]);
       }
-    } catch {
-      setAttachError('Could not open the file picker.');
-    }
+    } catch (error) {
+      setAttachError(attachmentErrorMessage(error, lang, t('agent.attachFail')));
+    } finally { setAttaching(false); }
   };
 
-  const statusBadge = getStatusBadge(mode, agentRunning, agentStatus);
-  const researchPhase = researchPhaseFrom(agentStatus, timeline, researchActive);
-  const report = researchReport;
-  const sources = report?.sources ?? [];
+  const sources = researchReport?.sources ?? [];
 
   return (
     <aside
       className={`agent-panel agent-panel--${mode.toLowerCase()} ${
         agentRunning ? 'agent-panel--running' : ''
       }`}
-      aria-label="Agent panel"
+      aria-label={t('agent.panelAria')}
     >
       <header className="agent-panel__header">
         <div className="agent-panel__title">
           <span className="agent-panel__title-mark" aria-hidden />
-          <span>AGENT</span>
+          <span>{t('agent.title')}</span>
         </div>
         <span
           className={`agent-panel__mode-badge agent-panel__mode-badge--${mode.toLowerCase()}`}
           aria-live="polite"
         >
           <span className="agent-panel__mode-badge-dot" aria-hidden />
-          {mode} MODE
+          {mode === 'HUMAN' ? t('agent.modeHuman') : t('agent.modeAgent')}
         </span>
       </header>
 
@@ -149,14 +153,12 @@ export function AgentPanel({
         <button
           type="button"
           className="agent-panel__hint-btn"
-          onClick={() => (mode === 'HUMAN' ? setHintOpen((v) => !v) : setHintOpen((v) => !v))}
+          onClick={() => setHintOpen((v) => !v)}
           aria-expanded={hintOpen}
-          title={mode === 'HUMAN' ? 'What does AGENT mode unlock?' : 'Agent mode is active'}
+          title={mode === 'HUMAN' ? t('agent.humanHintTitle') : t('agent.agentHintTitle')}
         >
           <span>
-            {mode === 'HUMAN'
-              ? 'Switch to AGENT mode to unlock advanced capabilities'
-              : 'AGENT mode active — the agent can browse, research and execute'}
+            {mode === 'HUMAN' ? t('agent.humanHint') : t('agent.agentHint')}
           </span>
           <span className="agent-panel__hint-chevron" aria-hidden>
             {hintOpen ? '▴' : '▾'}
@@ -164,11 +166,7 @@ export function AgentPanel({
         </button>
         {hintOpen && (
           <div className="agent-panel__hint-body">
-            <p>
-              AGENT mode lets the assistant browse pages, click, type, run Deep
-              Research and execute multi-step tasks — HUMAN mode keeps full
-              manual control.
-            </p>
+            <p>{t('agent.hintBody')}</p>
             {mode === 'HUMAN' && (
               <button
                 type="button"
@@ -178,49 +176,49 @@ export function AgentPanel({
                   platformApi.control.setMode('AGENT');
                 }}
               >
-                Switch to AGENT mode
+                {t('agent.hintSwitch')}
               </button>
             )}
           </div>
         )}
       </div>
 
-      <nav className="agent-panel__tabs" role="tablist" aria-label="Agent panel sections">
-        <PanelTabButton id="conversation" label="CONVERSATION" active={tab === 'conversation'} onSelect={setTab} />
-        <PanelTabButton id="tools" label="TOOLS" active={tab === 'tools'} onSelect={setTab} />
+      <nav className="agent-panel__tabs" role="tablist" aria-label={t('agent.tabsAria')}>
+        <PanelTabButton id="conversation" label={t('agent.tabConversation')} active={tab === 'conversation'} onSelect={setTab} />
+        <PanelTabButton id="tools" label={t('agent.tabTools')} active={tab === 'tools'} onSelect={setTab} />
         <PanelTabButton
           id="sources"
-          label={`SOURCES${sources.length > 0 ? ` ${sources.length}` : ''}`}
+          label={sources.length > 0 ? t('agent.sourcesWithCount', { count: sources.length }) : t('agent.tabSources')}
           active={tab === 'sources'}
           onSelect={setTab}
         />
       </nav>
 
       {tab === 'conversation' && (
-        <div className="agent-panel__chat" role="tabpanel" aria-label="Agent conversation">
+        <div className="agent-panel__chat" role="tabpanel" aria-label={t('agent.chatAria')}>
           <div className="agent-panel__chat-toolbar">
-            <span className="agent-panel__chat-label">CONVERSATION</span>
+            <span className="agent-panel__chat-label">{t('agent.chatLabel')}</span>
             {chat.length > 0 && onClearChat && (
               <button
                 type="button"
                 className="agent-panel__chat-clear"
                 onClick={onClearChat}
-                aria-label="Clear conversation"
-                title="Clear conversation"
+                aria-label={t('agent.clearAria')}
+                title={t('agent.clearTip')}
               >
                 ×
               </button>
             )}
           </div>
           <div className="agent-panel__chat-list">
-            <AgentGreeting agentName="HAYDEV AGENT" />
+            <AgentGreeting agentName={t('agent.agentName')} greeting={t('agent.greeting')} />
             {chat.map((m) => (
-              <ChatBubble key={m.id} message={m} />
+              <ChatBubble key={m.id} message={m} youLabel={t('agent.you')} agentName={t('agent.agentName')} />
             ))}
             {isAwaitingAnswer(chat, agentRunning) && (
               <div className="agent-bubble agent-bubble--pending">
-                <span className="agent-bubble__role">AGENT</span>
-                <span className="agent-bubble__text">working…</span>
+                <span className="agent-bubble__role">{t('agent.title')}</span>
+                <span className="agent-bubble__text">{t('agent.working')}</span>
               </div>
             )}
           </div>
@@ -228,16 +226,14 @@ export function AgentPanel({
       )}
 
       {tab === 'tools' && (
-        <div className="agent-panel__tools" role="tabpanel" aria-label="Agent tools timeline">
+        <div className="agent-panel__tools" role="tabpanel" aria-label={t('agent.toolsAria')}>
           <div className="agent-panel__chat-toolbar">
-            <span className="agent-panel__chat-label">TOOLS · TIMELINE</span>
+            <span className="agent-panel__chat-label">{t('agent.toolsLabel')}</span>
             <span className="agent-panel__timeline-count">{timeline.length}</span>
           </div>
           {timeline.length === 0 ? (
             <p className="agent-panel__chat-empty">
-              {mode === 'AGENT'
-                ? 'No task yet. Tool calls and steps will appear here.'
-                : 'Agent is idle. Switch to AGENT mode to start a task.'}
+              {mode === 'AGENT' ? t('agent.toolsEmptyAgent') : t('agent.toolsEmptyHuman')}
             </p>
           ) : (
             <ul className="agent-panel__timeline-list">
@@ -250,37 +246,41 @@ export function AgentPanel({
                   <span className="agent-panel__timeline-label">
                     <span className="agent-panel__timeline-step">#{entry.step}</span> {entry.summary}
                   </span>
-                  <span className="agent-panel__timeline-state">{entry.state}</span>
+                  <span className="agent-panel__timeline-state">
+                    {t(`agent.tl.${entry.state}`)}
+                  </span>
                 </li>
               ))}
             </ul>
           )}
-          {researchPhase && (
-            <div className="agent-panel__research-phase" aria-live="polite">
-              <span className="agent-panel__research-phase-label">RESEARCH</span>
-              <span className="agent-panel__research-phase-value" data-phase={researchPhase}>
-                {researchPhase}
-              </span>
-            </div>
-          )}
+          {researchActive && <ResearchPhaseView status={agentStatus} timeline={timeline} />}
         </div>
       )}
 
       {tab === 'sources' && (
-        <div className="agent-panel__sources" role="tabpanel" aria-label="Research sources">
+        <div className="agent-panel__sources" role="tabpanel" aria-label={t('agent.sourcesAria')}>
           <div className="agent-panel__chat-toolbar">
-            <span className="agent-panel__chat-label">SOURCES</span>
+            <span className="agent-panel__chat-label">{t('agent.sourcesLabel')}</span>
           </div>
-          {!report ? (
-            <p className="agent-panel__chat-empty">
-              No Deep Research report yet. Run a query with DEEP RESEARCH to
-              collect a verified source ledger.
-            </p>
+          {!researchReport ? (
+            <p className="agent-panel__chat-empty">{t('agent.sourcesEmpty')}</p>
           ) : (
             <div className="agent-panel__sources-body">
-              {report.summary && <p className="agent-panel__research-summary">{report.summary}</p>}
+              {researchReport.summary && (
+                <p className="agent-panel__research-summary">{researchReport.summary}</p>
+              )}
+              {researchReport.partial && <p role="status">{t('agent.researchPartial')}</p>}
+              {researchReport.claims?.map((claim, index) => (
+                <div key={index} className="agent-panel__research-claim">
+                  <p>{claim.claim}</p>
+                  {claim.quote && <blockquote>{claim.quote}</blockquote>}
+                  {claim.verification === 'excerpt-present' && <small>{t('agent.excerptMatched')} · {claim.sourceIds.map(id => `s${id}`).join(', ')}</small>}
+                </div>
+              ))}
+              {researchReport.conflicts?.map((conflict, index) => <p key={index}>{t('agent.researchConflict')}: {conflict.description}</p>)}
+              {researchReport.unknowns?.map((unknown, index) => <p key={index}>{t('agent.researchUnknown')}: {unknown}</p>)}
               {sources.length === 0 ? (
-                <p className="agent-panel__chat-empty">No sources recorded for this run.</p>
+                <p className="agent-panel__chat-empty">{t('agent.sourcesNone')}</p>
               ) : (
                 <ul className="agent-panel__sources-list">
                   {sources.map((s) => (
@@ -288,7 +288,9 @@ export function AgentPanel({
                       <a href={s.url} target="_blank" rel="noopener noreferrer" title={s.url}>
                         s{s.id} · {s.title || s.url}
                       </a>
-                      {s.status === 'failed' && <span className="agent-panel__src-failed"> (failed)</span>}
+                      {s.status === 'failed' && (
+                        <span className="agent-panel__src-failed"> {t('agent.sourceFailed')}</span>
+                      )}
                     </li>
                   ))}
                 </ul>
@@ -304,45 +306,46 @@ export function AgentPanel({
             type="button"
             className="agent-panel__stop"
             onClick={onStop}
-            disabled={!agentRunning}
-            aria-label="Stop the current agent task"
-            title="Stop agent task"
+            disabled={!agentRunning && !attaching}
+            aria-label={t('agent.stopAria')}
+            title={t('agent.stopTip')}
           >
-            STOP
+            {t('agent.stop')}
           </button>
           <button
             type="button"
             className="takecontrol takecontrol--panel"
             onClick={onTakeControl}
-            aria-label="Take control — abort agent and switch to HUMAN mode"
-            title="TAKE CONTROL — abort agent and return to HUMAN mode"
+            aria-label={t('control.takeAria')}
+            title={t('control.takeTip')}
           >
             <span className="takecontrol__icon" aria-hidden>
               ◆
             </span>
-            <span className="takecontrol__label">TAKE CONTROL</span>
+            <span className="takecontrol__label">{t('control.takeLabel')}</span>
           </button>
           <button
             type="button"
             className="agent-panel__deep"
             onClick={handleDeepResearch}
-            disabled={mode !== 'AGENT' || agentRunning || task.trim().length === 0}
-            title="Run Deep Research on the message input"
+            disabled={mode !== 'AGENT' || agentRunning || attaching || task.trim().length === 0}
+            title={t('agent.deepTip')}
           >
-            DEEP RESEARCH
+            {t('agent.deep')}
           </button>
         </div>
 
+        {attachments.length > 0 && <p className="agent-panel__attachment-policy">{t('agent.attachmentPolicy')}</p>}
         {attachments.length > 0 && (
-          <div className="agent-panel__attachments" aria-label="Pending attachments">
+          <div className="agent-panel__attachments" aria-label={t('agent.pendingAttachmentsAria')}>
             {attachments.map((a) => (
               <span key={a.id} className="agent-panel__attachment" title={a.name}>
                 <span className="agent-panel__attachment-name">{a.name}</span>
                 <button
                   type="button"
                   className="agent-panel__attachment-remove"
-                  aria-label={`Remove attachment ${a.name}`}
-                  onClick={() => setAttachments((prev) => prev.filter((x) => x.id !== a.id))}
+                  aria-label={t('agent.removeAttachmentAria', { name: a.name })}
+                  onClick={async () => { try { await platformApi.agent.releaseAttachment?.(a.id); setAttachments((prev) => prev.filter((x) => x.id !== a.id)); } catch (error) { setAttachError(attachmentErrorMessage(error, lang, t('agent.attachFail'))); } }}
                 >
                   ×
                 </button>
@@ -361,8 +364,8 @@ export function AgentPanel({
             type="button"
             className="agent-panel__iconbtn"
             onClick={handleAttach}
-            aria-label="Attach a file"
-            title="Attach a file (PDF, DOC, TXT, CSV, JSON…)"
+            aria-label={t('agent.attachAria')}
+            title={t('agent.attachTip')}
           >
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
               <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
@@ -373,19 +376,19 @@ export function AgentPanel({
             type="text"
             className="agent-panel__input"
             value={task}
-            placeholder={getTaskPlaceholder(mode, agentRunning, agentStatus)}
+            placeholder={getTaskPlaceholder(mode, agentRunning, agentStatus, t)}
             onChange={(e) => setTask(e.target.value)}
             onKeyDown={handleKeyDown}
             disabled={mode !== 'AGENT' || agentRunning}
             spellCheck={false}
             autoComplete="off"
-            aria-label="Agent task input"
+            aria-label={t('agent.inputAria')}
           />
           <button
             type="button"
             className="agent-panel__iconbtn agent-panel__iconbtn--mic"
-            aria-label="Voice input is not available yet"
-            title="Voice input — not available yet"
+            aria-label={t('agent.micAria')}
+            title={t('agent.micTip')}
             disabled
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" stroke-linecap="round" aria-hidden="true">
@@ -397,9 +400,9 @@ export function AgentPanel({
             type="button"
             className="agent-panel__send"
             onClick={handleSubmit}
-            disabled={mode !== 'AGENT' || agentRunning || task.trim().length === 0}
-            aria-label="Send message to agent"
-            title="Send (Enter)"
+            disabled={mode !== 'AGENT' || agentRunning || attaching || task.trim().length === 0}
+            aria-label={t('agent.sendAria')}
+            title={t('agent.sendTip')}
           >
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <polyline points="9 6 15 12 9 18"></polyline>
@@ -408,6 +411,30 @@ export function AgentPanel({
         </div>
       </footer>
     </aside>
+  );
+}
+
+/**
+ * RESEARCH phase strip — only mounted while a research run is active, so the
+ * phase derivation stays in one place (was inlined with a null-check before).
+ */
+function ResearchPhaseView({
+  status,
+  timeline,
+}: {
+  status: AgentStatusSnapshot | null;
+  timeline: AgentTimelineEntry[];
+}) {
+  const { t, lang } = useI18n();
+  const researchPhase = researchPhaseFrom(status, timeline, true);
+  if (!researchPhase) return null;
+  return (
+    <div className="agent-panel__research-phase" aria-live="polite">
+      <span className="agent-panel__research-phase-label">{t('agent.researchLabel')}</span>
+      <span className="agent-panel__research-phase-value" data-phase={researchPhase}>
+        {t(`agent.phase.${researchPhase}`)}
+      </span>
+    </div>
   );
 }
 
@@ -435,7 +462,7 @@ function PanelTabButton({
   );
 }
 
-function AgentGreeting({ agentName }: { agentName: string }) {
+function AgentGreeting({ agentName, greeting }: { agentName: string; greeting: string }) {
   return (
     <div className="agent-bubble agent-bubble--greeting">
       <span className="agent-bubble__avatar" aria-hidden="true">
@@ -452,15 +479,20 @@ function AgentGreeting({ agentName }: { agentName: string }) {
           {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
         </span>
       </span>
-      <span className="agent-bubble__text">
-        Hello! I'm your HayDev Browser OS agent. Ask anything — I can browse, research,
-        analyze, and execute tasks for you.
-      </span>
+      <span className="agent-bubble__text">{greeting}</span>
     </div>
   );
 }
 
-function ChatBubble({ message }: { message: ChatMessage }) {
+function ChatBubble({
+  message,
+  youLabel,
+  agentName,
+}: {
+  message: ChatMessage;
+  youLabel: string;
+  agentName: string;
+}) {
   const time = message.ts
     ? new Date(message.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     : null;
@@ -468,7 +500,7 @@ function ChatBubble({ message }: { message: ChatMessage }) {
     return (
       <div className={`user-bubble ${message.error ? 'user-bubble--error' : ''}`}>
         <span className="user-bubble__head">
-          <span className="user-bubble__name">YOU</span>
+          <span className="user-bubble__name">{youLabel}</span>
           {time && <span className="user-bubble__time">{time}</span>}
         </span>
         <span className="user-bubble__text">{message.text}</span>
@@ -478,7 +510,7 @@ function ChatBubble({ message }: { message: ChatMessage }) {
   return (
     <div className={`agent-bubble ${message.error ? 'agent-bubble--error' : ''}`}>
       <span className="agent-bubble__head">
-        <span className="agent-bubble__name">HAYDEV AGENT</span>
+        <span className="agent-bubble__name">{agentName}</span>
         {time && <span className="agent-bubble__time">{time}</span>}
       </span>
       <span className="agent-bubble__text">{message.text}</span>
@@ -486,32 +518,16 @@ function ChatBubble({ message }: { message: ChatMessage }) {
   );
 }
 
-function getStatusBadge(
-  mode: ControlMode,
-  running: boolean,
-  status: AgentStatusSnapshot | null
-): { label: string; state: 'idle' | 'running' | 'takeover' | 'human' | 'failed' } {
-  if (status?.state === 'FAILED') {
-    return { label: 'FAILED', state: 'failed' };
-  }
-  if (mode === 'HUMAN') {
-    return { label: 'HUMAN', state: 'human' };
-  }
-  if (running) {
-    return { label: 'RUNNING', state: 'running' };
-  }
-  return { label: 'READY', state: 'idle' };
-}
-
 function getTaskPlaceholder(
   mode: ControlMode,
   running: boolean,
-  status: AgentStatusSnapshot | null
+  status: AgentStatusSnapshot | null,
+  t: (key: 'agent.placeholderIdle' | 'agent.placeholderHuman' | 'agent.placeholderRunning' | 'agent.placeholderNoProvider') => string
 ): string {
   if (status && !status.providerConfigured) {
-    return 'AI_PROVIDER_NOT_CONFIGURED — set OLLAMA_API_KEY';
+    return t('agent.placeholderNoProvider');
   }
-  if (mode === 'HUMAN') return 'Switch to AGENT mode to send messages…';
-  if (running) return 'Agent is running… press STOP to abort.';
-  return 'Type your message…';
+  if (mode === 'HUMAN') return t('agent.placeholderHuman');
+  if (running) return t('agent.placeholderRunning');
+  return t('agent.placeholderIdle');
 }

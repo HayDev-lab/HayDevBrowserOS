@@ -86,7 +86,10 @@ describe('escapeHtml / buildNewTabHtml', () => {
   it('hosts the HayDev Search entry box that navigates to pab://search', () => {
     const html = buildNewTabHtml([]);
     expect(html).toContain('id="sform"');
-    expect(html).toContain('pab://search?q=');
+    // Form action targets the search home; JS submits route through the
+    // backend searchNavigate bridge (location.href is the fallback).
+    expect(html).toContain('action="pab://search/"');
+    expect(html).toContain("searchNavigate('search', '?q=' + encodeURIComponent(v) + '&src=web')");
     expect(html).toContain('HayDev Search');
   });
 
@@ -118,18 +121,19 @@ describe('escapeHtml / buildNewTabHtml', () => {
     // Concept cards: title + subtitle, HayDev active by default.
     expect(html).toContain('data-engine="haydev"');
     expect(html).toContain('HayDev Search');
-    expect(html).toContain('AI + Web intelligence');
+    expect(html).toContain('Deep Research agent');
     expect(html).toContain('data-engine="perplexity"');
     expect(html).toContain('Perplexity Search');
-    expect(html).toContain('Real-time research');
+    expect(html).toContain('AI + Web answers');
     expect(html).toContain('data-engine="darkweb"');
     expect(html).toContain('Deep/Dark Web Search');
     expect(html).toContain('Beyond the surface');
     expect(html).toContain('id="engine-haydev"');
     expect(html).toContain('aria-checked="true" data-engine="haydev"');
-    // Real routing targets for the search engines + dark web.
-    expect(html).toContain("'pab://darkweb?q=' + encodeURIComponent(v)");
-    expect(html).toContain("'pab://search?q=' + encodeURIComponent(v)");
+    // Real routing targets: darkweb via the Tor-gated page, web mode through
+    // the searchNavigate bridge with a src marker.
+    expect(html).toContain("searchNavigate('darkweb', '?q=' + encodeURIComponent(v))");
+    expect(html).toContain("searchNavigate('search', '?q=' + encodeURIComponent(v) + '&src=web')");
     // Engine choice survives within the tab (sessionStorage, per-tab state).
     expect(html).toContain("sessionStorage.getItem(ENGINE_KEY)");
   });

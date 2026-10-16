@@ -61,6 +61,9 @@ pub struct PrivacyConfig {
     /// Route the agent's INVISIBLE web_fetch through the Tor gateway when
     /// it is available. Default false (explicit opt-in).
     pub agent_fetch_via_tor: bool,
+    /// HayDev Shield (PROMPT 07): network-level ad/tracker blocking in tab
+    /// webviews. Default ON; toggleable at runtime (shield_set_enabled).
+    pub shield_enabled: bool,
 }
 
 impl Default for PrivacyConfig {
@@ -71,6 +74,7 @@ impl Default for PrivacyConfig {
             private_locale: None,
             private_timezone: None,
             agent_fetch_via_tor: false,
+            shield_enabled: true,
         }
     }
 }
@@ -81,20 +85,25 @@ impl PrivacyConfig {
     }
 
     /// Load from `app_data/privacy.json`; missing file → defaults; broken
-    /// JSON → defaults (fail-open for usability, the file is user-owned).
+    /// JSON → fail-closed routing; the original is preserved for recovery.
     pub fn load(app_data: &std::path::Path) -> Self {
         match std::fs::read_to_string(Self::path(app_data)) {
             Ok(text) => serde_json::from_str(&text).unwrap_or_else(|e| {
-                log::warn!("[PRIVACY] privacy.json parse failed ({e}) — using defaults");
-                Self::default()
+                log::error!("[PRIVACY] STORE_CORRUPT: privacy configuration requires recovery ({e})");
+                Self { private_egress: Egress::TorStrict, agent_egress: Egress::TorStrict, agent_fetch_via_tor: true, ..Self::default() }
             }),
-            Err(_) => Self::default(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::default(),
+            Err(_) => {
+                log::error!("[PRIVACY] STORE_UNREADABLE: routing denied until configuration is readable");
+                Self { private_egress: Egress::TorStrict, agent_egress: Egress::TorStrict, agent_fetch_via_tor: true, ..Self::default() }
+            },
         }
     }
 
-    pub fn save(&self, app_data: &std::path::Path) -> std::io::Result<()> {
-        let json = serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".into());
-        std::fs::write(Self::path(app_data), json)
+    pub fn save(&self, app_data: &std::path::Path) -> crate::error::AppResult<()> {
+        let tx = crate::atomic_store::transaction(&Self::path(app_data))?;
+        tx.read_json::<Self>()?;
+        tx.write_json(self)
     }
 }
 
@@ -117,6 +126,33 @@ pub fn global() -> &'static PrivacyConfig {
     })
 }
 
+/// Privacy browser args shared by PRIVATE and DARKWEB webviews: WebRTC must
+/// never bypass proxies (real-IP leak), no component updates /
+/// domain-reliability pings / crash-reporter phoning home. SmartScreen stays
+/// off (wry default).
+pub const PRIVACY_BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --force-webrtc-ip-handling-policy=disable_non_proxied_udp --disable-component-update --disable-domain-reliability --disable-breakpad";
+
+/// The FULL additional_browser_args string for a PRIVATE tab.
+///
+/// Contract (PROMPT 02): the egress proxy RIDES IN the args string because
+/// wry 0.55 applies `proxy_config` only when `additional_browser_args` is
+/// unset (webview2 `create_environment` `unwrap_or_else`) — a separately
+/// set proxy_url would be silently DROPPED. Strict Tor that is unavailable
+/// fails closed (Err), never a silent direct downgrade.
+pub fn private_browser_args(
+    egress: &Egress,
+    tor: Option<SocksEndpoint>,
+) -> Result<String, &'static str> {
+    match resolve_egress(egress, tor) {
+        Ok(Some(ep)) => Ok(format!(
+            "{PRIVACY_BROWSER_ARGS} --proxy-server=socks5://{}:{} --proxy-bypass-list=<-loopback>",
+            ep.host, ep.port
+        )),
+        Ok(None) => Ok(PRIVACY_BROWSER_ARGS.to_string()),
+        Err(msg) => Err(msg),
+    }
+}
+
 /// Resolve an `Egress` against the live Tor gateway.
 /// `Ok(None)` = browse directly; `Err(msg)` = strict Tor demanded but the
 /// gateway is down (fail closed, darkweb-tab parity).
@@ -126,6 +162,7 @@ pub fn resolve_egress(
 ) -> Result<Option<SocksEndpoint>, &'static str> {
     match egress {
         Egress::Direct => Ok(None),
+        Egress::Socks5 { host, port } if *port == 0 || host.contains(|c: char| c.is_whitespace() || c == '/' || c == '@') || url::Host::parse(host).is_err() => Err("invalid SOCKS5 endpoint"),
         Egress::Socks5 { host, port } => Ok(Some(SocksEndpoint {
             host: host.clone(),
             port: *port,
@@ -161,6 +198,7 @@ mod tests {
             private_locale: Some("en-US".into()),
             private_timezone: Some("Europe/Amsterdam".into()),
             agent_fetch_via_tor: true,
+            shield_enabled: false,
         };
         cfg.save(&dir).unwrap();
         let loaded = PrivacyConfig::load(&dir);
@@ -169,12 +207,40 @@ mod tests {
     }
 
     #[test]
-    fn broken_json_falls_back_to_defaults() {
+    fn broken_json_preserved_and_routing_fails_closed() {
         let dir = std::env::temp_dir().join(format!("hd-privacy-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(PrivacyConfig::path(&dir), "{ not json").unwrap();
-        assert_eq!(PrivacyConfig::load(&dir), PrivacyConfig::default());
+        assert_eq!(PrivacyConfig::load(&dir).agent_egress, Egress::TorStrict);
+        assert!(PrivacyConfig::default().save(&dir).is_err());
+        assert_eq!(std::fs::read_to_string(PrivacyConfig::path(&dir)).unwrap(), "{ not json");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn private_args_embed_proxy_in_args() {
+        let a = private_browser_args(
+            &Egress::Socks5 { host: "127.0.0.1".into(), port: 9150 },
+            None,
+        )
+        .unwrap();
+        assert!(a.contains("--proxy-server=socks5://127.0.0.1:9150"));
+        assert!(a.contains("--proxy-bypass-list=<-loopback>"));
+        assert!(a.contains("--force-webrtc-ip-handling-policy=disable_non_proxied_udp"));
+    }
+
+    #[test]
+    fn private_args_direct_have_no_proxy() {
+        for e in [Egress::Direct, Egress::TorIfAvailable] {
+            let a = private_browser_args(&e, None).unwrap();
+            assert!(!a.contains("--proxy-server"), "egress {e:?} must be direct");
+        }
+    }
+
+    #[test]
+    fn private_args_strict_without_tor_fail_closed() {
+        assert!(private_browser_args(&Egress::TorStrict, None).is_err());
+        assert!(private_browser_args(&Egress::TorStrict, Some(SocksEndpoint { host: "127.0.0.1".into(), port: 9050 })).is_ok());
     }
 
     #[test]

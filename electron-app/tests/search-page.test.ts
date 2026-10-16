@@ -36,13 +36,14 @@ describe('buildSearchPageHtml', () => {
     expect(html).toContain('id="modes"');
     expect(html).toContain("id: 'discussions', label: 'Discussions'");
     expect(html).toContain("id: 'academic', label: 'Academic'");
-    // Dark Web routes through the Tor-gated page with the current query.
-    expect(html).toContain("'pab://darkweb?q=' + encodeURIComponent(dq)");
+    // Dark Web routes through the Tor-gated page via the backend searchNavigate
+    // bridge (falls back to a plain pab:// href) with the current query.
+    expect(html).toContain("searchNavigate('darkweb', '?q=' + encodeURIComponent(dq))");
     // Deep Research via the scoped bridge, feature-detected.
     expect(html).toContain('__pabNewTab');
     expect(html).toContain('bridge.runResearch({ query: rq, attachmentIds: [] })');
     // Mode re-runs the query through pab://search with a src marker.
-    expect(html).toContain("'pab://search?q=' + encodeURIComponent(cur) + '&src=' + encodeURIComponent(id)");
+    expect(html).toContain("pabNav('search', '?q=' + encodeURIComponent(cur) + '&src=' + encodeURIComponent(id))");
   });
 
   it('is a CHAT page: keeps multi-turn history and appends turns', () => {

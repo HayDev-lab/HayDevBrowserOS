@@ -1,10 +1,7 @@
 //! Download registry — records `on_download` events from tab webviews.
 //!
-//! PARITY NOTE (honest limitation): Tauri 2.11's `DownloadEvent` surface
-//! exposes only `Requested` and `Finished` — no byte-progress and no cancel
-//! handle. `receivedBytes`/`totalBytes` therefore stay 0 and cancel is
-//! honestly rejected; the list itself, save paths and completion states are
-//! real (files really land on disk).
+//! Windows DownloadStarting/BytesReceivedChanged/StateChanged events feed this
+//! registry; native cancellation uses the concrete download operation.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -31,9 +28,17 @@ impl DownloadRegistry {
     }
 
     /// Compute the real save destination: the OS Downloads folder with a
-    /// deduplicated, sanitized filename.
+    /// deduplicated, sanitized filename. Under `HAYDEV_DATA_DIR` (QA/E2E
+    /// isolation) downloads land in `<data-root>/downloads` instead of the
+    /// real user folder.
     pub fn destination_for(&self, url: &str, suggested: &std::path::Path) -> PathBuf {
-        let downloads = dirs_downloads().unwrap_or_else(std::env::temp_dir);
+        let downloads = if let Some(root) = qa_data_dir() {
+            let dir = root.join("downloads");
+            let _ = std::fs::create_dir_all(&dir);
+            dir
+        } else {
+            dirs_downloads().unwrap_or_else(std::env::temp_dir)
+        };
         let raw_name = suggested
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -44,9 +49,13 @@ impl DownloadRegistry {
             .chars()
             .map(|c| match c {
                 '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+                c if c.is_control() => '_',
                 c => c,
             })
             .collect();
+        let safe = safe.trim_end_matches([' ', '.']).chars().take(180).collect::<String>();
+        let base = safe.split('.').next().unwrap_or("").to_ascii_uppercase();
+        let safe = if safe.is_empty() || matches!(base.as_str(), "CON"|"PRN"|"AUX"|"NUL"|"COM1"|"COM2"|"COM3"|"COM4"|"COM5"|"COM6"|"COM7"|"COM8"|"COM9"|"LPT1"|"LPT2"|"LPT3"|"LPT4"|"LPT5"|"LPT6"|"LPT7"|"LPT8"|"LPT9") { format!("download_{safe}") } else { safe };
         let mut candidate = downloads.join(&safe);
         let stem = candidate
             .file_stem()
@@ -55,7 +64,7 @@ impl DownloadRegistry {
             .extension()
             .map(|e| format!(".{}", e.to_string_lossy()));
         let mut n = 1;
-        while candidate.exists() {
+        while candidate.exists() || self.items.iter().any(|i| i.save_path.as_deref() == candidate.to_str()) {
             let stem = stem.clone().unwrap_or_else(|| "download".to_string());
             let name = match &ext {
                 Some(e) => format!("{stem} ({n}){e}"),
@@ -119,6 +128,24 @@ impl DownloadRegistry {
         }
     }
 
+    pub fn set_tab(&mut self, id: &str, tab: &str) {
+        if let Some(i) = self.by_id.get(id) { self.items[*i].tab_id = Some(tab.to_owned()); }
+    }
+    pub fn progress(&mut self, id: &str, received: u64, total: u64, terminal: Option<bool>) {
+        if let Some(i) = self.by_id.get(id) {
+            let item = &mut self.items[*i];
+            if item.state == DownloadStateName::Cancelled { return; }
+            item.received_bytes = received; item.total_bytes = total;
+            if let Some(success) = terminal {
+                item.state = if success { DownloadStateName::Completed } else { DownloadStateName::Failed };
+                item.end_time = Some(now_millis());
+                if !success { item.error = Some("DOWNLOAD_INTERRUPTED".into()); }
+            }
+        }
+    }
+    pub fn cancelled(&mut self, id: &str) {
+        if let Some(i) = self.by_id.get(id) { self.items[*i].state = DownloadStateName::Cancelled; self.items[*i].end_time = Some(now_millis()); }
+    }
     pub fn list(&self) -> Vec<DownloadItemState> {
         self.items.clone()
     }
@@ -142,6 +169,14 @@ impl DownloadRegistry {
             .filter(|i| i.state == DownloadStateName::Downloading)
             .count()
     }
+}
+
+/// QA/E2E isolation: when the app runs against an explicit data root, the
+/// download destination follows it (never the real user folder).
+fn qa_data_dir() -> Option<PathBuf> {
+    std::env::var_os("HAYDEV_DATA_DIR")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
 }
 
 fn dirs_downloads() -> Option<PathBuf> {

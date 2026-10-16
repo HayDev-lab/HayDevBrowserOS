@@ -37,14 +37,41 @@ pub fn eval_json(app: &AppHandle<Wry>, tab_id: &str, script: &str) -> AppResult<
     let wv = app
         .get_webview(label.as_str())
         .ok_or_else(|| AppError::new("TAB_NOT_FOUND", format!("no tab {tab_id}")))?;
-    let (tx, rx) = std::sync::mpsc::channel::<String>();
-    wv.eval_with_callback(script.to_string(), move |json| {
-        let _ = tx.send(json);
-    })
-    .map_err(|e| AppError::new("EVAL_FAILED", e.to_string()))?;
-    let json = rx
-        .recv_timeout(std::time::Duration::from_secs(5))
-        .map_err(|_| AppError::new("BRIDGE_TIMEOUT", "tab did not answer within 5s"))?;
+    let lease = crate::run_guard::current();
+    if let Some(g) = &lease { g.check()?; }
+    let (tx, rx) = std::sync::mpsc::channel::<AppResult<String>>();
+    let script = if let Some(g) = &lease {
+        format!("(() => {{ const __haydevCheck = () => {{ if (window.__haydevRunAllowed({}) !== true) throw new Error('AGENT_CANCELLED'); }}; try {{ __haydevCheck(); return ({}); }} catch(e) {{ return JSON.stringify({{ok:false,error:'AGENT_CANCELLED'}}); }} }})()", g.id, script)
+    } else { format!("(() => {{ const __haydevCheck = () => {{}}; return ({}); }})()", script) };
+    #[cfg(windows)]
+    {
+        let pending = lease.clone();
+        wv.with_webview(move |native| {
+            let send = tx.clone();
+            let execute = || -> AppResult<()> {
+                unsafe {
+                    let webview = native.controller().CoreWebView2().map_err(|_| AppError::new("EVAL_FAILED", "WebView unavailable"))?;
+                    webview.ExecuteScript(&windows::core::HSTRING::from(script),
+                        &webview2_com::ExecuteScriptCompletedHandler::create(Box::new(move |result, value| {
+                            let _ = send.send(result.map(|_| value).map_err(|_| AppError::new("EVAL_FAILED", "Script evaluation failed"))); Ok(())
+                        }))).map_err(|_| AppError::new("EVAL_FAILED", "Script dispatch failed"))?;
+                } Ok(())
+            };
+            let result = match &pending { Some(g) => g.effect(execute), None => execute() };
+            if let Err(e) = result { let _ = tx.send(Err(e)); }
+        })?;
+    }
+    #[cfg(not(windows))]
+    wv.eval_with_callback(script, move |json| { let _ = tx.send(Ok(json)); })?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let json = loop {
+        if let Some(g) = &lease { g.check()?; }
+        match rx.recv_timeout(std::time::Duration::from_millis(50)) {
+            Ok(v) => break v?,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) if std::time::Instant::now() < deadline => {},
+            _ => return Err(AppError::new("BRIDGE_TIMEOUT", "Tab did not answer within 5s")),
+        }
+    };
     let mut parsed: serde_json::Value = serde_json::from_str(&json)
         .map_err(|e| AppError::new("BRIDGE_PARSE_FAILED", e.to_string()))?;
     // The callback receives the completion value of the LAST expression —
@@ -57,6 +84,32 @@ pub fn eval_json(app: &AppHandle<Wry>, tab_id: &str, script: &str) -> AppResult<
         }
     }
     Ok(parsed)
+}
+
+/// Guarded native navigation: ownership is checked on the UI thread at
+/// dispatch, after any queue delay. Revocation and dispatch share a mutex.
+#[cfg(windows)]
+pub fn navigate_guarded(app: &AppHandle<Wry>, tab_id: &str, url: &str, guard: crate::run_guard::RunGuard) -> AppResult<bool> {
+    guard.check()?;
+    let wv = app.get_webview(&crate::core::BrowserState::tab_label(tab_id)).ok_or_else(|| AppError::new("TAB_NOT_FOUND", "Tab no longer exists"))?;
+    let url = url.to_string(); let pending = guard.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    wv.with_webview(move |native| {
+        let result = pending.effect(|| unsafe {
+            let webview = native.controller().CoreWebView2().map_err(|_| AppError::new("NAVIGATE_FAILED", "WebView unavailable"))?;
+            webview.Navigate(&windows::core::HSTRING::from(url)).map_err(|_| AppError::new("NAVIGATE_FAILED", "Navigation dispatch failed"))?;
+            Ok(true)
+        });
+        let _ = tx.send(result);
+    })?;
+    loop {
+        guard.check()?;
+        match rx.recv_timeout(std::time::Duration::from_millis(50)) {
+            Ok(v) => return v,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {},
+            _ => return Err(AppError::new("NAVIGATE_FAILED", "Navigation dispatch stopped")),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -97,8 +150,11 @@ pub fn click(app: &AppHandle<Wry>, tab_id: &str, selector: &str) -> AppResult<se
   try {{
     var el = document.querySelector({});
     if (!el) return JSON.stringify({{ ok: false, error: 'selector not found' }});
+    __haydevCheck();
     el.scrollIntoView({{ block: 'center' }});
+    __haydevCheck();
     el.focus();
+    __haydevCheck();
     el.click();
     return JSON.stringify({{ ok: true, clicked: el.tagName.toLowerCase() }});
   }} catch (e) {{ return JSON.stringify({{ ok: false, error: String(e) }}); }}
@@ -120,13 +176,17 @@ pub fn r#type(
   try {{
     var el = document.querySelector({});
     if (!el) return JSON.stringify({{ ok: false, error: 'selector not found' }});
+    __haydevCheck();
     el.focus();
     var proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
     var desc = Object.getOwnPropertyDescriptor(proto, 'value');
+    __haydevCheck();
     desc.set.call(el, {} ? {} : desc.get.call(el) + {});
+    __haydevCheck();
     el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+    __haydevCheck();
     el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-    return JSON.stringify({{ ok: true, value: desc.get.call(el) }});
+    return JSON.stringify({{ ok: true, typed: true }});
   }} catch (e) {{ return JSON.stringify({{ ok: false, error: String(e) }}); }}
 }})()"#,
         js_str(selector),
@@ -143,7 +203,9 @@ pub fn press_key(app: &AppHandle<Wry>, tab_id: &str, key: &str) -> AppResult<ser
   try {{
     var el = document.activeElement || document.body;
     var opts = {{ key: {}, bubbles: true, cancelable: true }};
+    __haydevCheck();
     el.dispatchEvent(new KeyboardEvent('keydown', opts));
+    __haydevCheck();
     el.dispatchEvent(new KeyboardEvent('keyup', opts));
     return JSON.stringify({{ ok: true, dispatched: true }});
   }} catch (e) {{ return JSON.stringify({{ ok: false, error: String(e) }}); }}
@@ -162,6 +224,7 @@ pub fn scroll(
     let script = format!(
         r#"(function () {{
   try {{
+    __haydevCheck();
     window.scrollBy({dx}, {dy});
     return JSON.stringify({{ ok: true, scrollY: window.scrollY }});
   }} catch (e) {{ return JSON.stringify({{ ok: false, error: String(e) }}); }}
@@ -191,7 +254,7 @@ pub fn dom_snapshot(
       out.push({{
         tag: el.tagName.toLowerCase(),
         role: el.getAttribute('role') || null,
-        text: (el.innerText || el.value || '').trim().slice(0, 80),
+        text: (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' ? '[redacted]' : (el.innerText || '')).trim().slice(0, 80),
         href: el.getAttribute('href') || null,
         placeholder: el.getAttribute('placeholder') || null,
         ariaLabel: el.getAttribute('aria-label') || null,

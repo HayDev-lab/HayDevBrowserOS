@@ -1,0 +1,7 @@
+{
+  "extends": "./tsconfig.test.json",
+  "include": [
+    "tests/gemini-thought-signature.test.ts", "tests/integration-runtime-contract.test.ts"
+  ],
+  "exclude": []
+}

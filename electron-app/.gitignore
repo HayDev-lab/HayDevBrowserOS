@@ -19,3 +19,5 @@ Thumbs.db
 
 # bundled runtimes (built by scripts/bundle-runtimes.mjs)
 resources/runtimes/
+
+resources/packaged-runtimes/

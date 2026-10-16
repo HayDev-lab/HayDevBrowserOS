@@ -136,10 +136,10 @@ export const TOOL_DEFINITIONS: readonly ToolDefinition[] = [
   {
     name: 'vault.fill',
     description:
-      'Fill the login form on the current page with stored credentials for the given domain. SECURITY: the password is decrypted and filled in the main process — it is NEVER returned to you.',
+      'Fill the login form with a stored credential identified by its record id. SECURITY: the password is decrypted and filled in the main process — it is NEVER returned to you, and the tab URL must match the record domain.',
     parameters: [
+      { name: 'id', type: 'string', required: true, description: 'The vault record id (from vault.list / vault.has metadata).' },
       { name: 'tabId', type: 'string', required: false, description: 'Tab to fill in. Defaults to the active tab.' },
-      { name: 'domain', type: 'string', required: true, description: 'The domain whose credential to fill.' },
     ],
   },
   {

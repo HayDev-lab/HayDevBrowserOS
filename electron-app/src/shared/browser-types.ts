@@ -33,6 +33,9 @@ export interface TabState {
   canGoForward: boolean;
   /** True if the tab belongs to an Incognito session. */
   isIncognito: boolean;
+  profile?: "default" | "agent" | "private" | "darkweb";
+  egress?: string;
+  ownerRun?: number | null;
   /**
    * True if the tab runs in the isolated Dark Web context: fresh in-memory
    * session, SOCKS5 (Tor) fixed proxy with loopback forced through it,

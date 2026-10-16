@@ -765,6 +765,7 @@ fn coverage(terms: &[String], text: &str) -> f64 {
 /// The managed Tor endpoint wins (runtime_manager READY state); the config
 /// host:port is the manual fallback.
 pub fn tor_endpoint(app: &tauri::AppHandle<tauri::Wry>, config: &DarkWebConfig) -> Option<(String, u16)> {
+    if std::env::var("HAYDEV_NO_ENGINES").is_ok_and(|v| v.trim() == "1") { return None; }
     if let Some(ep) = crate::runtime_manager::with_manager(app, |s| s.tor_socks_endpoint()).flatten() {
         if let Some((h, p)) = parse_socks_endpoint(&ep) {
             return Some((h, p));

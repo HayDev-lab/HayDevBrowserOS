@@ -20,7 +20,7 @@
     "targets": ["nsis"],
     "resources": {
       "../.vite/build/internal/": "internal/",
-      "../resources/runtimes/": "resources/runtimes/"
+      "../resources/packaged-runtimes/": "resources/runtimes/"
     },
     "icon": [
       "icons/32x32.png",

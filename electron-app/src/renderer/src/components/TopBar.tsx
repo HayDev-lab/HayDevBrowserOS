@@ -1,12 +1,19 @@
 import haydevLogo from '../assets/haydev-logo.png';
+import { useEffect, useState } from 'react';
 import { platformApi } from '../platform';
+import type { ShieldStatus } from '@shared/ipc-types';
 /**
  * TopBar — cohesive top browser surface (Matrix concept, 3 rows):
- *   row 0  title bar: brand + tagline | THINK RESEARCH BUILD AUTOMATE |
- *          ONLINE · LOCAL · SECURE · SETTINGS | window controls (frameless)
+ *   row 0  title bar: brand + tagline | THINK RESEARCH BUILD |
+ *          ONLINE · LOCAL · SECURE · LANG | window controls (frameless)
  *   row 1  tab strip: [New Tab][WhatsApp][Telegram][+] card tabs
  *   row 2  toolbar: nav buttons | address bar | bookmark/history/downloads/
  *          vault | HUMAN | AGENT
+ *
+ * Nav actions map 1:1 to unique capabilities (de-dup): THINK focuses the
+ * agent input (+ switches to AGENT mode), RESEARCH opens pab://search,
+ * BUILD opens the Credential Vault. There is deliberately no SETTINGS and
+ * no AUTOMATE here — both were duplicates (vault panel / AGENT switcher).
  */
 import type { TabState, WebAppPin } from '@shared/browser-types';
 import type { PanelKind, ControlMode } from '../store/ui-logic';
@@ -14,6 +21,7 @@ import { TabStrip } from './TabStrip';
 import { CommandBar } from './CommandBar';
 import { ControlModule } from './ControlModule';
 import { IncognitoBadge } from './IncognitoBadge';
+import { useI18n, LOCALE_LABELS } from '../i18n';
 import { getIncognitoVisualState, getAppIncognitoModifier } from '../store/ui-logic';
 
 interface TopBarProps {
@@ -41,10 +49,11 @@ interface TopBarProps {
   onTogglePanel: (kind: PanelKind) => void;
   onSetControlMode: (mode: ControlMode) => void;
   onTakeControl: () => void;
-  onNavAction: (action: 'think' | 'research' | 'build' | 'automate' | 'settings') => void;
+  onNavAction: (action: 'think' | 'research' | 'build') => void;
 }
 
 export function TopBar(props: TopBarProps) {
+  const { t, lang, cycleLang } = useI18n();
   const incognito = getIncognitoVisualState(props.tabs, props.activeTabId);
   const incognitoMod = getAppIncognitoModifier(incognito);
 
@@ -55,51 +64,48 @@ export function TopBar(props: TopBarProps) {
           <BrandGlyph />
           <div className="titlebar__brand-text">
             <span className="titlebar__name">HayDev Browser OS</span>
-            <span className="titlebar__tagline">Your Intelligence Layer</span>
+            <span className="titlebar__tagline">{t('topbar.tagline')}</span>
           </div>
         </div>
         <nav className="titlebar__nav" aria-label="Quick actions">
-          <TitleNavLink label="THINK" title="Focus the agent input" onClick={() => props.onNavAction('think')} />
-          <TitleNavLink label="RESEARCH" title="Open HayDev Search" onClick={() => props.onNavAction('research')} />
-          <TitleNavLink label="BUILD" title="Open the Credential Vault" onClick={() => props.onNavAction('build')} />
-          <TitleNavLink label="AUTOMATE" title="Switch to AGENT mode" onClick={() => props.onNavAction('automate')} />
+          <TitleNavLink label={t('topbar.think')} title={t('topbar.thinkTip')} onClick={() => props.onNavAction('think')} />
+          <TitleNavLink label={t('topbar.research')} title={t('topbar.researchTip')} onClick={() => props.onNavAction('research')} />
+          <TitleNavLink label={t('topbar.build')} title={t('topbar.buildTip')} onClick={() => props.onNavAction('build')} />
         </nav>
         <div className="titlebar__status">
+          <ShieldPill />
           <span className={`titlebar__pill ${props.online ? 'titlebar__pill--ok' : 'titlebar__pill--down'}`}
-            title={props.online ? 'Network reachable' : 'No network connection'}>
+            title={props.online ? t('topbar.onlineTipOk') : t('topbar.onlineTipDown')}>
             <span className="titlebar__dot" aria-hidden />
-            ONLINE
+            {t('topbar.online')}
           </span>
-          <span className="titlebar__pill" title="Managed runtimes on localhost (Perplexica · SearXNG · Tor)">
+          <span className="titlebar__pill" title={t('topbar.localTip')}>
             <span className="titlebar__dot titlebar__dot--dim" aria-hidden />
-            LOCAL
+            {t('topbar.local')}
           </span>
-          <span className="titlebar__pill" title="Sandboxed renderer, isolated sessions, encrypted vault">
+          <span className="titlebar__pill" title={t('topbar.secureTip')}>
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden="true">
               <rect x="4" y="10" width="16" height="11" rx="2"></rect>
               <path d="M8 10V7a4 4 0 0 1 8 0v3"></path>
             </svg>
-            SECURE
+            {t('topbar.secure')}
           </span>
-          <button type="button" className="titlebar__pill titlebar__pill--btn" title="Vault & security settings"
-            onClick={() => props.onNavAction('settings')}>
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-              <circle cx="12" cy="12" r="3"></circle>
-              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
-            </svg>
-            SETTINGS
+          <button type="button" className="titlebar__pill titlebar__pill--btn" title={t('topbar.langTip')}
+            aria-label={t('topbar.langTip')}
+            onClick={cycleLang}>
+            {LOCALE_LABELS[lang]}
           </button>
         </div>
         <div className="titlebar__wincontrols">
-          <button type="button" className="titlebar__winbtn" aria-label="Minimize window" title="Minimize"
+          <button type="button" className="titlebar__winbtn" aria-label={t('topbar.minimize')} title={t('topbar.minimize')}
             onClick={() => platformApi.window.minimize()}>
             <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M0 5h10" stroke="currentColor" strokeWidth="1.2" /></svg>
           </button>
-          <button type="button" className="titlebar__winbtn" aria-label="Maximize or restore window" title="Maximize / Restore"
+          <button type="button" className="titlebar__winbtn" aria-label={t('topbar.maximize')} title={t('topbar.maximize')}
             onClick={() => platformApi.window.toggleMaximize()}>
             <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><rect x="0.5" y="0.5" width="9" height="9" fill="none" stroke="currentColor" strokeWidth="1.2" /></svg>
           </button>
-          <button type="button" className="titlebar__winbtn titlebar__winbtn--close" aria-label="Close window" title="Close"
+          <button type="button" className="titlebar__winbtn titlebar__winbtn--close" aria-label={t('topbar.close')} title={t('topbar.close')}
             onClick={() => platformApi.window.close()}>
             <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M0 0l10 10M10 0L0 10" stroke="currentColor" strokeWidth="1.2" /></svg>
           </button>
@@ -129,42 +135,42 @@ export function TopBar(props: TopBarProps) {
           {props.activeTab?.isDarkWeb && <OnionBadge />}
           <ActionToggle
             glyph="★"
-            label="Bookmark"
+            label={t('topbar.bookmark')}
             iconOnly
             onClick={props.onAddBookmark}
             disabled={!props.activeTab?.url}
-            title="Bookmark this page"
+            title={t('topbar.bookmarkTip')}
           />
           <ActionToggle
             glyph=" ⟳ "
-            label="History"
+            label={t('topbar.history')}
             count={props.historyCount}
             active={props.activePanel === 'history'}
             onClick={() => props.onTogglePanel('history')}
-            title="History"
+            title={t('topbar.historyTip')}
           />
           <ActionToggle
             glyph=" ☆ "
-            label="Bookmarks"
+            label={t('topbar.bookmarks')}
             count={props.bookmarksCount}
             active={props.activePanel === 'bookmarks'}
             onClick={() => props.onTogglePanel('bookmarks')}
-            title="Bookmarks"
+            title={t('topbar.bookmarksTip')}
           />
           <ActionToggle
             glyph=" ↓ "
-            label="Downloads"
+            label={t('topbar.downloads')}
             count={props.downloadsCount}
             active={props.activePanel === 'downloads'}
             onClick={() => props.onTogglePanel('downloads')}
-            title="Downloads"
+            title={t('topbar.downloadsTip')}
           />
           <ActionToggle
             glyph=" 🔒 "
-            label="Vault"
+            label={t('topbar.vault')}
             active={props.activePanel === 'vault'}
             onClick={() => props.onTogglePanel('vault')}
-            title="Credential Vault"
+            title={t('topbar.vaultTip')}
           />
         </div>
         <ControlModule
@@ -196,6 +202,22 @@ function TitleNavLink({ label, title, onClick }: { label: string; title: string;
   );
 }
 
+/**
+ * Spec §67 — persistent visual indicator while the user is in an onion tab,
+ * so a Tor session is never confused with the normal internet.
+ */
+function OnionBadge() {
+  const { t } = useI18n();
+  return (
+    <span
+      className="onion-badge"
+      title={t('topbar.onionTip')}
+    >
+      ONION · TOR
+    </span>
+  );
+}
+
 interface ActionToggleProps {
   glyph: string;
   label: string;
@@ -206,21 +228,6 @@ interface ActionToggleProps {
   iconOnly?: boolean;
   title: string;
   onClick: () => void;
-}
-
-/**
- * Spec §67 — persistent visual indicator while the user is in an onion tab,
- * so a Tor session is never confused with the normal internet.
- */
-function OnionBadge() {
-  return (
-    <span
-      className="onion-badge"
-      title="Dark web tab — isolated session, routed through Tor, JavaScript off, downloads quarantined"
-    >
-      ONION · TOR
-    </span>
-  );
 }
 
 function ActionToggle({
@@ -254,6 +261,61 @@ function ActionToggle({
           {count}
         </span>
       )}
+    </button>
+  );
+}
+
+/**
+ * ShieldPill — real block counter (PROMPT 07). Live stats via the
+ * `shield:stats` push; click toggles the shield. The tooltip states the
+ * HONEST scope: a basic ad/tracker domain blocklist, not a full uBlock.
+ */
+function ShieldPill() {
+  const { t } = useI18n();
+  const [error, setError] = useState(false);
+  const [status, setStatus] = useState<ShieldStatus | null>(null);
+  useEffect(() => {
+    let alive = true;
+    void platformApi.shield
+      .status()
+      .then((s) => {
+        if (alive) setStatus(s);
+      })
+      .catch(() => setError(true));
+    const off = platformApi.on('shield:stats', (data) => {
+      setStatus(data as ShieldStatus);
+    });
+    return () => {
+      alive = false;
+      off?.();
+    };
+  }, []);
+  const enabled = status?.enabled ?? false;
+  const unavailable = !status || error || status.protectedTabs === 0 || !!status.storeError;
+  const blocked = status?.totalBlocked ?? 0;
+  const tip = t(unavailable ? 'shield.unavailable' : enabled ? 'shield.on' : 'shield.off', { count: blocked });
+  return (
+    <button
+      type="button"
+      className={`titlebar__pill titlebar__pill--btn ${enabled ? '' : 'titlebar__pill--down'}`}
+      title={tip}
+      data-testid="shield-pill"
+      onClick={() => {
+        void platformApi.shield
+          .setEnabled(!enabled)
+          .then((r) => {
+            if (r.accepted) {
+              return platformApi.shield.status().then(setStatus);
+            }
+            return undefined;
+          })
+          .catch(() => setError(true));
+      }}
+    >
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" aria-hidden="true">
+        <path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7l8-4z"></path>
+      </svg>
+      {unavailable ? 'Shield ⚠' : `Shield${blocked > 0 ? ` · ${blocked}` : ''}`}
     </button>
   );
 }

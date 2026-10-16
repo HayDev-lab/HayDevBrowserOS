@@ -229,46 +229,32 @@ export class CredentialVault implements VaultPort {
   }
 
   async fill(input: VaultFillInput): Promise<VaultFillResult> {
-    const domainResult = canonicalizeDomain(input.domain);
-    if (domainResult.domain === null) {
-      return buildFillResult(false, false, null, `domain_invalid:${domainResult.reason}`);
-    }
-
-    // Get the current page URL of the tab to verify domain match.
-    // The fill adapter resolves the WebContents, but we also need the URL.
-    // For V1, we trust the `domain` parameter from the caller (agent or UI)
-    // and match it against stored credentials. The domain match check below
-    // ensures we only fill credentials whose stored domain matches.
-    //
-    // SECURITY NOTE: In a future hardening pass, we should ALSO verify that
-    // the tab's actual URL hostname matches the requested domain, to prevent
-    // the agent from filling credentials on an attacker page. For V1, the
-    // domain match against stored credentials is sufficient because the
-    // stored domain must match the requested domain.
+    // PROMPT 03 contract: fill from a CONCRETE record id — never from a
+    // display-domain string the caller can guess or spoof.
     const records = await this.deps.storage.read();
-    const matchingDomain = findMatchingDomain(
-      input.domain,
-      records.map((r) => r.domain)
-    );
-
-    if (!matchingDomain) {
-      return buildFillResult(false, false, null, 'no_credential_for_domain');
+    const record = records.find((r) => r.id === input.id);
+    if (!record) {
+      return buildFillResult(false, false, null, 'no_credential_for_id');
+    }
+    const tabId = input.tabId;
+    if (!tabId) {
+      return buildFillResult(false, false, null, 'no_target_tab');
     }
 
-    const record = records.find((r) => r.domain === matchingDomain)!;
-
-    // Fill via the fill adapter — decrypts inside main process, fills DOM,
-    // discards plaintext. NEVER returns the password.
+    // The record id is the authorization anchor: whatever called fill must
+    // already know the record (vault list / save prompt), and the host-side
+    // Tauri runtime additionally re-verifies the tab URL host against the
+    // record domain before every field write (domain_policy.rs).
     try {
       const fillResult = await this.fillAdapter.fill(
-        input.tabId,
+        tabId,
         record.username,
         record.encryptedPassword
       );
       return buildFillResult(
         fillResult.usernameFilled,
         fillResult.passwordFilled,
-        matchingDomain
+        record.domain
       );
     } catch (err) {
       const errCode = err instanceof Error ? err.message.split(':')[0] : 'unknown';

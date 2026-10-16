@@ -196,6 +196,7 @@ export interface AgentApi {
    * descriptor (no filesystem paths); content stays in the MAIN process
    * registry and is consumed by the next run via attachmentIds.
    */
+  releaseAttachment?(id: string): Promise<void>;
   pickAttachment(kind?: 'file' | 'image'): Promise<{
     attachment: import('./newtab-bridge').NewTabAttachment | null;
   }>;
@@ -285,11 +286,22 @@ export interface ExposedApi {
   // Agent memory (confirmation prompt for memory.save)
   memory: MemoryApi;
 
+  // Privacy / egress state (real policy readout, PROMPT 02)
+  privacy: PrivacyApi;
+
+  // Shield (real network blocking stats + control, PROMPT 07)
+  shield: ShieldApi;
+
   // Frameless window controls (Matrix title bar)
   window: WindowApi;
 
   // Managed runtime health (footer status)
   runtimeStatus(): Promise<RuntimeStatus>;
+
+  // UI locale — fire-and-forget push so pab:// pages match the chrome language
+  setLocale(lang: import('./app-locale').AppLocale): void;
+  /** The host-persisted locale ("en" | "ru" | "hy") — durable across restarts. */
+  getLocale(): Promise<string>;
 
   // Event subscription (whitelisted channels only)
   on(channel: string, listener: (data: unknown) => void): () => void;
@@ -313,3 +325,40 @@ export interface MemoryApi {
     save: boolean;
   }): Promise<{ success: boolean }>;
 }
+
+// ---------------------------------------------------------------------------
+// Privacy API — real per-profile egress policy + Tor gateway state
+// ---------------------------------------------------------------------------
+export interface PrivacyStatus {
+  /** "direct" | "tor-if-available" | "tor-strict" | "socks5" */
+  privateEgress: string;
+  agentEgress: string;
+  fetchViaTor: boolean;
+  torAvailable: boolean;
+  torEndpoint: string | null;
+}
+
+export interface PrivacyApi {
+  status(): Promise<PrivacyStatus>;
+}
+
+// ---------------------------------------------------------------------------
+// Shield API — real network-level ad/tracker blocking stats + control
+// ---------------------------------------------------------------------------
+export interface ShieldStatus {
+  protectedTabs?: number;
+  storeError?: string | null;
+  enabled: boolean;
+  totalBlocked: number;
+  byHost: { host: string; blocked: number }[];
+  allowlist: string[];
+  scope?: string;
+}
+
+export interface ShieldApi {
+  status(): Promise<ShieldStatus>;
+  setEnabled(enabled: boolean): Promise<{ accepted: boolean; enabled: boolean }>;
+  allowSite(host: string): Promise<{ accepted: boolean; host: string }>;
+  disallowSite(host: string): Promise<{ accepted: boolean; host: string }>;
+}
+

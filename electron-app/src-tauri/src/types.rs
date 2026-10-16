@@ -35,6 +35,9 @@ pub struct TabState {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_dark_web: Option<bool>,
     pub is_active: bool,
+    pub profile: String,
+    pub egress: String,
+    pub owner_run: Option<u64>,
     pub is_audio_playing: bool,
     pub unread_count: u64,
     pub is_discarded: bool,
@@ -50,6 +53,8 @@ pub struct OpenTabRequest {
     pub incognito: Option<bool>,
     pub darkweb: Option<bool>,
     pub background: Option<bool>,
+    #[serde(default)]
+    pub agent: Option<bool>,
     #[serde(default)]
     pub id: Option<String>,
     #[serde(default)]
@@ -220,6 +225,8 @@ pub struct SessionTab {
     pub pending_url: String,
     pub title: String,
     pub is_incognito: bool,
+    #[serde(default)]
+    pub agent: bool,
     pub navigation: SessionTabNavigation,
 }
 
@@ -299,6 +306,7 @@ mod tests {
             is_dark_web: Some(false),
             is_active: true,
             is_audio_playing: false,
+            profile: "default".into(), egress: "direct".into(), owner_run: None,
             unread_count: 3,
             is_discarded: false,
             created_at: 1,

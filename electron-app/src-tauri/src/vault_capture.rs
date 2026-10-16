@@ -85,13 +85,16 @@ pub fn new_capture() -> SharedCapture {
 fn canonical_domain(url: &str) -> Option<String> {
     let parsed = url::Url::parse(url).ok()?;
     let host = parsed.host_str()?.to_lowercase();
-    let host = host.strip_prefix("www.").unwrap_or(&host).to_string();
-    //Registrable domain approximation: last two labels.
-    let labels: Vec<&str> = host.split('.').collect();
-    if labels.len() < 2 {
-        return Some(host);
+    if host.is_empty() {
+        None
+    } else {
+        // PROMPT 03: capture the FULL host (www-stripped) — "last two
+        // labels" produced public-suffix fragments like bare `co.uk`,
+        // which the fill policy now refuses. Per-host records are the
+        // conservative default; exact/subdomain policy lives in
+        // domain_policy.rs.
+        Some(host)
     }
-    Some(labels[labels.len() - 2..].join("."))
 }
 
 fn now_ms() -> u64 {
@@ -240,12 +243,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn canonical_domain_strips_www_and_takes_registrable() {
+    fn canonical_domain_strips_www_and_keeps_full_host() {
         assert_eq!(
             canonical_domain("https://accounts.google.com/signin?x=1").as_deref(),
-            Some("google.com")
+            Some("accounts.google.com")
         );
-        assert_eq!(canonical_domain("http://a.b.c.example.co.uk/x").as_deref(), Some("co.uk"));
+        assert_eq!(
+            canonical_domain("http://a.b.c.example.co.uk/x").as_deref(),
+            Some("a.b.c.example.co.uk")
+        );
         assert_eq!(canonical_domain("https://example.com/").as_deref(), Some("example.com"));
         assert_eq!(canonical_domain("notaurl"), None);
     }

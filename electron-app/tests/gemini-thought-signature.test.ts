@@ -13,11 +13,11 @@
  * against a local fake Gemini OpenAI-compat server that replays captured
  * live wire shapes. Skipped when the Perplexica checkout is absent.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import http from 'node:http';
 import path from 'node:path';
 import os from 'node:os';
-import { existsSync, mkdtempSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
 
 import OpenAILLM from '@/lib/models/providers/openai/openaiLLM';
@@ -29,7 +29,7 @@ import {
 } from '@/lib/utils/providerError';
 
 const PERPLEXICA_SRC =
-  process.env.PAB_PERPLEXICA_SRC ?? 'D:/Projects/Perplexica/src';
+  path.resolve('.cache/perplexica/src');
 const RUN = existsSync(PERPLEXICA_SRC);
 
 // Importing the agent graph pulls Perplexica's ConfigManager singleton, which
@@ -600,6 +600,15 @@ describe.skipIf(!RUN)(
 );
 
 describe.skipIf(!RUN)('provider error normalization + route contract', () => {
+  let APISearchAgent: typeof import('@/lib/agents/search/api').default;
+  let SessionManager: typeof import('@/lib/session').default;
+  beforeAll(async () => {
+    const started = performance.now();
+    APISearchAgent = (await import('@/lib/agents/search/api')).default;
+    SessionManager = (await import('@/lib/session')).default;
+    console.info(`integration graph loaded in ${Math.round(performance.now() - started)}ms`);
+  }, 20_000);
+
   it('maps provider failures to the controlled error model', () => {
     const mk = (status: number, message: string) =>
       Object.assign(new Error(message), { status });
@@ -635,8 +644,7 @@ describe.skipIf(!RUN)('provider error normalization + route contract', () => {
   it(
     'APISearchAgent: a provider 400 emits a controlled session error and settles (no unhandled rejection, no pending)',
     async () => {
-      const { default: APISearchAgent } = await import('@/lib/agents/search/api');
-      const SessionManager = (await import('@/lib/session')).default;
+      const runtimeStart = performance.now();
 
       const failingLlm = {
         generateObject: async () => {
@@ -689,7 +697,10 @@ describe.skipIf(!RUN)('provider error normalization + route contract', () => {
       expect(payload.retryable).toBe(false);
       expect(typeof payload.message).toBe('string');
       unsubscribe();
+      expect(performance.now() - runtimeStart).toBeLessThan(2000);
     },
     20_000,
   );
 });
+
+afterAll(() => rmSync(PERPLEXICA_DATA_DIR, { recursive: true, force: true }));
