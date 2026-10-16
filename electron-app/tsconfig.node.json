@@ -19,9 +19,7 @@
   },
   "include": [
     "src/main/**/*.ts",
-    "src/preload/**/*.ts",
     "src/shared/**/*.ts",
-    "vite.renderer.config.ts",
-    "electron-env.d.ts"
+    "vite.renderer.config.ts"
   ]
 }

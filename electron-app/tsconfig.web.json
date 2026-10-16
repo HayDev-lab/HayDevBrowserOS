@@ -22,6 +22,6 @@
     "src/renderer/src/**/*.ts",
     "src/renderer/src/**/*.tsx",
     "src/shared/**/*.ts",
-    "electron-env.d.ts"
+    "src/assets.d.ts"
   ]
 }
