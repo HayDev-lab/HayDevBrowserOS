@@ -1,0 +1,6 @@
+# Pinned integration/runtime inputs are checksum-verified (prepare-perplexica,
+# bundle-runtimes). No EOL conversion anywhere — CI checkouts must be
+# byte-identical to the files the locks were computed from.
+electron-app/integrations/** -text
+electron-app/resources/runtime-lock.json -text
+electron-app/resources/python-requirements.lock -text

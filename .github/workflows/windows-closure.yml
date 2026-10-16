@@ -26,6 +26,8 @@ jobs:
       HAYDEV_EVIDENCE_RUN: ci-${{ github.run_id }}-${{ github.run_attempt }}
       HAYDEV_DOCUMENT_FIXTURES: ${{ github.workspace }}/artifacts/closure/ci-${{ github.run_id }}-${{ github.run_attempt }}/documents
     steps:
+      - name: Deterministic checkout (no EOL conversion — checksum-verified pinned inputs)
+        run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
