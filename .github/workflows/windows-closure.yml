@@ -56,13 +56,13 @@ jobs:
         run: node scripts/closure-evidence.mjs $env:HAYDEV_EVIDENCE_RUN run integration-types npm run typecheck:integration
       - name: Integration tests
         run: node scripts/closure-evidence.mjs $env:HAYDEV_EVIDENCE_RUN run integration-tests npm run test:integration
-      - name: Rust tests
-        run: node scripts/closure-evidence.mjs $env:HAYDEV_EVIDENCE_RUN run rust-tests cargo test --locked --manifest-path src-tauri/Cargo.toml
       - name: Internal pages and renderer
         run: |
           node scripts/closure-evidence.mjs $env:HAYDEV_EVIDENCE_RUN run internal-pages npm run build:internal-pages
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/closure-evidence.mjs $env:HAYDEV_EVIDENCE_RUN run renderer npm run build:vite
+      - name: Rust tests
+        run: node scripts/closure-evidence.mjs $env:HAYDEV_EVIDENCE_RUN run rust-tests cargo test --locked --manifest-path src-tauri/Cargo.toml
       - name: Debug executable and synthetic document corpus
         run: |
           node scripts/closure-evidence.mjs $env:HAYDEV_EVIDENCE_RUN run debug-build cargo build --locked --manifest-path src-tauri/Cargo.toml
