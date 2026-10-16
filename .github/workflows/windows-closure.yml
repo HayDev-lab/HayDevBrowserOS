@@ -56,7 +56,6 @@ jobs:
         run: node scripts/closure-evidence.mjs $env:HAYDEV_EVIDENCE_RUN run integration-types npm run typecheck:integration
       - name: Integration tests
         run: node scripts/closure-evidence.mjs $env:HAYDEV_EVIDENCE_RUN run integration-tests npm run test:integration
-      - name: Verified bundled runtimes (produces resources/packaged-runtimes — required by the tauri build script)
       - name: Verified bundled runtimes
         run: node scripts/closure-evidence.mjs $env:HAYDEV_EVIDENCE_RUN run runtimes npm run bundle:runtimes
       - name: Internal pages and renderer
