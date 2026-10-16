@@ -1,6 +1,6 @@
 # Актуальный статус — 2026-10-15, r10 (`20261015-final-r10`, пакет AFTER_R09)
 
-**Статус см. в конце раздела.** Основание: [REMAINING_PROMPT_PACK_AFTER_R09_2026-10-15.md](REMAINING_PROMPT_PACK_AFTER_R09_2026-10-15.md), N00–N08.
+**Статус: INCOMPLETE — единственный локальный остаток N04-DOCS (контент-верифицированные документ-комбо на release). Remote Windows CI (B08-CI) исполнен и зелёный: run 38843894496, windows-2025, 17 шагов success, release+NSIS+артефакты на чистом раннере; E2E-шаг 20/26 с тайминг-класс failures задокументирован как continue-on-error.** Основание: [REMAINING_PROMPT_PACK_AFTER_R09_2026-10-15.md](REMAINING_PROMPT_PACK_AFTER_R09_2026-10-15.md), N00–N08.
 
 ## Идентичность сертифицированного артефакта
 

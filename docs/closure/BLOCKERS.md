@@ -7,7 +7,7 @@
 | B08-LLM | Реальный провайдер LLM / signature / ответ на документ через выбранного провайдера | BLOCKED_EXTERNAL | Явно разрешённый провайдер, синтетические данные и бюджет; безопасный канал ключей |
 | B08-TOR | Реальная Tor/IP/DNS сеть | BLOCKED_EXTERNAL | Отдельное разрешение на live сетевой тест; Tor --version/SOCKS fixture не заменяют его |
 | B08-SEARCH | Live upstream search / real OAuth | BLOCKED_EXTERNAL | Разрешённый объём внешних запросов/аккаунтов |
-| B08-CI | Remote Windows CI run (workflow и локальная проверка команд готовы) | BLOCKED_EXTERNAL | Отдельное разрешение на push/dispatch и доступный runner |
+| B08-CI | Remote Windows CI run | **CLEARED r10** — push разрешён, run 38843894496 success на windows-2025; последующие push перезапускают его автоматически | — |
 | B08-VM | Чистая Windows install/upgrade/uninstall (протокол: INSTALL_PROTOCOL.md) | BLOCKED_EXTERNAL | Выделенная VM/машина |
 | B08-SIGN | Signing или согласованный unsigned channel | BLOCKED_EXTERNAL | Сертификат либо явная unsigned policy |
 

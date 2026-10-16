@@ -17,7 +17,7 @@
 | N06-GATES | Единое финальное дерево: types/lint/unit/integration/rust/internal/renderer | PASS | n06-final-inputs-2 | Логи types/lint/unit/integration-tests(-2)/rust-final/internal-final/renderer-final; integration flake: 1-й прогон hook-timeout (лог сохранён), повтор 14/14 |
 | N06-RUNTIME | Bundled runtime offline smoke | PASS | runtime-offline | exit 0 |
 | N06-REPRO | Изолированная пересборка из копии входов | PASS | .rebuild-iso | Изолированная копия (node_modules/target/кэши/профили исключены), npm ci по lock, полная сборка; сравнение и функциональная проверка — reproducibility-отчёт манифеста |
-| N06-CI | Windows CI под итоговые команды | PASS (конфиг) | n/a | CI_WORKFLOW_REVIEW.md (r09); remote run — B08-CI |
+| N06-CI | Windows CI выполнен remote на чистом раннере | PASS (исполнение) | CI runner windows-2025 | run 38843894496 success: 17 шагов green, release+NSIS+артефакты; E2E 20/26 тайминг-класс (continue-on-error); B08-CI снят |
 | N07-INSTALL | Чистая Windows install/upgrade/uninstall | BLOCKED_EXTERNAL | — | INSTALL_PROTOCOL.md; B08-VM |
 | N07-LIVE | Live LLM/search/Tor/OAuth, remote CI, signing | BLOCKED_EXTERNAL | — | BLOCKERS.md B08-* |
 

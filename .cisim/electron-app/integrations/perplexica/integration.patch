@@ -1,0 +1,728 @@
+diff --git a/next.config.mjs b/next.config.mjs
+index 005e15e..bdd4ada 100644
+--- a/next.config.mjs
++++ b/next.config.mjs
+@@ -3,6 +3,20 @@ import pkg from './package.json' with { type: 'json' };
+ 
+ /** @type {import('next').NextConfig} */
+ const nextConfig = {
++  // Allow the Personal Agentic Browser's internal pab://search page to
++  // call the local search API from the pab:// origin.
++  async headers() {
++    return [
++      {
++        source: '/api/:path*',
++        headers: [
++          { key: 'Access-Control-Allow-Origin', value: '*' },
++          { key: 'Access-Control-Allow-Methods', value: 'GET,POST,OPTIONS' },
++          { key: 'Access-Control-Allow-Headers', value: 'content-type' },
++        ],
++      },
++    ];
++  },
+   output: 'standalone',
+   images: {
+     remotePatterns: [
+diff --git a/package.json b/package.json
+index e6cf881..02c141c 100644
+--- a/package.json
++++ b/package.json
+@@ -23,7 +23,7 @@
+     "@toolsycc/json-repair": "^0.1.22",
+     "async-mutex": "^0.5.0",
+     "axios": "^1.8.3",
+-    "better-sqlite3": "^11.9.1",
++    "better-sqlite3": "^13.0.3",
+     "clsx": "^2.1.0",
+     "drizzle-orm": "^0.45.2",
+     "js-tiktoken": "^1.0.21",
+diff --git a/src/app/api/chat/route.ts b/src/app/api/chat/route.ts
+index 6362ebc..1e60b3b 100644
+--- a/src/app/api/chat/route.ts
++++ b/src/app/api/chat/route.ts
+@@ -9,6 +9,7 @@ import db from '@/lib/db';
+ import { eq } from 'drizzle-orm';
+ import { chats } from '@/lib/db/schema';
+ import UploadManager from '@/lib/uploads/manager';
++import { normalizeProviderError } from '@/lib/utils/providerError';
+ 
+ export const runtime = 'nodejs';
+ export const dynamic = 'force-dynamic';
+@@ -210,20 +211,30 @@ export const POST = async (req: Request) => {
+       }
+     });
+ 
+-    agent.searchAsync(session, {
+-      chatHistory: history,
+-      followUp: message.content,
+-      chatId: body.message.chatId,
+-      messageId: body.message.messageId,
+-      config: {
+-        llm,
+-        embedding: embedding,
+-        sources: body.sources as SearchSources[],
+-        mode: body.optimizationMode,
+-        fileIds: body.files,
+-        systemInstructions: body.systemInstructions || 'None',
+-      },
+-    });
++    // The agent self-catches; this is the last-resort net against unhandled
++    // rejections leaving the stream open forever.
++    agent
++      .searchAsync(session, {
++        chatHistory: history,
++        followUp: message.content,
++        chatId: body.message.chatId,
++        messageId: body.message.messageId,
++        config: {
++          llm,
++          embedding: embedding,
++          sources: body.sources as SearchSources[],
++          mode: body.optimizationMode,
++          fileIds: body.files,
++          systemInstructions: body.systemInstructions || 'None',
++        },
++      })
++      .catch((err) => {
++        const normalized = normalizeProviderError(err, 'chat-route');
++        console.error(
++          `[chat] route-level failure: ${normalized.code} — ${normalized.message}`,
++        );
++        session.emit('error', { data: normalized.toJSON() });
++      });
+ 
+     ensureChatExists({
+       id: body.message.chatId,
+diff --git a/src/app/api/search/route.ts b/src/app/api/search/route.ts
+index 0991268..d9decc8 100644
+--- a/src/app/api/search/route.ts
++++ b/src/app/api/search/route.ts
+@@ -4,6 +4,7 @@ import SessionManager from '@/lib/session';
+ import { ChatTurnMessage } from '@/lib/types';
+ import { SearchSources } from '@/lib/agents/search/types';
+ import APISearchAgent from '@/lib/agents/search/api';
++import { normalizeProviderError } from '@/lib/utils/providerError';
+ 
+ interface ChatRequestBody {
+   optimizationMode: 'speed' | 'balanced' | 'quality';
+@@ -51,20 +52,32 @@ export const POST = async (req: Request) => {
+ 
+     const agent = new APISearchAgent();
+ 
+-    agent.searchAsync(session, {
+-      chatHistory: history,
+-      config: {
+-        embedding: embeddings,
+-        llm: llm,
+-        sources: body.sources,
+-        mode: body.optimizationMode,
+-        fileIds: [],
+-        systemInstructions: body.systemInstructions || '',
+-      },
+-      followUp: body.query,
+-      chatId: crypto.randomUUID(),
+-      messageId: crypto.randomUUID(),
+-    });
++    // The agent normally catches its own failures and emits a controlled
++    // `error` event on the session. This .catch is the last-resort net: a
++    // rejected (but unobserved) searchAsync would otherwise become an
++    // unhandled rejection and leave this request pending forever.
++    agent
++      .searchAsync(session, {
++        chatHistory: history,
++        config: {
++          embedding: embeddings,
++          llm: llm,
++          sources: body.sources,
++          mode: body.optimizationMode,
++          fileIds: [],
++          systemInstructions: body.systemInstructions || '',
++        },
++        followUp: body.query,
++        chatId: crypto.randomUUID(),
++        messageId: crypto.randomUUID(),
++      })
++      .catch((err) => {
++        const normalized = normalizeProviderError(err, 'api-search-route');
++        console.error(
++          `[api-search] route-level failure: ${normalized.code} — ${normalized.message}`,
++        );
++        session.emit('error', { data: normalized.toJSON() });
++      });
+ 
+     if (!body.stream) {
+       return new Promise(
+@@ -74,6 +87,7 @@ export const POST = async (req: Request) => {
+         ) => {
+           let message = '';
+           let sources: any[] = [];
++          let settled = false;
+ 
+           session.subscribe((event: string, data: Record<string, any>) => {
+             if (event === 'data') {
+@@ -84,6 +98,8 @@ export const POST = async (req: Request) => {
+                   sources = data.data;
+                 }
+               } catch (error) {
++                if (settled) return;
++                settled = true;
+                 reject(
+                   Response.json(
+                     { message: 'Error parsing data' },
+@@ -94,14 +110,35 @@ export const POST = async (req: Request) => {
+             }
+ 
+             if (event === 'end') {
++              if (settled) return;
++              settled = true;
+               resolve(Response.json({ message, sources }, { status: 200 }));
+             }
+ 
+             if (event === 'error') {
+-              reject(
++              if (settled) return;
++              settled = true;
++              // Controlled provider failure: HTTP 502 + normalized payload
++              // {code, message, retryable} so clients can stop spinning and
++              // fall back deliberately. RESOLVE (not reject) — a rejected
++              // promise bypasses the Response and Next returns a generic 500.
++              const payload = (data?.data ?? {}) as {
++                code?: string;
++                message?: string;
++                retryable?: boolean;
++              };
++              resolve(
+                 Response.json(
+-                  { message: 'Search error', error: data },
+-                  { status: 500 },
++                  {
++                    message: payload.message || 'Search error',
++                    error: {
++                      code: payload.code || 'PROVIDER_UNAVAILABLE',
++                      ...(payload.retryable !== undefined
++                        ? { retryable: payload.retryable }
++                        : {}),
++                    },
++                  },
++                  { status: 502 },
+                 ),
+               );
+             }
+diff --git a/src/lib/agents/search/api.ts b/src/lib/agents/search/api.ts
+index 94b70ae..4163c2f 100644
+--- a/src/lib/agents/search/api.ts
++++ b/src/lib/agents/search/api.ts
+@@ -4,9 +4,29 @@ import { classify } from './classifier';
+ import Researcher from './researcher';
+ import { getWriterPrompt } from '@/lib/prompts/search/writer';
+ import { WidgetExecutor } from './widgets';
++import { diagSearch } from '@/lib/utils/diag';
++import { normalizeProviderError } from '@/lib/utils/providerError';
+ 
+ class APISearchAgent {
+   async searchAsync(session: SessionManager, input: SearchAgentInput) {
++    // Any failure (provider 4xx/5xx, timeout, tool loop crash) must emit a
++    // controlled `error` event on the session so the HTTP request settles —
++    // an unhandled rejection here leaves /api/search pending forever.
++    try {
++      await this.run(session, input);
++    } catch (err) {
++      const normalized = normalizeProviderError(err, 'api-search');
++      console.error(
++        `[api-search] controlled failure: ${normalized.code} — ${normalized.message}`,
++      );
++      diagSearch(
++        `api-search ERROR code=${normalized.code} message=${normalized.message}`,
++      );
++      session.emit('error', { data: normalized.toJSON() });
++    }
++  }
++
++  private async run(session: SessionManager, input: SearchAgentInput) {
+     const classification = await classify({
+       chatHistory: input.chatHistory,
+       enabledSources: input.config.sources,
+diff --git a/src/lib/agents/search/index.ts b/src/lib/agents/search/index.ts
+index 9452fef..219445c 100644
+--- a/src/lib/agents/search/index.ts
++++ b/src/lib/agents/search/index.ts
+@@ -9,9 +9,45 @@ import { messages } from '@/lib/db/schema';
+ import { and, eq, gt } from 'drizzle-orm';
+ import { TextBlock } from '@/lib/types';
+ import { getTokenCount } from '@/lib/utils/splitText';
++import { diagSearch } from '@/lib/utils/diag';
++import { normalizeProviderError } from '@/lib/utils/providerError';
+ 
+ class SearchAgent {
+   async searchAsync(session: SessionManager, input: SearchAgentInput) {
++    // Any failure must terminate the session with a controlled `error`
++    // event AND flip the persisted message status off `answering`, or the
++    // chat UI spins forever (and stale on reload).
++    try {
++      await this.run(session, input);
++    } catch (err) {
++      const normalized = normalizeProviderError(err, 'search-agent');
++      console.error(
++        `[search-agent] controlled failure: ${normalized.code} — ${normalized.message}`,
++      );
++      diagSearch(
++        `search-agent ERROR code=${normalized.code} message=${normalized.message}`,
++      );
++      try {
++        await db
++          .update(messages)
++          .set({ status: 'error' })
++          .where(
++            and(
++              eq(messages.chatId, input.chatId),
++              eq(messages.messageId, input.messageId),
++            ),
++          )
++          .execute();
++      } catch (dbErr) {
++        console.error(
++          `[search-agent] failed to persist error status: ${dbErr}`,
++        );
++      }
++      session.emit('error', { data: normalized.toJSON() });
++    }
++  }
++
++  private async run(session: SessionManager, input: SearchAgentInput) {
+     const exists = await db.query.messages.findFirst({
+       where: and(
+         eq(messages.chatId, input.chatId),
+@@ -59,6 +95,10 @@ class SearchAgent {
+       llm: input.config.llm,
+     });
+ 
++    diagSearch(
++      `classify: skipSearch=${classification.classification.skipSearch} standalone="${(classification.standaloneFollowUp || '').slice(0, 60)}"`,
++    );
++
+     const widgetPromise = WidgetExecutor.executeAll({
+       classification,
+       chatHistory: input.chatHistory,
+@@ -173,6 +213,8 @@ class SearchAgent {
+ 
+     session.emit('end', {});
+ 
++    diagSearch('writer: PASS');
++
+     await db
+       .update(messages)
+       .set({
+diff --git a/src/lib/models/providers/openai/openaiLLM.ts b/src/lib/models/providers/openai/openaiLLM.ts
+index 5ae1538..3ce284a 100644
+--- a/src/lib/models/providers/openai/openaiLLM.ts
++++ b/src/lib/models/providers/openai/openaiLLM.ts
+@@ -19,6 +19,12 @@ import {
+ } from 'openai/resources/index.mjs';
+ import { Message } from '@/lib/types';
+ import { repairJson } from '@toolsycc/json-repair';
++import { diagSearch } from '@/lib/utils/diag';
++import {
++  isRetryableProviderError,
++  normalizeProviderError,
++  sleep,
++} from '@/lib/utils/providerError';
+ 
+ type OpenAIConfig = {
+   apiKey: string;
+@@ -27,6 +33,26 @@ type OpenAIConfig = {
+   options?: GenerateOptions;
+ };
+ 
++/** Gemini OpenAI-compat layer: opaque per-tool-call thought signature. */
++type ToolCallWithExtraContent = {
++  extra_content?: {
++    google?: { thought_signature?: string };
++  };
++};
++
++/** Bound the retry loop for transient provider failures (429/5xx/timeouts). */
++const MAX_PROVIDER_RETRIES = 2;
++
++function retryDelayMs(attempt: number): number {
++  return Math.min(750 * 2 ** attempt, 4000) + Math.floor(Math.random() * 250);
++}
++
++function extractThoughtSignature(tc: unknown): string | undefined {
++  const sig = (tc as ToolCallWithExtraContent)?.extra_content?.google
++    ?.thought_signature;
++  return typeof sig === 'string' && sig.length > 0 ? sig : undefined;
++}
++
+ class OpenAILLM extends BaseLLM<OpenAIConfig> {
+   openAIClient: OpenAI;
+ 
+@@ -36,11 +62,23 @@ class OpenAILLM extends BaseLLM<OpenAIConfig> {
+     this.openAIClient = new OpenAI({
+       apiKey: this.config.apiKey,
+       baseURL: this.config.baseURL || 'https://api.openai.com/v1',
++      // Retry policy is owned by this class (bounded, normalized, DIAG-
++      // logged). SDK-internal retries would multiply attempts invisibly.
++      maxRetries: 0,
++      // A hung provider request must surface as PROVIDER_TIMEOUT (bounded,
++      // retryable) — the SDK default (10 min) would stall the search loop.
++      timeout: 120_000,
+     });
+   }
+ 
+   convertToOpenAIMessages(messages: Message[]): ChatCompletionMessageParam[] {
+-    return messages.map((msg) => {
++    // Thought signatures are a Gemini protocol requirement: they must only
++    // travel to the Gemini endpoint, and only attached to the exact tool
++    // call they arrived with.
++    const replaySignatures = this.isGeminiCompatEndpoint();
++    let replayedSignatures = 0;
++
++    const converted = messages.map((msg) => {
+       if (msg.role === 'tool') {
+         return {
+           role: 'tool',
+@@ -53,20 +91,49 @@ class OpenAILLM extends BaseLLM<OpenAIConfig> {
+           content: msg.content,
+           ...(msg.tool_calls &&
+             msg.tool_calls.length > 0 && {
+-              tool_calls: msg.tool_calls?.map((tc) => ({
+-                id: tc.id,
+-                type: 'function',
+-                function: {
+-                  name: tc.name,
+-                  arguments: JSON.stringify(tc.arguments),
+-                },
+-              })),
++              tool_calls: msg.tool_calls?.map((tc) => {
++                const extra =
++                  replaySignatures && tc.thoughtSignature
++                    ? {
++                        extra_content: {
++                          google: {
++                            thought_signature: tc.thoughtSignature,
++                          },
++                        },
++                      }
++                    : undefined;
++                if (extra) replayedSignatures++;
++                return {
++                  id: tc.id,
++                  type: 'function' as const,
++                  function: {
++                    name: tc.name,
++                    arguments: JSON.stringify(tc.arguments),
++                  },
++                  ...extra,
++                };
++              }),
+             }),
+         } as ChatCompletionAssistantMessageParam;
+       }
+ 
+       return msg;
+     });
++
++    if (replayedSignatures > 0) {
++      diagSearch(
++        `openaiLLM replay: model=${this.config.model} re-attached ${replayedSignatures} thought_signature(s) verbatim`,
++      );
++    }
++
++    return converted;
++  }
++
++  /** True when requests go to the Gemini OpenAI-compatible endpoint. */
++  protected isGeminiCompatEndpoint(): boolean {
++    return (this.config.baseURL ?? '').includes(
++      'generativelanguage.googleapis.com',
++    );
+   }
+ 
+   async generateText(input: GenerateTextInput): Promise<GenerateTextOutput> {
+@@ -83,7 +150,7 @@ class OpenAILLM extends BaseLLM<OpenAIConfig> {
+       });
+     });
+ 
+-    const response = await this.openAIClient.chat.completions.create({
++    const params = {
+       model: this.config.model,
+       tools: openaiTools.length > 0 ? openaiTools : undefined,
+       messages: this.convertToOpenAIMessages(input.messages),
+@@ -98,23 +165,56 @@ class OpenAILLM extends BaseLLM<OpenAIConfig> {
+         this.config.options?.frequencyPenalty,
+       presence_penalty:
+         input.options?.presencePenalty ?? this.config.options?.presencePenalty,
+-    });
++    };
++
++    let response;
++    for (let attempt = 0; ; attempt++) {
++      try {
++        response = await this.openAIClient.chat.completions.create(params);
++        break;
++      } catch (err) {
++        if (attempt < MAX_PROVIDER_RETRIES && isRetryableProviderError(err)) {
++          diagSearch(
++            `openaiLLM generateText retryable failure (attempt ${attempt + 1}): ${err instanceof Error ? err.message : err}`,
++          );
++          await sleep(retryDelayMs(attempt));
++          continue;
++        }
++        throw normalizeProviderError(err, 'openaiLLM.generateText');
++      }
++    }
+ 
+     if (response.choices && response.choices.length > 0) {
++      const toolCalls =
++        response.choices[0].message.tool_calls
++          ?.map((tc) => {
++            if (tc.type === 'function') {
++              const thoughtSignature = extractThoughtSignature(tc);
++              if (thoughtSignature) {
++                diagSearch(
++                  `openaiLLM generateText: captured thought_signature for tool call ${tc.id}`,
++                );
++              }
++              return {
++                name: tc.function.name,
++                id: tc.id,
++                arguments: JSON.parse(tc.function.arguments),
++                ...(thoughtSignature ? { thoughtSignature } : {}),
++              };
++            }
++          })
++          .filter((tc) => tc !== undefined) || [];
++      const signatureCount = toolCalls.filter(
++        (tc) => tc.thoughtSignature,
++      ).length;
++      if (toolCalls.length > 0) {
++        diagSearch(
++          `openaiLLM generateText: received ${toolCalls.length} tool call(s), ${signatureCount} with thought_signature`,
++        );
++      }
+       return {
+         content: response.choices[0].message.content!,
+-        toolCalls:
+-          response.choices[0].message.tool_calls
+-            ?.map((tc) => {
+-              if (tc.type === 'function') {
+-                return {
+-                  name: tc.function.name,
+-                  id: tc.id,
+-                  arguments: JSON.parse(tc.function.arguments),
+-                };
+-              }
+-            })
+-            .filter((tc) => tc !== undefined) || [],
++        toolCalls,
+         additionalInfo: {
+           finishReason: response.choices[0].finish_reason,
+         },
+@@ -126,6 +226,37 @@ class OpenAILLM extends BaseLLM<OpenAIConfig> {
+ 
+   async *streamText(
+     input: GenerateTextInput,
++  ): AsyncGenerator<StreamTextOutput> {
++    // Bounded retry for transient failures. Safe only while NOTHING has been
++    // yielded yet — after the first chunk the consumer has already seen
++    // partial output and a retry would duplicate it.
++    for (let attempt = 0; ; attempt++) {
++      let yielded = false;
++      try {
++        for await (const chunk of this.streamTextOnce(input)) {
++          yielded = true;
++          yield chunk;
++        }
++        return;
++      } catch (err) {
++        if (
++          !yielded &&
++          attempt < MAX_PROVIDER_RETRIES &&
++          isRetryableProviderError(err)
++        ) {
++          diagSearch(
++            `openaiLLM streamText retryable failure before first chunk (attempt ${attempt + 1}): ${err instanceof Error ? err.message : err}`,
++          );
++          await sleep(retryDelayMs(attempt));
++          continue;
++        }
++        throw normalizeProviderError(err, 'openaiLLM.streamText');
++      }
++    }
++  }
++
++  private async *streamTextOnce(
++    input: GenerateTextInput,
+   ): AsyncGenerator<StreamTextOutput> {
+     const openaiTools: ChatCompletionTool[] = [];
+ 
+@@ -158,8 +289,47 @@ class OpenAILLM extends BaseLLM<OpenAIConfig> {
+       stream: true,
+     });
+ 
+-    let recievedToolCalls: { name: string; id: string; arguments: string }[] =
+-      [];
++    // Accumulated tool calls keyed by the wire `index` when the provider
++    // sends one (OpenAI), or by tool-call `id` when it doesn't (the Gemini
++    // OpenAI-compat layer emits each complete tool call as a single delta
++    // without `index`). Each entry keeps its OWN thought signature — never
++    // copied between parallel calls.
++    let recievedToolCalls: {
++      name: string;
++      id: string;
++      arguments: string;
++      thoughtSignature?: string;
++    }[] = [];
++
++    type PendingToolCall = (typeof recievedToolCalls)[number];
++
++    const entryForDelta = (tc: any): PendingToolCall => {
++      if (typeof tc.index === 'number' && recievedToolCalls[tc.index]) {
++        return recievedToolCalls[tc.index];
++      }
++      if (tc.id) {
++        const byId = recievedToolCalls.find((e) => e.id && e.id === tc.id);
++        if (byId) return byId;
++      }
++      if (
++        !tc.id &&
++        typeof tc.index !== 'number' &&
++        recievedToolCalls.length > 0
++      ) {
++        return recievedToolCalls[recievedToolCalls.length - 1];
++      }
++      const call = {
++        name: tc.function?.name ?? '',
++        id: tc.id ?? '',
++        arguments: '',
++      };
++      if (typeof tc.index === 'number') {
++        recievedToolCalls[tc.index] = call;
++      } else {
++        recievedToolCalls.push(call);
++      }
++      return call;
++    };
+ 
+     for await (const chunk of stream) {
+       if (chunk.choices && chunk.choices.length > 0) {
+@@ -167,23 +337,24 @@ class OpenAILLM extends BaseLLM<OpenAIConfig> {
+         yield {
+           contentChunk: chunk.choices[0].delta.content || '',
+           toolCallChunk:
+-            toolCalls?.map((tc) => {
+-              if (!recievedToolCalls[tc.index]) {
+-                const call = {
+-                  name: tc.function?.name!,
+-                  id: tc.id!,
+-                  arguments: tc.function?.arguments || '',
+-                };
+-                recievedToolCalls.push(call);
+-                return { ...call, arguments: parse(call.arguments || '{}') };
+-              } else {
+-                const existingCall = recievedToolCalls[tc.index];
+-                existingCall.arguments += tc.function?.arguments || '';
+-                return {
+-                  ...existingCall,
+-                  arguments: parse(existingCall.arguments),
+-                };
++            toolCalls?.map((tc: any) => {
++              const entry = entryForDelta(tc);
++              const thoughtSignature = extractThoughtSignature(tc);
++              if (thoughtSignature && !entry.thoughtSignature) {
++                entry.thoughtSignature = thoughtSignature;
++                diagSearch(
++                  `openaiLLM streamText: captured thought_signature for tool call ${entry.id || '(pending id)'}`,
++                );
+               }
++              entry.arguments += tc.function?.arguments || '';
++              return {
++                id: entry.id,
++                name: entry.name,
++                arguments: parse(entry.arguments || '{}'),
++                ...(entry.thoughtSignature
++                  ? { thoughtSignature: entry.thoughtSignature }
++                  : {}),
++              };
+             }) || [],
+           done: chunk.choices[0].finish_reason !== null,
+           additionalInfo: {
+@@ -192,10 +363,19 @@ class OpenAILLM extends BaseLLM<OpenAIConfig> {
+         };
+       }
+     }
++
++    if (recievedToolCalls.length > 0) {
++      const signatureCount = recievedToolCalls.filter(
++        (tc) => tc.thoughtSignature,
++      ).length;
++      diagSearch(
++        `openaiLLM streamText: stream finished with ${recievedToolCalls.length} tool call(s), ${signatureCount} with thought_signature`,
++      );
++    }
+   }
+ 
+   async generateObject<T>(input: GenerateObjectInput): Promise<T> {
+-    const response = await this.openAIClient.chat.completions.parse({
++    const params = {
+       messages: this.convertToOpenAIMessages(input.messages),
+       model: this.config.model,
+       temperature:
+@@ -210,7 +390,24 @@ class OpenAILLM extends BaseLLM<OpenAIConfig> {
+       presence_penalty:
+         input.options?.presencePenalty ?? this.config.options?.presencePenalty,
+       response_format: zodResponseFormat(input.schema, 'object'),
+-    });
++    };
++
++    let response;
++    for (let attempt = 0; ; attempt++) {
++      try {
++        response = await this.openAIClient.chat.completions.parse(params);
++        break;
++      } catch (err) {
++        if (attempt < MAX_PROVIDER_RETRIES && isRetryableProviderError(err)) {
++          diagSearch(
++            `openaiLLM generateObject retryable failure (attempt ${attempt + 1}): ${err instanceof Error ? err.message : err}`,
++          );
++          await sleep(retryDelayMs(attempt));
++          continue;
++        }
++        throw normalizeProviderError(err, 'openaiLLM.generateObject');
++      }
++    }
+ 
+     if (response.choices && response.choices.length > 0) {
+       try {
+diff --git a/src/lib/models/types.ts b/src/lib/models/types.ts
+index 8abefd7..08f2ae5 100644
+--- a/src/lib/models/types.ts
++++ b/src/lib/models/types.ts
+@@ -47,6 +47,15 @@ type ToolCall = {
+   id: string;
+   name: string;
+   arguments: Record<string, any>;
++  /**
++   * Opaque provider metadata that arrived with THIS exact tool call
++   * (e.g. Gemini `extra_content.google.thought_signature`). Must be kept
++   * attached to the same tool call and replayed VERBATIM on the next
++   * request — never modified, decoded, shortened or fabricated. Gemini 3.x
++   * rejects multi-turn requests whose functionCall parts lost it (HTTP 400
++   * "Function call is missing a thought_signature").
++   */
++  thoughtSignature?: string;
+ };
+ 
+ type GenerateTextInput = {
+diff --git a/src/lib/prompts/search/classifier.ts b/src/lib/prompts/search/classifier.ts
+index 770b86d..7bfd27d 100644
+--- a/src/lib/prompts/search/classifier.ts
++++ b/src/lib/prompts/search/classifier.ts
+@@ -12,6 +12,7 @@ NOTE: BY GENERAL KNOWLEDGE WE MEAN INFORMATION THAT IS OBVIOUS, WIDELY KNOWN, OR
+    - Set it to true if weather, stock, or similar widgets can fully satisfy the user's request.
+    - Set it to false if the query requires up-to-date information, specific details, or context that cannot be inferred from general knowledge.
+    - ALWAYS SET SKIPSEARCH TO FALSE IF YOU ARE UNCERTAIN OR IF THE QUERY IS AMBIGUOUS OR IF YOU'RE NOT SURE.
++   - WEB SOURCE ENABLED RULE: when the web search source is enabled, set skipSearch to false for ANY query about organizations, products, people, technologies, events, news, or anything time-sensitive — even if the answer seems like general knowledge. Personal Agentic Browser always wants real web citations for such queries.
+ 2. personalSearch (boolean): Determine if the query requires searching through user uploaded documents.
+    - Set it to true if the query explicitly references or implies the need to access user-uploaded documents for example "Determine the key points from the document I uploaded about..." or "Who is the author?", "Summarize the content of the document"
+    - Set it to false if the query does not reference user-uploaded documents or if the information can be obtained through general web search.
