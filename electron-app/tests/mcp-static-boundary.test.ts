@@ -145,26 +145,7 @@ describe('mcp static boundary / secret safety', () => {
     expect(types).not.toMatch(/decrypt/i);
   });
 
-  it('the wiring only uses process.env for the PORT and OLLAMA config (no secret exfiltration)', () => {
-    const wiring = stripComments(readFileSync(MAIN_INDEX, 'utf-8'));
-    const envUses = wiring.match(/process\.env\.\w+/g) ?? [];
-    expect([...new Set(envUses)].sort()).toEqual([
-      'process.env.AI_PROVIDER',
-      'process.env.GEMINI_API_KEY',
-      'process.env.MCP_SERVER_PORT',
-      'process.env.NVIDIA_API_KEY',
-      'process.env.NVIDIA_BASE_URL',
-      'process.env.NVIDIA_MODEL',
-      'process.env.OLLAMA_BASE_URL',
-      'process.env.OLLAMA_DEEP_RESEARCH_MODEL',
-      'process.env.OLLAMA_MODEL',
-      // Unified runtime engine config (endpoints/modes only — no secrets).
-      'process.env.PAB_PERPLEXICA_DIR',
-      'process.env.PAB_PERPLEXICA_MODEL',
-      'process.env.PAB_PERPLEXICA_URL',
-      'process.env.PAB_SEARXNG_URL',
-      'process.env.PAB_TOR_MODE',
-      'process.env.PAB_TOR_SOCKS_PORT',
-    ]);
-  });
+  // r10 cleanup: the env-audit of src/main/index.ts was retired with that
+  // file (Electron wiring removed; env handling lives in the Tauri host and
+  // is covered by Rust tests + native E2E provider checks).
 });

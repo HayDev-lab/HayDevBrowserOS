@@ -37,7 +37,6 @@
     "@typescript-eslint/parser": "8.71.2",
     "@vitejs/plugin-react": "5.2.0",
     "@vitest/expect": "^4.1.11",
-    "electron": "^44.3.0",
     "esbuild": "0.28.2",
     "eslint": "^8.57.0",
     "ollama": "^0.6.3",

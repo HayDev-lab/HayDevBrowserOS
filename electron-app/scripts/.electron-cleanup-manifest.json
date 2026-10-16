@@ -1,0 +1,28 @@
+{
+  "files": [
+    "src/main/agent-ipc-handlers.ts",
+    "src/main/browser/actions/runtime/browser-action-service.ts",
+    "src/main/browser/actions/runtime/webcontents-action-adapter.ts",
+    "src/main/browser/agent/runtime/agent-overlay.ts",
+    "src/main/browser/darkweb/electron/download-quarantine.ts",
+    "src/main/browser/runtime/browser-core.ts",
+    "src/main/browser/runtime/download-manager.ts",
+    "src/main/browser/runtime/navigation-controller.ts",
+    "src/main/browser/runtime/session-manager.ts",
+    "src/main/browser/vault/runtime/credential-vault.ts",
+    "src/main/browser/vault/runtime/encryption-adapter.ts",
+    "src/main/browser/vault/runtime/vault-fill-adapter.ts",
+    "src/main/index.ts",
+    "src/main/ipc-handlers.ts",
+    "src/main/newtab-ipc-handlers.ts",
+    "src/main/vault-ipc-handlers.ts",
+    "src/preload/index.ts",
+    "src/preload/tab-preload.ts"
+  ],
+  "doomed": [
+    "tests/browser-action-service.test.ts",
+    "tests/credential-vault.test.ts",
+    "tests/incognito-integration.test.ts",
+    "tests/research-browser-pipeline.test.ts"
+  ]
+}

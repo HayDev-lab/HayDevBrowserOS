@@ -109,21 +109,11 @@ describe('vault-result-mapper / agent tool security', () => {
 // ===========================================================================
 // Static source audit — no plaintext leakage in vault source
 // ===========================================================================
+// r10 cleanup: the Electron runtime adapters (credential-vault.ts,
+// vault-fill-adapter.ts, src/preload/index.ts) were removed with the Electron
+// dependency; their no-plaintext-logging audits applied only to those files.
+// The Tauri-side credential vault is audited by Rust tests + native P03/P15.
 describe('vault-result-mapper / source audit', () => {
-  const VAULT_DIR = join(__dirname, '..', 'src', 'main', 'browser', 'vault');
-
-  it('credential-vault.ts does NOT log plaintext passwords', () => {
-    const src = readFileSync(join(VAULT_DIR, 'runtime', 'credential-vault.ts'), 'utf8');
-    // console.log statements should not reference the password variable.
-    expect(src).not.toMatch(/console\.\w+\(.*password/i);
-  });
-
-  it('vault-fill-adapter.ts does NOT log plaintext passwords', () => {
-    const src = readFileSync(join(VAULT_DIR, 'runtime', 'vault-fill-adapter.ts'), 'utf8');
-    expect(src).not.toMatch(/console\.\w+\(.*password/i);
-    expect(src).not.toMatch(/console\.\w+\(.*plaintext/i);
-  });
-
   it('VaultPort interface does NOT include getPassword/decrypt as methods', () => {
     const src = readFileSync(
       join(__dirname, '..', 'src', 'shared', 'vault-types.ts'),
@@ -143,14 +133,5 @@ describe('vault-result-mapper / source audit', () => {
     );
     expect(src).not.toMatch(/getPassword/);
     expect(src).not.toMatch(/vault.*decrypt/);
-  });
-
-  it('preload does NOT expose getPassword/decrypt', () => {
-    const src = readFileSync(
-      join(__dirname, '..', 'src', 'preload', 'index.ts'),
-      'utf8'
-    );
-    expect(src).not.toMatch(/getPassword/);
-    expect(src).not.toMatch(/decrypt/);
   });
 });
