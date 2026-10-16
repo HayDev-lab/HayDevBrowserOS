@@ -28,6 +28,7 @@ jobs:
     steps:
       - name: Deterministic checkout (no EOL conversion — checksum-verified pinned inputs)
         run: git config --global core.autocrlf false
+        working-directory: ${{ github.workspace }}
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
