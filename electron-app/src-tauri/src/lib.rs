@@ -183,6 +183,7 @@ pub fn run() {
             commands::memory_prompt_resolve,
             commands::window_minimize,
             commands::window_toggle_maximize,
+            commands::window_set_agent_panel_open,
             commands::window_close,
         ])
         .setup(|app| {

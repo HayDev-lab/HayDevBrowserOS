@@ -37,6 +37,8 @@ pub struct BrowserState {
     pub downloads: DownloadRegistry,
     /// Challenge handoff state per tab (Phase F — see challenge.rs).
     pub challenges: HashMap<String, crate::challenge::ChallengeHandoff>,
+    /// Whether the renderer's docked agent panel occupies the right rail.
+    pub agent_panel_open: bool,
 }
 
 impl BrowserState {
@@ -50,6 +52,7 @@ impl BrowserState {
             session: SessionStore::new(data_dir.join("session.json")),
             downloads: DownloadRegistry::new(),
             challenges: HashMap::new(),
+            agent_panel_open: true,
         }
     }
 
@@ -117,9 +120,10 @@ fn window_logical_size<R: Runtime>(win: &tauri::Window<R>) -> (f64, f64) {
     (phys.width as f64 / scale, phys.height as f64 / scale)
 }
 
-fn content_bounds<R: Runtime>(win: &tauri::Window<R>) -> Rect {
+fn content_bounds<R: Runtime>(app: &AppHandle<R>, win: &tauri::Window<R>) -> Rect {
     let (w, h) = window_logical_size(win);
-    let (x, y, cw, ch) = layout::content_rect(w, h);
+    let agent_panel_open = with_state(app, |state| state.agent_panel_open).unwrap_or(true);
+    let (x, y, cw, ch) = layout::content_rect(w, h, agent_panel_open);
     Rect {
         position: Position::Logical(LogicalPosition::new(x, y)),
         size: Size::Logical(LogicalSize::new(cw, ch)),
@@ -353,7 +357,9 @@ fn create_tab_webview(
 
     let (x, y, cw, ch) = {
         let (w, h) = window_logical_size(win);
-        let rect = layout::content_rect(w, h);
+        let agent_panel_open =
+            with_state(app, |state| state.agent_panel_open).unwrap_or(true);
+        let rect = layout::content_rect(w, h, agent_panel_open);
         (rect.0, rect.1, rect.2, rect.3)
     };
     let window = win;
@@ -436,10 +442,16 @@ pub fn relayout<R: Runtime>(app: &AppHandle<R>) {
     let Some(wv) = app.get_webview(&label) else {
         return;
     };
-    let bounds = content_bounds(&win);
+    let bounds = content_bounds(app, &win);
     if let Err(err) = wv.set_bounds(bounds) {
         log::error!("[TAB] relayout failed: {err}");
     }
+}
+
+/// Keep the native tab webview aligned with the renderer's agent rail.
+pub fn set_agent_panel_open<R: Runtime>(app: &AppHandle<R>, open: bool) {
+    let _ = with_state(app, |state| state.agent_panel_open = open);
+    relayout(app);
 }
 
 // ---------------------------------------------------------------------------
@@ -953,12 +965,26 @@ pub fn persist_session<R: Runtime>(app: &AppHandle<R>) {
     });
 }
 
-/// Wire the window resize → tab relayout.
+/// Wire window resize to both native layers. The chrome/shell webview is a
+/// child webview too, so Tauri does not resize it automatically with the
+/// frameless host window.
 pub fn watch_window_events(app: &AppHandle<Wry>) {
     if let Some(win) = app.get_window("main") {
         let handle = app.clone();
         win.on_window_event(move |event| {
             if let WindowEvent::Resized(_) = event {
+                if let (Some(win), Some(chrome)) =
+                    (handle.get_window("main"), handle.get_webview("main"))
+                {
+                    let (width, height) = window_logical_size(&win);
+                    let bounds = Rect {
+                        position: Position::Logical(LogicalPosition::new(0.0, 0.0)),
+                        size: Size::Logical(LogicalSize::new(width, height)),
+                    };
+                    if let Err(err) = chrome.set_bounds(bounds) {
+                        log::error!("[CHROME] resize failed: {err}");
+                    }
+                }
                 relayout(&handle);
             }
         });

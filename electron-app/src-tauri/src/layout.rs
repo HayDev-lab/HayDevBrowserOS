@@ -18,8 +18,12 @@ const RAIL_GUTTER: f64 = 16.0;
 
 /// The rectangle the ACTIVE tab webview occupies, in logical pixels,
 /// given the window's inner size. Mirrors `BrowserCore.layoutViews`.
-pub fn content_rect(win_width: f64, win_height: f64) -> (f64, f64, f64, f64) {
-    let agent_rail = if win_width >= AGENT_PANEL_MIN_WIDTH {
+pub fn content_rect(
+    win_width: f64,
+    win_height: f64,
+    agent_panel_open: bool,
+) -> (f64, f64, f64, f64) {
+    let agent_rail = if agent_panel_open && win_width >= AGENT_PANEL_MIN_WIDTH {
         AGENT_PANEL_WIDTH
     } else {
         0.0
@@ -35,7 +39,7 @@ mod tests {
 
     #[test]
     fn wide_window_reserves_agent_rail() {
-        let (x, y, w, h) = content_rect(1440.0, 900.0);
+        let (x, y, w, h) = content_rect(1440.0, 900.0, true);
         assert_eq!((x, y), (0.0, 128.0));
         assert!((w - (1440.0 - 360.0 - 16.0)).abs() < f64::EPSILON);
         assert!((h - (900.0 - 128.0 - 24.0 - 16.0)).abs() < f64::EPSILON);
@@ -43,14 +47,20 @@ mod tests {
 
     #[test]
     fn narrow_window_drops_rail() {
-        let (_, _, w, _) = content_rect(800.0, 700.0);
+        let (_, _, w, _) = content_rect(800.0, 700.0, true);
         assert!((w - (800.0 - 16.0)).abs() < f64::EPSILON);
     }
 
     #[test]
     fn never_negative() {
-        let (_, _, w, h) = content_rect(100.0, 100.0);
+        let (_, _, w, h) = content_rect(100.0, 100.0, true);
         // Width: 100 (no rail below 980) − 16 gutter = 84; height clamps to 0.
         assert_eq!((w, h), (84.0, 0.0));
+    }
+
+    #[test]
+    fn closed_agent_panel_releases_the_full_content_width() {
+        let (_, _, w, _) = content_rect(1440.0, 900.0, false);
+        assert!((w - (1440.0 - 16.0)).abs() < f64::EPSILON);
     }
 }

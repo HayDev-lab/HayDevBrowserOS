@@ -49,6 +49,8 @@ interface TopBarProps {
   onTogglePanel: (kind: PanelKind) => void;
   onSetControlMode: (mode: ControlMode) => void;
   onTakeControl: () => void;
+  agentPanelOpen: boolean;
+  onToggleAgentPanel: () => void;
   onNavAction: (action: 'think' | 'research' | 'build') => void;
 }
 
@@ -178,6 +180,8 @@ export function TopBar(props: TopBarProps) {
           agentRunning={props.agentRunning}
           onSetMode={props.onSetControlMode}
           onTakeControl={props.onTakeControl}
+          agentPanelOpen={props.agentPanelOpen}
+          onToggleAgentPanel={props.onToggleAgentPanel}
           slim
         />
       </div>

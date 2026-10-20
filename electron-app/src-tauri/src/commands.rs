@@ -1155,6 +1155,11 @@ pub fn window_toggle_maximize(app: AppHandle<tauri::Wry>) {
 }
 
 #[tauri::command]
+pub fn window_set_agent_panel_open(app: AppHandle<tauri::Wry>, open: bool) {
+    core::set_agent_panel_open(&app, open);
+}
+
+#[tauri::command]
 pub fn window_close(app: AppHandle<tauri::Wry>) {
     core::persist_session(&app);
     if let Some(win) = app.get_window("main") {

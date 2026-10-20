@@ -71,6 +71,8 @@ export const ru: Dict = {
   'control.agent': 'АГЕНТ',
   'control.toHuman': 'Переключиться в режим ЧЕЛОВЕКА',
   'control.toAgent': 'Переключиться в режим АГЕНТА',
+  'control.openAgentPanel': 'Открыть панель агента',
+  'control.closeAgentPanel': 'Закрыть панель агента',
   'control.active': 'АКТИВЕН',
   'control.takeLabel': 'ВЗЯТЬ УПРАВЛЕНИЕ',
   'control.takeAria': 'Взять управление — прервать агента и вернуться в режим ЧЕЛОВЕКА',
@@ -86,6 +88,7 @@ export const ru: Dict = {
 
   // AgentPanel
   'agent.panelAria': 'Панель агента',
+  'agent.close': 'Закрыть панель агента',
   'agent.title': 'АГЕНТ',
   'agent.modeHuman': 'РЕЖИМ ЧЕЛОВЕКА',
   'agent.modeAgent': 'РЕЖИМ АГЕНТА',

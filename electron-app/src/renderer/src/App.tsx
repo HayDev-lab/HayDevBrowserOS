@@ -23,6 +23,7 @@ export function App() {
   const actions = useBrowserActions();
   const agent = useAgentStore();
   const [activePanel, setActivePanel] = useState<PanelKind | null>(null);
+  const [agentPanelOpen, setAgentPanelOpen] = useState(true);
   const [storageError, setStorageError] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const reportActionError = useCallback((e: unknown) => setActionError(nativeErrorCode(e)), []);
@@ -93,7 +94,14 @@ export function App() {
   const activeTab = ui.tabs.find((t) => t.isActive) ?? null;
   const layoutKind = pickLayoutKind(windowWidth);
   const layoutMod = getLayoutModifier(layoutKind);
-  const showAgentPanel = layoutKind !== 'narrow';
+  const showAgentPanel = layoutKind !== 'narrow' && agentPanelOpen;
+
+  // Native tab webviews sit above the React shell. Keep their right edge in
+  // lockstep with the visible agent rail so closing the panel releases the
+  // space instead of leaving a black strip.
+  useEffect(() => {
+    void platformApi.window.setAgentPanelOpen?.(showAgentPanel);
+  }, [showAgentPanel]);
 
   const handleOpenTab = useCallback(async () => {
     await actions.openTab({ url: PAB_NEW_TAB_URL, activate: true });
@@ -238,10 +246,15 @@ export function App() {
 
   const handleSetControlMode = useCallback(
     (mode: 'HUMAN' | 'AGENT') => {
+      if (mode === 'AGENT') setAgentPanelOpen(true);
       void agent.setMode(mode).catch(reportActionError);
     },
     [agent, reportActionError]
   );
+
+  const handleToggleAgentPanel = useCallback(() => {
+    setAgentPanelOpen((open) => !open);
+  }, []);
 
   const handleTakeControl = useCallback(() => {
     void agent.takeControl('user_request').catch(reportActionError);
@@ -273,7 +286,10 @@ export function App() {
   const handleNavAction = useCallback(
     (action: 'think' | 'research' | 'build') => {
       if (action === 'think') {
-        window.dispatchEvent(new CustomEvent('pab:focus-agent-input'));
+        setAgentPanelOpen(true);
+        requestAnimationFrame(() => {
+          window.dispatchEvent(new CustomEvent('pab:focus-agent-input'));
+        });
         if (agent.controlMode !== 'AGENT') void agent.setMode('AGENT');
       } else if (action === 'research') {
         void handleOpenUrl('pab://search');
@@ -314,6 +330,8 @@ export function App() {
         onTogglePanel={handleTogglePanel}
         onSetControlMode={handleSetControlMode}
         onTakeControl={handleTakeControl}
+        agentPanelOpen={showAgentPanel}
+        onToggleAgentPanel={handleToggleAgentPanel}
         onNavAction={handleNavAction}
       />
 
@@ -331,6 +349,7 @@ export function App() {
           onTakeControl={handleTakeControl}
           chat={agent.chat}
           onClearChat={agent.clearChat}
+          onClose={() => setAgentPanelOpen(false)}
         />
       )}
 

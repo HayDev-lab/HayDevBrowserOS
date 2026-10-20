@@ -1222,6 +1222,33 @@ input {
   background: var(--nc-glass-bright);
 }
 
+.agent-panel__header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.agent-panel__close {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--nc-text-muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color var(--nc-dur-fast), border-color var(--nc-dur-fast), background var(--nc-dur-fast);
+}
+
+.agent-panel__close:hover {
+  color: var(--nc-text-primary);
+  border-color: var(--nc-border);
+  background: rgba(255, 255, 255, 0.04);
+}
+
 .agent-panel__title {
   display: flex;
   align-items: center;
@@ -2305,9 +2332,7 @@ input {
 }
 
 /* Wide layout — give the agent panel extra breathing room. */
-.app--wide .agent-panel {
-  width: calc(var(--nc-agent-panel-width) + 20px);
-}
+.app--wide .agent-panel { width: var(--nc-agent-panel-width); }
 
 /* ---------------------------------------------------------------------------
    High-contrast mode (Windows accessibility)

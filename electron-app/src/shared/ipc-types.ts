@@ -208,6 +208,8 @@ export interface AgentApi {
 export interface WindowApi {
   minimize(): void;
   toggleMaximize(): void;
+  /** Synchronize native tab bounds with the renderer's docked panel. */
+  setAgentPanelOpen?(open: boolean): Promise<void> | void;
   close(): void;
 }
 

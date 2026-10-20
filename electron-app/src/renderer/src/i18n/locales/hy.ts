@@ -71,6 +71,8 @@ export const hy: Dict = {
   'control.agent': 'ԱԳԵՆՏ',
   'control.toHuman': 'Անցնել ՄԱՐԴՈՒ ռեժիմին',
   'control.toAgent': 'Անցնել ԱԳԵՆՏԻ ռեժիմին',
+  'control.openAgentPanel': 'Բացել գործակալի վահանակը',
+  'control.closeAgentPanel': 'Փակել գործակալի վահանակը',
   'control.active': 'ԱԿՏԻՎ',
   'control.takeLabel': 'ՎԵՐԱՀՍԿՈՒՄ',
   'control.takeAria': 'Վերահսկում — ընդհատել գործակալին և անցնել ՄԱՐԴՈՒ ռեժիմին',
@@ -86,6 +88,7 @@ export const hy: Dict = {
 
   // AgentPanel
   'agent.panelAria': 'Գործակալի վահանակ',
+  'agent.close': 'Փակել գործակալի վահանակը',
   'agent.title': 'ԱԳԵՆՏ',
   'agent.modeHuman': 'ՄԱՐԴՈՒ ՌԵԺԻՄ',
   'agent.modeAgent': 'ԱԳԵՆՏԻ ՌԵԺԻՄ',

@@ -72,6 +72,8 @@ export const en = {
   'control.agent': 'AGENT',
   'control.toHuman': 'Switch to HUMAN mode',
   'control.toAgent': 'Switch to AGENT mode',
+  'control.openAgentPanel': 'Open agent panel',
+  'control.closeAgentPanel': 'Close agent panel',
   'control.active': 'ACTIVE',
   'control.takeLabel': 'TAKE CONTROL',
   'control.takeAria': 'Take control — abort agent and switch to HUMAN mode',
@@ -87,6 +89,7 @@ export const en = {
 
   // AgentPanel
   'agent.panelAria': 'Agent panel',
+  'agent.close': 'Close agent panel',
   'agent.title': 'AGENT',
   'agent.modeHuman': 'HUMAN MODE',
   'agent.modeAgent': 'AGENT MODE',

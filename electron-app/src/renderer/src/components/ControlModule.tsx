@@ -31,6 +31,8 @@ interface ControlModuleProps {
   agentRunning: boolean;
   onSetMode: (mode: ControlMode) => void;
   onTakeControl: () => void;
+  agentPanelOpen?: boolean;
+  onToggleAgentPanel?: () => void;
   /** Optional compact mode for narrow windows. */
   compact?: boolean;
   /**
@@ -45,6 +47,8 @@ export function ControlModule({
   agentRunning,
   onSetMode,
   onTakeControl,
+  agentPanelOpen = true,
+  onToggleAgentPanel,
   compact = false,
   slim = false,
 }: ControlModuleProps) {
@@ -65,6 +69,10 @@ export function ControlModule({
 
   const handleSwitchMode = useCallback(
     (nextMode: ControlMode) => {
+      if (nextMode === 'AGENT' && nextMode === mode) {
+        onToggleAgentPanel?.();
+        return;
+      }
       if (nextMode === mode) return;
       if (nextMode === 'AGENT') {
         // Clear the latch when switching to AGENT.
@@ -72,7 +80,7 @@ export function ControlModule({
       }
       onSetMode(nextMode);
     },
-    [mode, onSetMode]
+    [mode, onSetMode, onToggleAgentPanel]
   );
 
   const handleTakeControl = useCallback(() => {
@@ -127,9 +135,11 @@ export function ControlModule({
           <ModeSwitchButton
             mode="AGENT"
             active={mode === 'AGENT'}
-            disabled={mode === 'AGENT' && !agentRunning ? false : agentRunning}
+            disabled={mode !== 'AGENT' && agentRunning}
             label={t('control.agent')}
             title={t('control.toAgent')}
+            panelOpen={agentPanelOpen}
+            panelTitle={t(agentPanelOpen ? 'control.closeAgentPanel' : 'control.openAgentPanel')}
             onClick={() => handleSwitchMode('AGENT')}
           />
         </div>
@@ -155,10 +165,15 @@ interface ModeSwitchButtonProps {
   disabled: boolean;
   label: string;
   title: string;
+  panelOpen?: boolean;
+  panelTitle?: string;
   onClick: () => void;
 }
 
-function ModeSwitchButton({ mode, active, disabled, label, title, onClick }: ModeSwitchButtonProps) {
+function ModeSwitchButton({ mode, active, disabled, label, title, panelOpen, panelTitle, onClick }: ModeSwitchButtonProps) {
+  const effectiveTitle = mode === 'AGENT' && active
+    ? (panelTitle ?? title)
+    : title;
   return (
     <button
       type="button"
@@ -167,8 +182,9 @@ function ModeSwitchButton({ mode, active, disabled, label, title, onClick }: Mod
       }`}
       role="radio"
       aria-checked={active}
-      aria-label={title}
-      title={title}
+      aria-label={effectiveTitle}
+      title={effectiveTitle}
+      aria-expanded={mode === 'AGENT' ? panelOpen : undefined}
       disabled={disabled}
       onClick={onClick}
     >

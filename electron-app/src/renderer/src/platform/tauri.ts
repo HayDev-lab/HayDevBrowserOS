@@ -97,6 +97,7 @@ export const tauriApi: ExposedApi = {
   window: {
     minimize: () => invoke('window_minimize'),
     toggleMaximize: () => invoke('window_toggle_maximize'),
+    setAgentPanelOpen: (open) => invoke('window_set_agent_panel_open', { open }),
     close: () => invoke('window_close'),
   },
 

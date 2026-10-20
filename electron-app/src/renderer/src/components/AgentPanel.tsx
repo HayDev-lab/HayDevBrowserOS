@@ -43,6 +43,8 @@ export interface AgentPanelProps {
   chat?: ChatMessage[];
   /** Clear the conversation. */
   onClearChat?: () => void;
+  /** Collapse the dock and return its width to the active page. */
+  onClose: () => void;
 }
 
 type PanelTab = 'conversation' | 'tools' | 'sources';
@@ -60,6 +62,7 @@ export function AgentPanel({
   onTakeControl,
   chat = [],
   onClearChat,
+  onClose,
 }: AgentPanelProps) {
   const { t, lang } = useI18n();
   const [task, setTask] = useState('');
@@ -140,13 +143,24 @@ export function AgentPanel({
           <span className="agent-panel__title-mark" aria-hidden />
           <span>{t('agent.title')}</span>
         </div>
-        <span
-          className={`agent-panel__mode-badge agent-panel__mode-badge--${mode.toLowerCase()}`}
-          aria-live="polite"
-        >
-          <span className="agent-panel__mode-badge-dot" aria-hidden />
-          {mode === 'HUMAN' ? t('agent.modeHuman') : t('agent.modeAgent')}
-        </span>
+        <div className="agent-panel__header-actions">
+          <span
+            className={`agent-panel__mode-badge agent-panel__mode-badge--${mode.toLowerCase()}`}
+            aria-live="polite"
+          >
+            <span className="agent-panel__mode-badge-dot" aria-hidden />
+            {mode === 'HUMAN' ? t('agent.modeHuman') : t('agent.modeAgent')}
+          </span>
+          <button
+            type="button"
+            className="agent-panel__close"
+            onClick={onClose}
+            aria-label={t('agent.close')}
+            title={t('agent.close')}
+          >
+            <span aria-hidden>×</span>
+          </button>
+        </div>
       </header>
 
       <div className={`agent-panel__hint ${hintOpen ? 'agent-panel__hint--open' : ''}`}>
