@@ -28,6 +28,20 @@
 **RELEASE_CANDIDATE.** Все доступные инженерные работы выполнены и подтверждены: N04-DOCS 4/4 VERIFIED на release (настоящий OS-dialog, синтетический LLM проверял реальное содержимое промпта), installed acceptance на dev-host (install/upgrade/uninstall, identity, 0 debug-портов, UI-правки пользователя на месте, без orphan-процессов), remote CI зелёный. Сертифицированный артефакт обновлён UI-правками пользователя: exe 2516c4a6…, installer cd8506b6… (identity-цепочка пересобрана поверх frozen-входов, гейты typecheck/lint/unit 208/rust 145/integration/internal/renderer — зелёные). Оставшееся: только внешние gates B08-VM/LLM/TOR/SEARCH/SIGN с условиями снятия в BLOCKERS.md.
 ---
 
+
+## Аудит защит (антибот / антикапча / fingerprint / антидетект) — фактическое состояние
+
+| Слой | Реализовано | Работает | Честные ограничения |
+|---|---|---|---|
+| Антидетект: сеть | WebRTC lockdown (`disable_non_proxied_udp`), no-phoning-home (`--disable-component-update --disable-domain-reliability --disable-breakpad`, SmartScreen off) — privacy.rs | Да: аргументы окружения каждого tab-webview; egress-изоляция подтверждена P12 (actual SOCKS route) | Engine-level (JA3/TLS) на WebView2 недоступен |
+| Антидетект: egress | Default direct; Agent SOCKS5 из privacy.json; Private (прокси+ephemeral, wipe на старте); DarkWeb fail-closed Tor | Да: P12 native, прокси-маршруты фактические | Live Tor-маршрут — B08-TOR |
+| Fingerprint | PRIVATE-профиль: canvas toDataURL farbling, AudioContext noise, ClientRects jitter, WebGL getParameter, hardwareConcurrency/deviceMemory, timezone/locale override, native-code toString guard; стабильно на сессию (seed per identity) | Да: privacy_init.rs, детерминированно | Только PRIVATE; Default/Agent без noise (осознанно); продвинутые детекторы могут отличить JS-spoofing |
+| UA | Shell-токены вычищаются из UA tab-webviews (site_ua.rs) | Да | Полная UA-ротация не реализована |
+| Антибот | НЕ реализован поведенческий обход (behavioural evasion). Есть ChallengeDetector: Turnstile/reCAPTCHA/hCaptcha/CAPTCHA/2FA → пауза агента → WAITING_FOR_HUMAN → решение пользователем в той же сессии → resume | Да (детект + handoff, нативные проверки) | Авто-обход антибота — вне scope |
+| Антикапча | Авто-решение НЕ реализовано (нет 2captcha/anticaptcha интеграций) | — | Платные сервисы требуют отдельного разрешения; реализован честный human-handoff (challenge.rs) |
+
+---
+
 ## История до r10
 
 # Актуальный статус — 2026-10-15, r09 (`20261015-continuation-r09`)
