@@ -63,3 +63,4 @@ server.log
 # Closure run evidence (logs, snapshots, synthetic fixtures) — stays local
 /artifacts/
 .cisim/
+.vischeck/
