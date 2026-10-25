@@ -54,8 +54,8 @@ export function buildPlanetScript(): string {
 
   // ---- sizing ---------------------------------------------------------------
   function side() {
-    // Bottom-anchored large globe (concept: ~88% of viewport width).
-    return Math.max(260, Math.min(window.innerWidth * 0.88, 980));
+    // Centered globe, 20% smaller than the original concept (~70% of width).
+    return Math.max(260, Math.min(window.innerWidth * 0.704, 784));
   }
   function applySize(target) {
     var s = side();

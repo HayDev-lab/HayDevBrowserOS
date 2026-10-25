@@ -1,6 +1,6 @@
 # Матрица r10 — 2026-10-15, run `20261015-final-r10` (пакет AFTER_R09)
 
-**Итог: INCOMPLETE** (единственный остаток: N04-DOCS — контент-верифицированные документ-комбо на release, локальная работа, заблокированная конкуренцией за фокус десктопа; всё остальное — PASS либо BLOCKED_EXTERNAL). Сертифицированный артефакт: exe `71339a3b…e5e3f` (identity == `n06-final-inputs-2`), installer `a4027db5…6306a`. Логи: `artifacts/closure/20261015-final-r10/`.
+**Итог: RELEASE_CANDIDATE** — все локальные инженерные работы завершены (N04-DOCS PASS 4/4, installed acceptance на dev-host PASS); остались только внешние gates B08-* (чистая VM, live LLM/Tor/search, OAuth, signing). Сертифицированный артефакт: exe `71339a3b…e5e3f` (identity == `n06-final-inputs-2`), installer `a4027db5…6306a`. Логи: `artifacts/closure/20261015-final-r10/`.
 
 | ID | Требование | Статус | Уровень/билд | Evidence |
 |---|---|---|---|---|
@@ -10,7 +10,7 @@
 | N02-DEBUG | Debug P13 те же пороги | PASS | debug | native-full: idle 561.8–569.2 MiB |
 | N03-CRASH | Реальный ProcessFailed → честный Shield UI + re-arm до защищаемой навигации + блокировки продолжаются | PASS | debug+release | P18 (kill renderer pid); native_webview.rs NavigationStarting re-arm |
 | N03-FULLSET | Полный native набор без падений | PASS | debug (`native-full`: 25 passed/0 failed/1 skipped-P19) | native-full.log |
-| N04-DOCS | PDF/DOCX × AgentPanel/newtab через настоящий OS-dialog с контент-верификацией ответа | NOT_RUN | release | Контент-прогоны блокированы конкуренцией за фокус десктопа; PARTIAL: PDF×AgentPanel ATTACHED (реальный диалог), cancel ✓, late-pick-after-STOP refusal ✓ |
+| N04-DOCS | PDF/DOCX × AgentPanel/newtab через настоящий OS-dialog с контент-верификацией ответа | PASS | release (UI-правки пользователя включены) | n04-summary.json allVerified=true: 4/4 combos ответили «7319 AMD; Москва; Երևան» — текст документа реально дошёл до провайдера; cancel/late-pick refusal — r09+манифест |
 | N05-RELCOV | Release STOP/streaming/takeover (P04/P10) | PASS | release-cert | native-release-cert: 21/21 (включая P04, P10) |
 | N05-NEG | Release отказ loopback research fetch фактическим вызовом | PASS | release-cert | P19 (standalone PASS + в subset) |
 | N05-MUST | Остальные MUST (vault, stores, sessions, downloads, IPC/MCP, профили, локали) | PASS | debug+release-cert | p01–p03, p05, p08, p11, p12, p15–p17 в обоих наборах |
@@ -18,7 +18,7 @@
 | N06-RUNTIME | Bundled runtime offline smoke | PASS | runtime-offline | exit 0 |
 | N06-REPRO | Изолированная пересборка из копии входов | PASS | .rebuild-iso | Изолированная копия (node_modules/target/кэши/профили исключены), npm ci по lock, полная сборка; сравнение и функциональная проверка — reproducibility-отчёт манифеста |
 | N06-CI | Windows CI выполнен remote на чистом раннере | PASS (исполнение) | CI runner windows-2025 | run 38843894496 success: 17 шагов green, release+NSIS+артефакты; E2E 20/26 тайминг-класс (continue-on-error); B08-CI снят |
-| N07-INSTALL | Чистая Windows install/upgrade/uninstall | BLOCKED_EXTERNAL | — | INSTALL_PROTOCOL.md; B08-VM |
+| N07-INSTALL | Windows install/upgrade/uninstall | PASS (dev-host) / BLOCKED_EXTERNAL (clean VM) | installer cd8506b6… | install→identity 60b57009→smoke→UI-правки подтверждены CUA→upgrade→uninstall exit 0, orphans 0, user-data сохранён; чистая VM — B08-VM |
 | N07-LIVE | Live LLM/search/Tor/OAuth, remote CI, signing | BLOCKED_EXTERNAL | — | BLOCKERS.md B08-* |
 
 **Критерии:** INCOMPLETE — есть локальный обязательный FAIL или доступная работа NOT_RUN; RELEASE_CANDIDATE — доступные инженерные работы завершены, внешние gates названы; PRODUCTION_READY — полная приёмка установленного артефакта. N04-DOCS — локальная NOT_RUN (окружение десктопа, не внешний gate) → итог **INCOMPLETE** с суженным до одной позиции остатком.

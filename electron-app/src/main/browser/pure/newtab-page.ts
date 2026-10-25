@@ -385,9 +385,9 @@ ${newsCards}`
   }
   :focus-visible { outline: 2px solid rgba(0, 255, 209, 0.65); outline-offset: 2px; }
 
-  /* ---- planet layers (bottom anchored, like the concept) -------------- */
+  /* ---- planet layers (centered) ---------------------------------------- */
   #planet-shell {
-    position: absolute; left: 50%; top: 78%;
+    position: absolute; left: 50%; top: 50%;
     width: 300px; height: 300px;            /* sized by JS */
     transform: translate(-50%, -50%);
     border-radius: 50%;
@@ -400,7 +400,7 @@ ${newsCards}`
     z-index: 1; pointer-events: none;
   }
   #planet-canvas {
-    position: absolute; left: 50%; top: 78%;
+    position: absolute; left: 50%; top: 50%;
     transform: translate(-50%, -50%);
     z-index: 2; pointer-events: none;
   }

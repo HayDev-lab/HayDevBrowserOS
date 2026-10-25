@@ -1,6 +1,6 @@
 # Актуальный статус — 2026-10-15, r10 (`20261015-final-r10`, пакет AFTER_R09)
 
-**Статус: INCOMPLETE — единственный локальный остаток N04-DOCS (контент-верифицированные документ-комбо на release). Remote Windows CI (B08-CI) исполнен и зелёный: run 38843894496, windows-2025, 17 шагов success, release+NSIS+артефакты на чистом раннере; E2E-шаг 20/26 с тайминг-класс failures задокументирован как continue-on-error.** Основание: [REMAINING_PROMPT_PACK_AFTER_R09_2026-10-15.md](REMAINING_PROMPT_PACK_AFTER_R09_2026-10-15.md), N00–N08.
+**Статус: INCOMPLETE — локальные инженерные остатки отсутствуют. N04-DOCS закрыт: 4/4 документ-комбо (PDF/DOCX × AgentPanel/newtab) VERIFIED на release через настоящий OS-dialog с контент-верификацией синтетическим LLM (n04-summary.json allVerified=true). Remote Windows CI (B08-CI) зелёный (run 38843894496). Installed acceptance на dev-host выполнена (install→identity→smoke→UI-правки→upgrade→uninstall, без orphan-процессов; НЕ заменяет clean-VM — B08-VM остаётся). Оставшиеся BLOCKED_EXTERNAL: B08-VM (чистая VM), B08-LLM, B08-TOR, B08-SEARCH, B08-SIGN.** Основание: [REMAINING_PROMPT_PACK_AFTER_R09_2026-10-15.md](REMAINING_PROMPT_PACK_AFTER_R09_2026-10-15.md), N00–N08.
 
 ## Идентичность сертифицированного артефакта
 
@@ -23,10 +23,9 @@
 
 Реальный OS-dialog (без HAYDEV_TEST_PICK_FILE) на release: PDF × AgentPanel — вложение подтверждено (3 прогона), отмена диалога — без дублей/ошибок, поздний выбор после STOP — отказ DOCUMENT_CANCELLED (r09+подтверждение r10). **NOT_RUN остаётся**: контент-верифицированные прогоны ответа (4 комбинации × DOCX) — интерактивные пики блокируются конкуренцией за фокус рабочего стола с активной сессией пользователя ( Computer Use отказывает focus-steal). Контент-проводка через оба bridge покрыта P09 на debug (fixture file). Попытки и частичные доказательства сохранены в `n04-*.json`.
 
-## Итог r10
+## Итог r10 (финал после N04 + installed acceptance)
 
-**RELEASE_CANDIDATE.** Доступные инженерные работы выполнены: isolation ✓, RAM gate ✓ (release, исходные пороги), полный native набор ✓ (debug 26/26 с учётом skip, release subset 21/21), crash-lifecycle ✓, release negatives ✓, воспроизводимость — см. reproducibility-отчёт. Осталось: NOT_RUN — контент-верифицированные документ-комбо на release (блокировка: фокус десктопа, локальная), изолированная пересборка — статус в манифесте; BLOCKED_EXTERNAL — B08-* (чистая VM install, live LLM/search/Tor/OAuth, remote CI, signing). Инженерный FAIL отсутствует.
-
+**RELEASE_CANDIDATE.** Все доступные инженерные работы выполнены и подтверждены: N04-DOCS 4/4 VERIFIED на release (настоящий OS-dialog, синтетический LLM проверял реальное содержимое промпта), installed acceptance на dev-host (install/upgrade/uninstall, identity, 0 debug-портов, UI-правки пользователя на месте, без orphan-процессов), remote CI зелёный. Сертифицированный артефакт обновлён UI-правками пользователя: exe 2516c4a6…, installer cd8506b6… (identity-цепочка пересобрана поверх frozen-входов, гейты typecheck/lint/unit 208/rust 145/integration/internal/renderer — зелёные). Оставшееся: только внешние gates B08-VM/LLM/TOR/SEARCH/SIGN с условиями снятия в BLOCKERS.md.
 ---
 
 ## История до r10

@@ -4,16 +4,13 @@ import { platformApi } from '../platform';
 import type { ShieldStatus } from '@shared/ipc-types';
 /**
  * TopBar — cohesive top browser surface (Matrix concept, 3 rows):
- *   row 0  title bar: brand + tagline | THINK RESEARCH BUILD |
- *          ONLINE · LOCAL · SECURE · LANG | window controls (frameless)
+ *   row 0  title bar: brand + status + window controls (frameless)
  *   row 1  tab strip: [New Tab][WhatsApp][Telegram][+] card tabs
  *   row 2  toolbar: nav buttons | address bar | bookmark/history/downloads/
  *          vault | HUMAN | AGENT
  *
- * Nav actions map 1:1 to unique capabilities (de-dup): THINK focuses the
- * agent input (+ switches to AGENT mode), RESEARCH opens pab://search,
- * BUILD opens the Credential Vault. There is deliberately no SETTINGS and
- * no AUTOMATE here — both were duplicates (vault panel / AGENT switcher).
+ * Navigation controls live in the browser toolbar, where AGENT, search and
+ * Vault are already exposed. The title bar remains a status surface only.
  */
 import type { TabState, WebAppPin } from '@shared/browser-types';
 import type { PanelKind, ControlMode } from '../store/ui-logic';
@@ -51,7 +48,6 @@ interface TopBarProps {
   onTakeControl: () => void;
   agentPanelOpen: boolean;
   onToggleAgentPanel: () => void;
-  onNavAction: (action: 'think' | 'research' | 'build') => void;
 }
 
 export function TopBar(props: TopBarProps) {
@@ -69,11 +65,6 @@ export function TopBar(props: TopBarProps) {
             <span className="titlebar__tagline">{t('topbar.tagline')}</span>
           </div>
         </div>
-        <nav className="titlebar__nav" aria-label="Quick actions">
-          <TitleNavLink label={t('topbar.think')} title={t('topbar.thinkTip')} onClick={() => props.onNavAction('think')} />
-          <TitleNavLink label={t('topbar.research')} title={t('topbar.researchTip')} onClick={() => props.onNavAction('research')} />
-          <TitleNavLink label={t('topbar.build')} title={t('topbar.buildTip')} onClick={() => props.onNavAction('build')} />
-        </nav>
         <div className="titlebar__status">
           <ShieldPill />
           <span className={`titlebar__pill ${props.online ? 'titlebar__pill--ok' : 'titlebar__pill--down'}`}
@@ -195,14 +186,6 @@ function BrandGlyph() {
     <span className="titlebar__glyph" aria-hidden="true">
       <img src={haydevLogo} alt="" className="titlebar__glyph-img" draggable={false} />
     </span>
-  );
-}
-
-function TitleNavLink({ label, title, onClick }: { label: string; title: string; onClick: () => void }) {
-  return (
-    <button type="button" className="titlebar__navlink" title={title} onClick={onClick}>
-      {label}
-    </button>
   );
 }
 

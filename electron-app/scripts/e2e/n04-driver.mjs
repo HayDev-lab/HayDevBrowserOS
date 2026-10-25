@@ -29,6 +29,7 @@ const COMBOS = process.env.N04_COMBO && process.env.N04_COMBO !== 'all'
   ? ALL.filter(c => c.id === process.env.N04_COMBO) : ALL;
 const QUESTION = 'What amounts and cities are listed in the attached files? !!document';
 const pause = ms => new Promise(r => setTimeout(r, ms));
+function exists(page) { try { return page && !page.isClosed(); } catch { return false; } }
 async function until(f, ms, message) { const end = Date.now() + ms; do { const v = await f(); if (v) return v; await pause(300); } while (Date.now() < end); throw new Error(message); }
 
 const results = [];
@@ -62,15 +63,19 @@ for (const combo of COMBOS) {
       await shell.evaluate(() => [...document.querySelectorAll('button')].find(b => /attach a file/i.test(b.getAttribute('aria-label') ?? b.textContent ?? '')).click());
     } else {
       const tab = ctx.pages().find(p => /pab\.newtab|pab\.localhost\/newtab/i.test(p.url()));
-      await tab.evaluate(() => [...document.querySelectorAll('button')].find(b => /attach file/i.test(b.getAttribute('aria-label') ?? b.textContent ?? '')).click());
+      await tab.evaluate(() => document.getElementById('sattach')?.click());
     }
     console.log(`[N04] READY ${combo.id} — pick ${CORPUS}\\${combo.doc} in the REAL dialog now`);
 
     // Wait for the pick to land.
+    let newtabTab = null;
+    const findNewtab = () => ctx.pages().find(p => /pab\.newtab|pab\.localhost\/newtab/i.test(p.url()))
+      ?? ctx.pages().find(p => /newtab/i.test(p.url()));
     await until(async () => {
       if (combo.ui === 'agent') return (await shell.locator('.agent-panel__attachment').count()) > 0;
-      const tab = ctx.pages().find(p => /pab\.newtab|pab\.localhost\/newtab/i.test(p.url()));
-      return tab.evaluate(() => [...document.querySelectorAll('[class*="attachment" i]')].some(el => (el.textContent ?? '').trim().length > 0));
+      newtabTab = findNewtab();
+      if (!newtabTab) return false;
+      return await newtabTab.evaluate(() => document.querySelectorAll('.chip, [aria-label^="Remove attachment"]').length > 0);
     }, 240000, `attachment for ${combo.id} never appeared`).then(() => console.log(`[N04] ATTACHED ${combo.id}`));
 
     // Ask through the SAME UI path (panel ids / newtab bridge ride along).
@@ -88,20 +93,32 @@ for (const combo of COMBOS) {
       await pause(300);
       await shell.evaluate(() => document.querySelector('.agent-panel__send')?.click());
     } else {
-      const tab = ctx.pages().find(p => /pab\.newtab|pab\.localhost\/newtab/i.test(p.url()));
-      const box = tab.locator('textarea').first();
-      await box.fill(QUESTION);
+      const tab = (newtabTab && exists(newtabTab)) ? newtabTab : findNewtab();
+      if (!tab) throw new Error('newtab page lost after attach; pages=' + ctx.pages().map(p => p.url()).join(' | '));
+      await tab.evaluate(q => { const i = document.getElementById('sinput'); i.value = q; i.dispatchEvent(new Event('input', { bubbles: true })); }, QUESTION);
       await pause(300);
-      await tab.evaluate(() => [...document.querySelectorAll('button')].find(b => /run search/i.test(b.textContent ?? '')).click());
+      await tab.evaluate(() => document.getElementById('sgo')?.click());
     }
 
+    let timeline = null;
+    let lastState = null;
     await until(async () => {
-      const status = await shell.evaluate(() => window.__TAURI_INTERNALS__.invoke('agent_status'));
-      return ['IDLE', 'DONE', 'FAILED'].includes(status.state);
-    }, 90000, 'run did not finish; status=' + JSON.stringify(await shell.evaluate(() => window.__TAURI_INTERNALS__.invoke('agent_status'))).slice(0, 160) + ' | timeline=' + JSON.stringify(await shell.evaluate(() => window.__TAURI_INTERNALS__.invoke('agent_timeline_list'))).slice(0, 200));
+      try {
+        const status = await shell.evaluate(() => window.__TAURI_INTERNALS__.invoke('agent_status'));
+        lastState = status?.state ?? JSON.stringify(status).slice(0, 80);
+        timeline = await shell.evaluate(() => window.__TAURI_INTERNALS__.invoke('agent_timeline_list')) ?? [];
+      } catch (e) { lastState = 'EVAL_ERR ' + String(e).slice(0, 80); }
+      return ['IDLE', 'DONE', 'FAILED', 'STOPPED', 'WAITING_FOR_HUMAN'].includes(lastState)
+        || Array.isArray(timeline) && timeline.some(e => e.kind === 'final_answer');
+    }, 90000, [
+      'run did not finish',
+      'lastState=' + lastState,
+      'fixtureRequests=' + fixtureServer.observations.requests.join(',').slice(-160),
+      'timelineNull=' + (timeline === null),
+    ].join(' | '));
     await pause(800);
-    const timeline = await shell.evaluate(() => window.__TAURI_INTERNALS__.invoke('agent_timeline_list'));
-    const finalEntry = [...timeline].reverse().find(e => e.kind === 'final_answer');
+    const finalTimeline = await shell.evaluate(() => window.__TAURI_INTERNALS__.invoke('agent_timeline_list'));
+    const finalEntry = [...(finalTimeline ?? timeline ?? [])].reverse().find(e => e.kind === 'final_answer');
     const report = await shell.evaluate(() => window.__TAURI_INTERNALS__.invoke('agent_research_report'));
     const answer = String(finalEntry?.fullText ?? finalEntry?.full_text ?? finalEntry?.summary ?? JSON.stringify(report ?? ''));
 

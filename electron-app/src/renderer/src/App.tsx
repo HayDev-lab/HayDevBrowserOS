@@ -280,26 +280,6 @@ export function App() {
     void agent.stop('user_request').catch(reportActionError);
   }, [agent, reportActionError]);
 
-  // Titlebar quick actions — each maps to a REAL, unique capability.
-  // De-dup: the old AUTOMATE duplicated THINK's mode switch and the toolbar
-  // AGENT button; SETTINGS duplicated BUILD's vault panel — both removed.
-  const handleNavAction = useCallback(
-    (action: 'think' | 'research' | 'build') => {
-      if (action === 'think') {
-        setAgentPanelOpen(true);
-        requestAnimationFrame(() => {
-          window.dispatchEvent(new CustomEvent('pab:focus-agent-input'));
-        });
-        if (agent.controlMode !== 'AGENT') void agent.setMode('AGENT');
-      } else if (action === 'research') {
-        void handleOpenUrl('pab://search');
-      } else {
-        setActivePanel((prev) => (prev === 'vault' ? null : 'vault'));
-      }
-    },
-    [agent, handleOpenUrl]
-  );
-
   const agentRunning =
     agent.status?.state === 'RUNNING' || agent.status?.state === 'STOPPING';
 
@@ -332,7 +312,6 @@ export function App() {
         onTakeControl={handleTakeControl}
         agentPanelOpen={showAgentPanel}
         onToggleAgentPanel={handleToggleAgentPanel}
-        onNavAction={handleNavAction}
       />
 
       {showAgentPanel && (

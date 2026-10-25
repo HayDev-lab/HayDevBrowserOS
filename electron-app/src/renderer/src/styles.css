@@ -2652,7 +2652,6 @@ input {
 }
 
 .titlebar button,
-.titlebar .titlebar__nav,
 .titlebar .titlebar__status {
   -webkit-app-region: no-drag;
 }
@@ -2704,29 +2703,6 @@ input {
   white-space: nowrap;
 }
 
-.titlebar__nav {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  margin-left: auto;
-}
-
-.titlebar__navlink {
-  appearance: none;
-  background: none;
-  border: none;
-  border-left: 1px solid var(--nc-border-subtle);
-  padding: 4px 14px;
-  font-size: 10px;
-  font-weight: var(--nc-fw-semibold);
-  letter-spacing: 0.22em;
-  color: var(--nc-text-secondary);
-  cursor: pointer;
-  transition: color var(--nc-dur-instant);
-}
-.titlebar__navlink:first-child { border-left: none; }
-.titlebar__navlink:hover { color: var(--nc-accent); }
-
 .titlebar__status {
   display: flex;
   align-items: center;
@@ -2768,7 +2744,7 @@ input {
   display: flex;
   align-items: stretch;
   height: 100%;
-  margin-left: 4px;
+  margin-left: auto; /* pin to the right end of the title bar */
 }
 
 .titlebar__winbtn {
