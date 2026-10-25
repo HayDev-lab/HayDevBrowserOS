@@ -1402,14 +1402,7 @@ impl DarkWebService {
                 }
             }
         }
-        let base = if use_tor { AHMIA_ONION_BASE } else { AHMIA_CLEARNET_BASE };
-        let home = if use_tor {
-            let (host, port) = tor_endpoint(app, config)?;
-            socks_http::get_via_socks5(&host, port, &format!("{base}/"), config.fetch_timeout_ms, config.fetch_max_bytes)
-        } else {
-            socks_http::get_clearnet(&format!("{base}/"), config.fetch_timeout_ms, config.fetch_max_bytes)
-        }
-        .ok()?;
+        let home = self.ahmia_fetch(app, config, use_tor, "/").ok()?;
         let token = parse_ahmia_token(&home.text);
         if let Some((name, value)) = &token {
             *self.ahmia_token.lock().unwrap_or_else(|p| p.into_inner()) =
@@ -1418,21 +1411,34 @@ impl DarkWebService {
         token
     }
 
+    /// One ahmia GET with an in-Tor mirror fallback: the onion mirror first;
+    /// when the circuit is healthy but the MIRROR is flaky, retry the same
+    /// path on the clearnet base ROUTED THROUGH THE SAME Tor SOCKS (remote
+    /// DNS, TLS over the tunnel). This is not a direct fallback — the
+    /// egress stays Tor-only.
+    fn ahmia_fetch(&self, app: &tauri::AppHandle<tauri::Wry>, config: &DarkWebConfig, use_tor: bool, path: &str) -> Result<socks_http::SimpleResponse, FetchError> {
+        if !use_tor {
+            return socks_http::get_clearnet(&format!("{AHMIA_CLEARNET_BASE}{path}"), config.fetch_timeout_ms, config.fetch_max_bytes);
+        }
+        let (host, port) = tor_endpoint(app, config).ok_or(FetchError::TorUnavailable("no tor gateway".into()))?;
+        let onion = socks_http::get_via_socks5(&host, port, &format!("{AHMIA_ONION_BASE}{path}"), config.fetch_timeout_ms, config.fetch_max_bytes);
+        match onion {
+            Ok(resp) => Ok(resp),
+            Err(e) => {
+                log::warn!("[DARKWEB] ahmia onion mirror unreachable ({}) — retrying via clearnet base through the same Tor SOCKS", e.code());
+                socks_http::get_https_via_socks5(&host, port, &format!("{AHMIA_CLEARNET_BASE}{path}"), config.fetch_timeout_ms, config.fetch_max_bytes)
+            }
+        }
+    }
+
     fn ahmia_search(&self, app: &tauri::AppHandle<tauri::Wry>, config: &DarkWebConfig, query: &str) -> Result<Vec<RawProviderResult>, String> {
         let use_tor = tor_endpoint(app, config).is_some();
-        let base = if use_tor { AHMIA_ONION_BASE } else { AHMIA_CLEARNET_BASE };
         let token = self.ensure_ahmia_token(app, config, use_tor);
-        let mut url = format!("{base}/search?q={}", urlencode_query(query));
+        let mut path = format!("/search?q={}", urlencode_query(query));
         if let Some((name, value)) = &token {
-            url.push_str(&format!("&{}={}", urlencode_query(name), urlencode_query(value)));
+            path.push_str(&format!("&{}={}", urlencode_query(name), urlencode_query(value)));
         }
-        let resp = if use_tor {
-            let (host, port) = tor_endpoint(app, config).ok_or("NO_TOR")?;
-            socks_http::get_via_socks5(&host, port, &url, config.provider_timeout_ms, config.fetch_max_bytes)
-        } else {
-            socks_http::get_clearnet(&url, config.provider_timeout_ms, config.fetch_max_bytes)
-        }
-        .map_err(|e: FetchError| e.code().to_string())?;
+        let resp = self.ahmia_fetch(app, config, use_tor, &path).map_err(|e: FetchError| e.code().to_string())?;
         if resp.status >= 400 {
             return Err("EXTERNAL_PROVIDER_UNAVAILABLE".to_string());
         }

@@ -799,7 +799,7 @@ pub fn privacy_status(app: AppHandle<tauri::Wry>) -> PrivacyStatus {
 /// Toggle the fingerprint-noise layer for NEW private webviews. The choice
 /// is persisted to privacy.json and applied immediately to the runtime flag.
 #[tauri::command]
-pub fn privacy_set_fingerprint_noise(app: AppHandle<tauri::Wry>, enabled: bool) -> AppResult<Value> {
+pub fn privacy_set_fingerprint_noise(_app: AppHandle<tauri::Wry>, enabled: bool) -> AppResult<Value> {
     let dir = crate::lib_app_data_dir();
     let tx = crate::atomic_store::transaction(&crate::privacy::PrivacyConfig::path(&dir))?;
     let mut cfg = tx.read_json::<crate::privacy::PrivacyConfig>()?.unwrap_or_default();

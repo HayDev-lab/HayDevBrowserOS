@@ -890,9 +890,29 @@ fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
 }
 
 /// Tor managed spawn — bundled tor.exe on dynamic SOCKS/control ports.
+/// Single-flight for tor spawns: the status flips to Bootstrapping only
+/// INSIDE the supervisor thread, so two concurrent entry points (engines
+/// start + on-demand request_tor_start) could both pass is_active and spawn
+/// two tor processes — the loser dies with "exited after READY" and takes
+/// the SOCKS port down with it (reproduced in tor.log, 2026-10-25).
+static TOR_SPAWNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn start_tor(m: SharedRuntimeManager) {
     if stopping(&m) { return; }
+    if TOR_SPAWNING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        log::info!("[PROCESS] tor spawn already in flight — skipping duplicate start");
+        return;
+    }
+    struct SpawnGate;
+    impl Drop for SpawnGate {
+        fn drop(&mut self) {
+            TOR_SPAWNING.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    let _gate = SpawnGate;
     std::thread::spawn(move || {
+        // The gate lives for the whole supervisor lifetime; move it in.
+        let _gate = _gate;
         if stopping(&m) { return; }
         if std::env::var("PAB_TOR_MODE").ok().as_deref() == Some("external") {
             let port = std::env::var("PAB_TOR_SOCKS_PORT")

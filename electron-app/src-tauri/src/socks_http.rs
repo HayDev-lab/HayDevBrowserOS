@@ -374,6 +374,42 @@ pub fn get_clearnet(
     Ok(SimpleResponse { status, content_type, text, final_url: url.to_string() })
 }
 
+/// HTTPS GET for a CLEARNET host routed through the Tor SOCKS5 gateway.
+/// TLS-over-SOCKS via ureq's socks support: the CONNECT carries the raw
+/// hostname, so DNS resolves on the Tor side (same anonymity as an onion
+/// fetch — this is NOT a direct fallback). Used when an onion mirror
+/// (e.g. ahmia's) is flaky while the Tor circuit itself is healthy.
+pub fn get_https_via_socks5(
+    socks_host: &str,
+    socks_port: u16,
+    url: &str,
+    timeout_ms: u64,
+    max_bytes: usize,
+) -> Result<SimpleResponse, FetchError> {
+    let proxy = ureq::Proxy::new(format!("socks5://{socks_host}:{socks_port}"))
+        .map_err(|e| FetchError::Unreachable(e.to_string()))?;
+    let agent = ureq::AgentBuilder::new()
+        .proxy(proxy)
+        .timeout(Duration::from_millis(timeout_ms))
+        .build();
+    let resp = agent
+        .get(url)
+        .set("User-Agent", USER_AGENT)
+        .call()
+        .map_err(|e| match e {
+            ureq::Error::Status(code, _) => FetchError::Unreachable(format!("HTTP {code}")),
+            other => FetchError::Unreachable(other.to_string()),
+        })?;
+    let status = resp.status();
+    let content_type = resp.header("content-type").map(str::to_string);
+    let mut text = String::new();
+    resp.into_reader()
+        .take(max_bytes as u64)
+        .read_to_string(&mut text)
+        .map_err(|e| FetchError::Unreachable(e.to_string()))?;
+    Ok(SimpleResponse { status, content_type, text, final_url: url.to_string() })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
