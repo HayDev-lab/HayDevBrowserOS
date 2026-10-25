@@ -270,7 +270,7 @@ input {
   display: flex;
   align-items: flex-end;
   gap: var(--nc-sp-1);
-  flex: 1;
+  flex: 0 1 auto;
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
@@ -294,6 +294,7 @@ input {
   transition: color var(--nc-dur-fast) var(--nc-ease-out),
     background var(--nc-dur-fast) var(--nc-ease-out);
 }
+.tabstrip::after { content: ""; flex: 1; }
 
 .tabstrip__new:hover {
   color: var(--nc-accent);
