@@ -165,6 +165,7 @@ pub fn run() {
             commands::control_take_control,
             commands::control_get_mode,
             commands::privacy_status,
+            commands::privacy_set_fingerprint_noise,
             commands::set_locale,
             commands::ui_locale,
             commands::shield_status,

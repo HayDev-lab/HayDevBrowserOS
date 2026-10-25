@@ -64,6 +64,30 @@ pub struct PrivacyConfig {
     /// HayDev Shield (PROMPT 07): network-level ad/tracker blocking in tab
     /// webviews. Default ON; toggleable at runtime (shield_set_enabled).
     pub shield_enabled: bool,
+    /// Fingerprint-noise init script for PRIVATE webviews (canvas/audio/
+    /// ClientRects/WebGL/hardware/timezone/locale). Default ON; toggleable
+    /// at runtime (privacy_set_fingerprint_noise). Applies to newly created
+    /// webviews — existing tabs pick it up on next navigation in a NEW tab.
+    #[serde(default = "default_true")]
+    pub fingerprint_noise: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Runtime flag for the fingerprint-noise layer (atomic so a toggle applies
+/// to newly created webviews without invalidating the config snapshot).
+static FINGERPRINT_NOISE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Whether NEW private webviews get the fingerprint-noise init script.
+pub fn fingerprint_noise_enabled() -> bool {
+    FINGERPRINT_NOISE.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// Toggle the layer; the caller persists the choice to privacy.json.
+pub fn set_fingerprint_noise(enabled: bool) {
+    FINGERPRINT_NOISE.store(enabled, std::sync::atomic::Ordering::SeqCst);
 }
 
 impl Default for PrivacyConfig {
@@ -75,6 +99,7 @@ impl Default for PrivacyConfig {
             private_timezone: None,
             agent_fetch_via_tor: false,
             shield_enabled: true,
+            fingerprint_noise: true,
         }
     }
 }
@@ -114,13 +139,15 @@ pub fn global() -> &'static PrivacyConfig {
     static CFG: OnceLock<PrivacyConfig> = OnceLock::new();
     CFG.get_or_init(|| {
         let cfg = PrivacyConfig::load(&crate::lib_app_data_dir());
+        FINGERPRINT_NOISE.store(cfg.fingerprint_noise, std::sync::atomic::Ordering::SeqCst);
         log::info!(
-            "[PRIVACY] config: private_egress={:?} agent_egress={:?} fetch_via_tor={} tz={:?} locale={:?}",
+            "[PRIVACY] config: private_egress={:?} agent_egress={:?} fetch_via_tor={} tz={:?} locale={:?} fp_noise={}",
             cfg.private_egress,
             cfg.agent_egress,
             cfg.agent_fetch_via_tor,
             cfg.private_timezone,
-            cfg.private_locale
+            cfg.private_locale,
+            cfg.fingerprint_noise
         );
         cfg
     })
@@ -199,6 +226,7 @@ mod tests {
             private_timezone: Some("Europe/Amsterdam".into()),
             agent_fetch_via_tor: true,
             shield_enabled: false,
+            fingerprint_noise: true,
         };
         cfg.save(&dir).unwrap();
         let loaded = PrivacyConfig::load(&dir);

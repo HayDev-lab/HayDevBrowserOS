@@ -67,6 +67,7 @@ export function TopBar(props: TopBarProps) {
         </div>
         <div className="titlebar__status">
           <ShieldPill />
+          <FingerprintPill />
           <span className={`titlebar__pill ${props.online ? 'titlebar__pill--ok' : 'titlebar__pill--down'}`}
             title={props.online ? t('topbar.onlineTipOk') : t('topbar.onlineTipDown')}>
             <span className="titlebar__dot" aria-hidden />
@@ -257,6 +258,51 @@ function ActionToggle({
  * `shield:stats` push; click toggles the shield. The tooltip states the
  * HONEST scope: a basic ad/tracker domain blocklist, not a full uBlock.
  */
+/**
+ * FingerprintPill — runtime toggle for the fingerprint-noise layer applied
+ * to NEW private webviews (canvas/audio/ClientRects/WebGL/hardware/timezone
+ * spoofing). ON = harden; OFF = plain WebView2 surface. The choice persists
+ * in privacy.json; a switch never touches already-open tabs.
+ */
+function FingerprintPill() {
+  const [noise, setNoise] = useState<boolean | null>(null);
+  useEffect(() => {
+    let alive = true;
+    void platformApi.privacy
+      .status()
+      .then((s) => {
+        if (alive) setNoise(s.fingerprintNoise);
+      })
+      .catch(() => {
+        if (alive) setNoise(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+  const toggle = () => {
+    const next = !(noise ?? true);
+    setNoise(next); // optimistic; the host answers in ms
+    void platformApi.privacy
+      .setFingerprintNoise(next)
+      .then((r) => setNoise(r.fingerprintNoise))
+      .catch(() => setNoise(noise));
+  };
+  const on = noise ?? true;
+  return (
+    <button
+      type="button"
+      className={`titlebar__pill titlebar__pill--btn ${on ? '' : 'titlebar__pill--down'}`}
+      title="Fingerprint noise (private tabs): spoof canvas/audio/WebGL/hardware — applies to NEW private tabs"
+      data-testid="fingerprint-pill"
+      onClick={toggle}
+    >
+      <span className="titlebar__dot titlebar__dot--dim" aria-hidden />
+      <span>FP {on ? 'ON' : 'OFF'}</span>
+    </button>
+  );
+}
+
 function ShieldPill() {
   const { t } = useI18n();
   const [error, setError] = useState(false);

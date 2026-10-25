@@ -50,16 +50,24 @@ const TEMPLATE: &str = r#"(function () {
     return h;
   }
 
-  // Make patched functions report [native code] (basic toString guard).
-  var origToString = Function.prototype.toString;
+  // Make patched functions report [native code] — via a GLOBAL toString
+  // hook (WeakMap is invisible to JS), replacing the earlier per-function
+  // own-property disguise: `Function.prototype.toString.call(patched)` no
+  // longer leaks the real source, and the hook disguises ITSELF.
+  var NAMES = new WeakMap();
   function disguise(fn, name) {
-    try {
-      Object.defineProperty(fn, 'toString', {
-        value: function () { return 'function ' + name + '() { [native code] }'; },
-        writable: true, configurable: true
-      });
-    } catch (e) {}
+    try { NAMES.set(fn, name); } catch (e) {}
   }
+  var origToString = Function.prototype.toString;
+  var hookedToString = function toString() {
+    try {
+      var name = NAMES.get(this);
+      if (name !== undefined) return 'function ' + name + '() { [native code] }';
+    } catch (e) {}
+    return origToString.call(this);
+  };
+  disguise(hookedToString, 'toString'); // the hook itself passes the probe
+  Function.prototype.toString = hookedToString;
 
   // ---- Canvas: sub-visible per-pixel noise on readback/serialization ----
   var STRIDE = 97;
@@ -191,19 +199,83 @@ const TEMPLATE: &str = r#"(function () {
       if (off !== null) {
         Date.prototype.getTimezoneOffset = function () { return -off; }; // JS: minutes WEST
         disguise(Date.prototype.getTimezoneOffset, 'getTimezoneOffset');
+
+        // Date.prototype.toString / toUTCString carry the HOST zone mark
+        // ("GMT+0300 (Moscow Standard Time)") — rewrite both the offset and
+        // the zone name to the claimed identity.
+        var claimedGmt = (function () {
+          var sign = off >= 0 ? '+' : '-';
+          var a = Math.abs(off);
+          var hh = ('0' + Math.floor(a / 60)).slice(-2);
+          var mm = ('0' + (a % 60)).slice(-2);
+          return 'GMT' + sign + hh + mm;
+        })();
+        var origDTS = Date.prototype.toString;
+        Date.prototype.toString = function () {
+          return origDTS.call(this)
+            .replace(/GMT[+-]\d{4}/, claimedGmt)
+            .replace(/\s*\([^)]*\)\s*$/, ' (' + TZ_NAME + ')');
+        };
+        disguise(Date.prototype.toString, 'toString');
+
+        // Intl.DateTimeFormat: patch the CONSTRUCTOR so format()/formatToParts()/
+        // resolvedOptions() all evaluate in the CLAIMED zone (patching only
+        // resolvedOptions leaks: format() still used the host zone).
+        var OrigDTF = Intl.DateTimeFormat;
+        var patchedDTF = function (locales, options) {
+          var opts = (options && typeof options === 'object') ? Object.assign({}, options) : {};
+          if (!opts.timeZone) opts.timeZone = TZ_NAME;
+          var loc = (locales === undefined && LOCALE) ? LOCALE : locales;
+          // new OrigDTF(undefined, opts) === new OrigDTF(opts) per spec.
+          return new (Function.prototype.bind.apply(OrigDTF, [null, loc, opts]))();
+        };
+        patchedDTF.prototype = OrigDTF.prototype;
+        try {
+          Object.defineProperty(patchedDTF, 'name', { value: 'DateTimeFormat', configurable: true });
+          Object.defineProperty(patchedDTF, 'length', { value: OrigDTF.length, configurable: true });
+          patchedDTF.supportedLocalesOf = OrigDTF.supportedLocalesOf;
+        } catch (e) {}
+        disguise(patchedDTF, 'DateTimeFormat');
+        Intl.DateTimeFormat = patchedDTF;
+
+        // resolvedOptions stays patched as defense in depth (direct
+        // prototype calls with a foreign this still report the claim).
         var origRO = Intl.DateTimeFormat.prototype.resolvedOptions;
         Intl.DateTimeFormat.prototype.resolvedOptions = function () {
           var o = origRO.apply(this, arguments);
           try {
-            Object.defineProperty(o, 'timeZone', {
-              value: TZ_NAME, configurable: true, writable: true, enumerable: true
-            });
+            if (!o.timeZone || o.timeZone !== TZ_NAME) {
+              Object.defineProperty(o, 'timeZone', {
+                value: TZ_NAME, configurable: true, writable: true, enumerable: true
+              });
+            }
           } catch (e) {}
           return o;
         };
         disguise(Intl.DateTimeFormat.prototype.resolvedOptions, 'resolvedOptions');
       }
     } catch (e) {}
+  }
+
+  // ---- Locale in Intl resolved options (NumberFormat/Collator too) ----
+  if (LOCALE) {
+    ['DateTimeFormat', 'NumberFormat', 'Collator'].forEach(function (cls) {
+      try {
+        var C = Intl[cls];
+        if (!C || !C.prototype || typeof C.prototype.resolvedOptions !== 'function') return;
+        var origRO = C.prototype.resolvedOptions;
+        C.prototype.resolvedOptions = function () {
+          var o = origRO.apply(this, arguments);
+          try {
+            Object.defineProperty(o, 'locale', {
+              value: LOCALE, configurable: true, writable: true, enumerable: true
+            });
+          } catch (e) {}
+          return o;
+        };
+        disguise(C.prototype.resolvedOptions, 'resolvedOptions');
+      } catch (e) {}
+    });
   }
 })();
 "#;
@@ -221,6 +293,12 @@ mod tests {
         assert!(s.contains("en-US"));
         assert!(s.contains("37445")); // WebGL vendor param patched
         assert!(s.contains("getTimezoneOffset"));
+        // Deep-spoofing mitigations (r10): global toString hook + Intl/Date
+        // consistency surfaces.
+        assert!(s.contains("NAMES = new WeakMap()"));
+        assert!(s.contains("Intl.DateTimeFormat = patchedDTF"));
+        assert!(s.contains("claimedGmt"));
+        assert!(s.contains("'NumberFormat', 'Collator'"));
     }
 
     #[test]

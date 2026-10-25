@@ -319,14 +319,18 @@ fn create_tab_webview(
             );
             builder = builder.additional_browser_args(&args);
             // Fingerprint-noise layer: stable for the profile lifetime.
-            let seed = u64::from_le_bytes(
-                uuid::Uuid::new_v4().into_bytes()[..8].try_into().unwrap(),
-            );
-            builder = builder.initialization_script(crate::privacy_init::script(
-                seed,
-                privacy_cfg.private_timezone.as_deref(),
-                privacy_cfg.private_locale.as_deref(),
-            ));
+            // Toggleable (privacy_set_fingerprint_noise): applies to newly
+            // created webviews — an OFF switch means no init script at all.
+            if privacy_cfg.fingerprint_noise {
+                let seed = u64::from_le_bytes(
+                    uuid::Uuid::new_v4().into_bytes()[..8].try_into().unwrap(),
+                );
+                builder = builder.initialization_script(crate::privacy_init::script(
+                    seed,
+                    privacy_cfg.private_timezone.as_deref(),
+                    privacy_cfg.private_locale.as_deref(),
+                ));
+            }
         }
         crate::profiles::ProfileKind::DarkWeb => {
             manager

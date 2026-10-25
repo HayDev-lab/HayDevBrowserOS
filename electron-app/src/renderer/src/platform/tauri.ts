@@ -85,6 +85,8 @@ export const tauriApi: ExposedApi = {
 
   privacy: {
     status: () => invoke('privacy_status'),
+    setFingerprintNoise: (enabled: boolean) =>
+      invoke('privacy_set_fingerprint_noise', { enabled }),
   },
 
   shield: {

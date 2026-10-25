@@ -768,6 +768,8 @@ pub struct PrivacyStatus {
     pub fetch_via_tor: bool,
     pub tor_available: bool,
     pub tor_endpoint: Option<String>,
+    /// Fingerprint-noise layer for NEW private webviews (runtime toggle).
+    pub fingerprint_noise: bool,
 }
 
 fn egress_label(e: &crate::privacy::Egress) -> String {
@@ -790,7 +792,21 @@ pub fn privacy_status(app: AppHandle<tauri::Wry>) -> PrivacyStatus {
         fetch_via_tor: cfg.agent_fetch_via_tor,
         tor_available: tor.is_some(),
         tor_endpoint: tor,
+        fingerprint_noise: crate::privacy::fingerprint_noise_enabled(),
     }
+}
+
+/// Toggle the fingerprint-noise layer for NEW private webviews. The choice
+/// is persisted to privacy.json and applied immediately to the runtime flag.
+#[tauri::command]
+pub fn privacy_set_fingerprint_noise(app: AppHandle<tauri::Wry>, enabled: bool) -> AppResult<Value> {
+    let dir = crate::lib_app_data_dir();
+    let tx = crate::atomic_store::transaction(&crate::privacy::PrivacyConfig::path(&dir))?;
+    let mut cfg = tx.read_json::<crate::privacy::PrivacyConfig>()?.unwrap_or_default();
+    cfg.fingerprint_noise = enabled;
+    tx.write_json(&cfg)?;
+    crate::privacy::set_fingerprint_noise(enabled);
+    Ok(serde_json::json!({ "accepted": true, "fingerprintNoise": enabled }))
 }
 
 // ---------------------------------------------------------------------------

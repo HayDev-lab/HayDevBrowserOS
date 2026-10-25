@@ -338,10 +338,14 @@ export interface PrivacyStatus {
   fetchViaTor: boolean;
   torAvailable: boolean;
   torEndpoint: string | null;
+  /** Fingerprint-noise layer for NEW private webviews (runtime toggle). */
+  fingerprintNoise: boolean;
 }
 
 export interface PrivacyApi {
   status(): Promise<PrivacyStatus>;
+  /** Toggle fingerprint noise for NEW private webviews; persists. */
+  setFingerprintNoise(enabled: boolean): Promise<{ accepted: boolean; fingerprintNoise: boolean }>;
 }
 
 // ---------------------------------------------------------------------------
