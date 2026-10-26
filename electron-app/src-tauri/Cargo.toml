@@ -27,7 +27,7 @@ tauri-plugin-dialog = "2"
 tauri-plugin-log = "2"
 tauri-plugin-single-instance = "2"
 uuid = { version = "1", features = ["v4"] }
-ureq = { version = "2", features = ["json", "socks-proxy"] }
+ureq = { version = "2", features = ["json", "socks-proxy", "native-tls"] }
 url = "2"
 psl = "=2.1.238"
 # OS CSPRNG for vault password generation (PROMPT 03) — replaces the

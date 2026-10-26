@@ -130,9 +130,11 @@ describe('escapeHtml / buildNewTabHtml', () => {
     expect(html).toContain('Beyond the surface');
     expect(html).toContain('id="engine-haydev"');
     expect(html).toContain('aria-checked="true" data-engine="haydev"');
-    // Real routing targets: darkweb via the Tor-gated page, web mode through
-    // the searchNavigate bridge with a src marker.
-    expect(html).toContain("searchNavigate('darkweb', '?q=' + encodeURIComponent(v))");
+    // Real routing targets: darkweb searches INLINE on this page (the host
+    // runs the same DarkWebService job; results render into #dwresults —
+    // never a navigation), web mode through the searchNavigate bridge.
+    expect(html).toContain('runInlineDarkwebSearch(v)');
+    expect(html).toContain('id="dwresults"');
     expect(html).toContain("searchNavigate('search', '?q=' + encodeURIComponent(v) + '&src=web')");
     // Engine choice survives within the tab (sessionStorage, per-tab state).
     expect(html).toContain("sessionStorage.getItem(ENGINE_KEY)");

@@ -448,6 +448,45 @@ fn serve_newtab(
         },
         ("/api/news", "GET") => json_response(fetch_tech_news(4)),
         ("/api/topsites", "GET") => json_response(topsites_payload(app)),
+        // Inline darkweb search (user requirement: the darkweb engine on the
+        // newtab page searches HERE, never opening another page). Same
+        // DarkWebService + job contract the pab://darkweb page uses.
+        ("/api/search", "POST") => {
+            use tauri::Manager;
+            let Some(query) = body.get("query").and_then(|v| v.as_str()) else {
+                return not_found("pab://newtab");
+            };
+            let providers = body.get("providers").and_then(|v| v.as_array()).map(|a| {
+                a.iter().filter_map(|p| p.as_str().map(str::to_string)).collect::<Vec<_>>()
+            });
+            let Some(service) = app.try_state::<crate::darkweb::SharedDarkWeb>() else {
+                return json_response(r#"{"error":"DARKWEB_DISABLED"}"#.to_string());
+            };
+            match crate::darkweb::DarkWebService::search(&service, app, query, providers) {
+                Ok(v) => json_response(v.to_string()),
+                Err(code) => json_response(serde_json::json!({ "error": code }).to_string()),
+            }
+        }
+        ("/api/search/cancel", "POST") => {
+            use tauri::Manager;
+            let id = uri.query().and_then(|q| q.split('&').find(|p| p.starts_with("id="))).map(|p| urldecode(&p[3..]));
+            let Some(service) = app.try_state::<crate::darkweb::SharedDarkWeb>() else {
+                return json_response(r#"{"ok":false}"#.to_string());
+            };
+            let ok = id.map(|id| crate::darkweb::DarkWebService::cancel_search(&service, &id)).unwrap_or(false);
+            json_response(serde_json::json!({ "ok": ok }).to_string())
+        }
+        _ if method == "GET" && path.starts_with("/api/search/") => {
+            use tauri::Manager;
+            let id = path.trim_start_matches("/api/search/").trim_end_matches('/');
+            let Some(service) = app.try_state::<crate::darkweb::SharedDarkWeb>() else {
+                return json_response(r#"{"error":"DARKWEB_DISABLED"}"#.to_string());
+            };
+            match crate::darkweb::DarkWebService::get_search(&service, id) {
+                Some(v) => json_response(v.to_string()),
+                None => json_response(r#"{"error":"NOT_FOUND"}"#.to_string()),
+            }
+        }
         _ => not_found("pab://newtab"),
     }
 }

@@ -1411,22 +1411,28 @@ impl DarkWebService {
         token
     }
 
-    /// One ahmia GET with an in-Tor mirror fallback: the onion mirror first;
-    /// when the circuit is healthy but the MIRROR is flaky, retry the same
-    /// path on the clearnet base ROUTED THROUGH THE SAME Tor SOCKS (remote
-    /// DNS, TLS over the tunnel). This is not a direct fallback — the
-    /// egress stays Tor-only.
+    /// One ahmia GET with an in-Tor mirror fallback: the onion mirror first
+    /// under a SHORT probe window (a healthy mirror answers in ~4s; the
+    /// search job's per-provider budget is 15s, so a hanging mirror must not
+    /// eat it), then the same path on the clearnet base ROUTED THROUGH THE
+    /// SAME Tor SOCKS (remote DNS, TLS over the tunnel). Not a direct
+    /// fallback — the egress stays Tor-only.
     fn ahmia_fetch(&self, app: &tauri::AppHandle<tauri::Wry>, config: &DarkWebConfig, use_tor: bool, path: &str) -> Result<socks_http::SimpleResponse, FetchError> {
         if !use_tor {
             return socks_http::get_clearnet(&format!("{AHMIA_CLEARNET_BASE}{path}"), config.fetch_timeout_ms, config.fetch_max_bytes);
         }
         let (host, port) = tor_endpoint(app, config).ok_or(FetchError::TorUnavailable("no tor gateway".into()))?;
-        let onion = socks_http::get_via_socks5(&host, port, &format!("{AHMIA_ONION_BASE}{path}"), config.fetch_timeout_ms, config.fetch_max_bytes);
+        const ONION_PROBE_MS: u64 = 6_000;
+        let onion = socks_http::get_via_socks5(&host, port, &format!("{AHMIA_ONION_BASE}{path}"), ONION_PROBE_MS.min(config.fetch_timeout_ms), config.fetch_max_bytes);
         match onion {
             Ok(resp) => Ok(resp),
             Err(e) => {
                 log::warn!("[DARKWEB] ahmia onion mirror unreachable ({}) — retrying via clearnet base through the same Tor SOCKS", e.code());
-                socks_http::get_https_via_socks5(&host, port, &format!("{AHMIA_CLEARNET_BASE}{path}"), config.fetch_timeout_ms, config.fetch_max_bytes)
+                socks_http::get_https_via_socks5(&host, port, &format!("{AHMIA_CLEARNET_BASE}{path}"), config.provider_timeout_ms.saturating_sub(ONION_PROBE_MS).max(5_000), config.fetch_max_bytes)
+                    .map_err(|e2| {
+                        log::warn!("[DARKWEB] ahmia clearnet-via-Tor fallback failed: {} ({})", e2.code(), e2);
+                        e2
+                    })
             }
         }
     }

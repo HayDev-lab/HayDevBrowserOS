@@ -37,6 +37,16 @@ pub enum FetchError {
     Protocol(String),
 }
 
+impl std::fmt::Display for FetchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FetchError::TorUnavailable(m) => write!(f, "tor gateway unavailable: {m}"),
+            FetchError::Unreachable(m) => write!(f, "unreachable: {m}"),
+            FetchError::Protocol(m) => write!(f, "protocol error: {m}"),
+        }
+    }
+}
+
 impl FetchError {
     /// Safe machine code for UI diagnostics (parity: safeError()).
     pub fn code(&self) -> &'static str {

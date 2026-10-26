@@ -507,6 +507,21 @@ ${newsCards}`
 
   .chips { display: flex; flex-wrap: wrap; gap: 8px; }
   .chips:empty { display: none; }
+  /* ---- inline darkweb results (same page, no navigation) --------------- */
+  .dwresults { margin-top: 14px; text-align: left; max-width: 760px; margin-left: auto; margin-right: auto; }
+  .dwresults__head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 10px; }
+  .dwresults__title { font-size: 13px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--fg-dim, #7fa8a0); }
+  .dwresults__meta { font-size: 12px; color: var(--fg-dim, #7fa8a0); }
+  .dwresults__prov { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; font-size: 12px; }
+  .dwresults__prov span { padding: 2px 8px; border-radius: 10px; border: 1px solid var(--line, #1d3a3a); }
+  .dwresults__prov span.is-err { color: #ff9d7a; border-color: #57342a; }
+  .dwresults__list { display: flex; flex-direction: column; gap: 8px; max-height: 46vh; overflow-y: auto; }
+  .dwresult { display: block; padding: 10px 14px; border: 1px solid var(--line, #1d3a3a); border-radius: 10px; background: rgba(6, 16, 20, 0.6); text-decoration: none; color: inherit; }
+  .dwresult:hover { border-color: rgba(0, 255, 209, 0.4); }
+  .dwresult__url { font-size: 11px; color: #58d5c0; word-break: break-all; }
+  .dwresult__title { font-size: 14px; margin: 3px 0; color: #d7efe9; }
+  .dwresult__desc { font-size: 12px; color: var(--fg-dim, #7fa8a0); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .dwresults__empty { font-size: 13px; color: var(--fg-dim, #7fa8a0); }
   .chip {
     display: inline-flex; align-items: center; gap: 8px;
     max-width: 320px; padding: 5px 8px 5px 6px;
@@ -732,6 +747,7 @@ ${newsCards}`
         <div class="chips" id="schips" aria-label="${tr(loc, 'attach.chips.aria')}"></div>
         <p class="status" id="sstatus" role="status" aria-live="polite"></p>
       </form>
+      <div class="dwresults" id="dwresults" hidden></div>
       <div class="engines" role="radiogroup" aria-label="${tr(loc, 'engines.aria')}">
         <button type="button" class="engine" id="engine-haydev" role="radio" aria-checked="true" data-engine="haydev" title="${tr(loc, 'engine.haydev.title')}">
           <span class="engine__icon" aria-hidden="true">
@@ -1002,6 +1018,75 @@ ${newsBlock}
       });
     }
 
+    // Inline darkweb search: the job runs in the host (same DarkWebService
+    // the pab://darkweb page uses); results render HERE — this page never
+    // navigates away and never opens another page.
+    var dwBox = document.getElementById('dwresults');
+    var dwTimer = null;
+    function esc(s) {
+      return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+      });
+    }
+    function dwRender(snap) {
+      if (!dwBox) return;
+      var provMap = snap.providers || {};
+      var provList = Array.isArray(provMap)
+        ? provMap
+        : Object.keys(provMap).map(function (k) { return provMap[k]; });
+      var provs = provList.map(function (p) {
+        var err = p.status === 'error' || p.status === 'timeout';
+        return '<span class="' + (err ? 'is-err' : '') + '">' + esc(p.id || p.providerId || '?') + ': ' +
+          esc(err ? (p.errorCode || p.status || 'error') : (p.status || 'ok')) + '</span>';
+      }).join('');
+      var items = (snap.results || []).map(function (r) {
+        var url = r.url || r.link || r.finalUrl || '';
+        var href = /^https?:/i.test(url) ? url : 'pab://darkweb?url=' + encodeURIComponent(url);
+        return '<a class="dwresult" href="' + esc(href) + '">' +
+          '<div class="dwresult__url">' + esc(url) + '</div>' +
+          '<div class="dwresult__title">' + esc(r.title || '') + '</div>' +
+          '<div class="dwresult__desc">' + esc(r.description || r.excerpt || r.snippet || '') + '</div>' +
+          '</a>';
+      }).join('');
+      dwBox.innerHTML =
+        '<div class="dwresults__head"><span class="dwresults__title">Dark Web</span>' +
+        '<span class="dwresults__meta">' + esc(snap.state || '') +
+        (snap.total != null ? ' · ' + snap.total : '') +
+        (snap.durationMs != null ? ' · ' + (snap.durationMs / 1000).toFixed(1) + 's' : '') + '</span></div>' +
+        (provs ? '<div class="dwresults__prov">' + provs + '</div>' : '') +
+        (items || '<div class="dwresults__empty">' + esc(snap.errorCode || 'no results') + '</div>');
+      dwBox.hidden = false;
+    }
+    function runInlineDarkwebSearch(q) {
+      if (!bridge) { status(L('research.unavailable'), true); return; }
+      if (dwTimer) { clearInterval(dwTimer); dwTimer = null; }
+      dwBox.hidden = false;
+      dwBox.innerHTML = '<div class="dwresults__empty">…</div>';
+      status('');
+      fetch('/api/search', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ query: q })
+      }).then(function (r) { return r.json(); }).then(function (start) {
+        var id = start && (start.searchId || start.id);
+        if (!id) { dwRender({ state: 'error', errorCode: (start && start.error) || 'SEARCH_FAILED', providers: [], results: [] }); return; }
+        dwTimer = setInterval(function () {
+          fetch('/api/search/' + encodeURIComponent(id))
+            .then(function (r) { return r.json(); })
+            .then(function (snap) {
+              dwRender(snap);
+              var st = (snap && snap.state || '').toUpperCase();
+              if (st === 'DONE' || st === 'ERROR' || st === 'CANCELLED') {
+                clearInterval(dwTimer); dwTimer = null;
+              }
+            })
+            .catch(function () { clearInterval(dwTimer); dwTimer = null; });
+        }, 1500);
+      }).catch(function () {
+        dwRender({ state: 'error', errorCode: 'SEARCH_FAILED', providers: [], results: [] });
+      });
+    }
+
     form.addEventListener('submit', function (e) {
       e.preventDefault();
       var v = input.value.trim();
@@ -1020,8 +1105,7 @@ ${newsBlock}
         return;
       }
       if (engine === 'darkweb') {
-        status(L('darkweb.opening'));
-        searchNavigate('darkweb', '?q=' + encodeURIComponent(v));
+        runInlineDarkwebSearch(v);
         return;
       }
       if (engine === 'perplexity') {
