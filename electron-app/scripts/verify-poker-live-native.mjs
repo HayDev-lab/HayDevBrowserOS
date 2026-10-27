@@ -20,6 +20,7 @@ let socket;
 let interval;
 let ticket;
 let page;
+let stage = "launch";
 const invoke = (name, args = {}) =>
   page.evaluate(
     ([n, a]) => window.__TAURI_INTERNALS__.invoke(n, a),
@@ -43,7 +44,19 @@ try {
     },
   });
   page = app.chromePage();
+  stage = "fixture";
   await page.waitForSelector(".commandbar__input", { timeout: 30000 });
+  Object.assign(
+    stats,
+    await page.evaluate(() => ({
+      secureContext: window.isSecureContext,
+      mediaApi: typeof navigator.mediaDevices?.getUserMedia === "function",
+      audioWorklet:
+        typeof AudioContext === "function" &&
+        "audioWorklet" in AudioContext.prototype,
+    })),
+  );
+
   const tabId = await app.activeTabId(page);
   await invoke("browser_navigate", {
     req: { tabId, url: fixtureServer.url("/static") },
@@ -52,6 +65,7 @@ try {
   await fixture.waitForSelector("#fixture-marker");
   const control = await invoke("control_set_mode", { mode: "AGENT" });
   assert.equal(control.accepted, true);
+  stage = "native-ticket";
   ticket = await invoke("poker_live_start", {
     config: { sessionId: randomUUID(), tabId, format: "cash" },
     mode: "human",
@@ -62,9 +76,11 @@ try {
     invoke("poker_live_tool", { ...ids, name: "poker_act", args: {} }),
   );
   stats.humanRejectedAction = true;
+  stage = "native-frame";
   const frame = await invoke("poker_live_frame", ids);
   assert.ok(frame._imageBase64.length > 100);
   stats.frame = true;
+  stage = "websocket";
   await new Promise((resolve, reject) => {
     const pending = [];
     socket = new WebSocket(
@@ -84,8 +100,15 @@ try {
       socket.send(JSON.stringify({ setup: ticket.setup })),
     );
     socket.on("error", fail);
-    socket.on("close", () => {
-      if (!complete) fail();
+    socket.on("close", (code, reason) => {
+      if (!complete) {
+        clearTimeout(timeout);
+        reject(
+          new Error(
+            `NATIVE_LIVE_CLOSED_${code}: ${reason.toString().slice(0, 500)}`,
+          ),
+        );
+      }
     });
     socket.on("message", (raw) => {
       let m;
@@ -202,12 +225,20 @@ try {
   const memory = await invoke("poker_memory", { sessionId: ticket.sessionId });
   assert.ok(memory.events.length > 0);
   console.log(JSON.stringify({ ...stats, passed: true }));
-} catch {
+} catch (error) {
+  let detail = String(error?.message || error?.code || "verification failed");
+  detail = detail.replaceAll(secret, "[REDACTED]");
+  if (ticket?.token) detail = detail.replaceAll(ticket.token, "[REDACTED]");
+  detail = detail
+    .replace(/(?:AIza|AQ\.)[A-Za-z0-9_.-]+|access_token=[^\s&]+/g, "[REDACTED]")
+    .slice(0, 500);
   console.log(
     JSON.stringify({
       ...stats,
       passed: false,
       error: "NATIVE_LIVE_VERIFICATION_FAILED",
+      stage,
+      detail,
     }),
   );
   process.exitCode = 1;

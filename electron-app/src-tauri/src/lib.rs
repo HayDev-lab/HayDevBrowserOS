@@ -75,10 +75,16 @@ pub fn run() {
     let darkweb_index: crawl::SharedIndex = std::sync::Arc::new(std::sync::Mutex::new(
         crawl::LocalIndex::default(),
     ));
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         // Native file dialogs for the __pabNewTab attachment bridge (Rust
         // API only — no JS-side permissions are granted by this plugin).
-        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_dialog::init());
+    // Isolated debug QA must not focus or attach to a running user instance.
+    let isolated_qa = cfg!(debug_assertions)
+        && std::env::var("HAYDEV_QA_MODE").as_deref() == Ok("1")
+        && std::env::var_os("HAYDEV_DATA_DIR")
+            .is_some_and(|p| std::path::Path::new(&p).is_absolute());
+    let builder = if isolated_qa { builder } else { builder
         // Single instance: a second launch focuses the existing window instead
         // of forking a second browser state (Electron had this; parity).
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -88,7 +94,8 @@ pub fn run() {
             let _ = win.set_focus();
           }
           log::info!("[TAURI] second-instance signal — focused existing window");
-        }))
+        })) };
+    builder
         // ASYNC protocol handler (UI-freeze fix, 2026-10-01): WebView2 raises
         // WebResourceRequested on the UI thread — the SYNC variant made every
         // slow pab endpoint (darkweb preview/fetch over Tor, up to ~25 s)

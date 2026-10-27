@@ -1,6 +1,6 @@
 # Poker live sessions — implementation status
 
-This change adds a native poker session mode to the existing Tauri agent. It is a foundation for testing, not a demonstrated strong poker player. No real-money table or cloud model was used during verification.
+This change adds a native poker session mode to the existing Tauri agent. It is a foundation for testing, not a demonstrated strong poker player. No real-money table was used during verification. The subsequent Gemini Live work was tested with a real Google connection and an isolated local fixture page.
 
 ## Available
 
@@ -51,6 +51,6 @@ cargo test --manifest-path src-tauri/poker-core/Cargo.toml
 
 On a Windows build host, also run `cargo check --locked --manifest-path src-tauri/Cargo.toml`. This change was cross-checked for the Windows GNU target. Build resource directories must be prepared according to the existing application build process.
 
-Before integration with any external table, verify on a local test table: Human cannot act, Auto acts once only, edited/expired frames block action, Stop revokes delayed work, ambiguous acceptance never retries, a tab switch does not change the bound target, and restart preserves memory without resuming play. Then measure observation accuracy, missed turns, latency, invalid actions and strategy EV separately. No completed Windows/live-provider test or measured playing strength is claimed.
+Before integration with any external table, verify on a local test table: Human cannot act, Auto acts once only, edited/expired frames block action, Stop revokes delayed work, ambiguous acceptance never retries, a tab switch does not change the bound target, and restart preserves memory without resuming play. Then measure observation accuracy, missed turns, latency, invalid actions and strategy EV separately. The native Windows Gemini Live probe passed real fixture capture, complete tool setup, two native tool calls, audio/transcription, Human action rejection, durable memory and Stop revocation. Physical audio devices, real table parsing and playing strength remain unverified.
 
 `CHROMIUM_PATH=/path/to/chrome node scripts/verify-poker-ui.mjs` checks the React panel in Chromium with a mocked native boundary. It passed profile/tab binding, active tab lock, text questions, advice events, skill import and Stop checks. It does not exercise a model, WebView2, real speech or an external table.

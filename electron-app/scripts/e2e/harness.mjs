@@ -40,7 +40,18 @@ function httpJson(port, pathname = '/json/version', timeoutMs = 400) {
   });
 }
 
-async function discoverCdpPorts(log) {
+function portBelongsToApp(port, appPid) {
+  // A responding DevTools port alone is insufficient: it can belong to the
+  // user's already-running browser. Verify the listening process ancestry.
+  try {
+    const result = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      `$ownerId=(Get-NetTCPConnection -State Listen -LocalPort ${port} -ErrorAction SilentlyContinue|Select-Object -First 1).OwningProcess;for($i=0;$i -lt 20 -and $ownerId;$i++){if($ownerId -eq ${appPid}){Write-Output 'OWNED';exit 0};$ownerId=(Get-CimInstance Win32_Process -Filter "ProcessId=$ownerId" -ErrorAction SilentlyContinue).ParentProcessId};exit 1`],
+      { encoding: 'utf8', windowsHide: true, timeout: 10_000 });
+    return result.trim() === 'OWNED';
+  } catch { return false; }
+}
+
+async function discoverCdpPorts(log, proc) {
   // Since the shell/default-environment merge there is ONE WebView2 browser
   // process (shell + default tabs share it) and therefore ONE DevTools port
   // in [9220..9259]. Agent/Private/DarkWeb envs have separate browser
@@ -48,10 +59,11 @@ async function discoverCdpPorts(log) {
   const deadline = Date.now() + 60_000;
   const seen = [];
   while (Date.now() < deadline) {
+    if (proc.exitCode !== null) throw new Error('test app exited before owning a DevTools endpoint');
     for (let p = 9220; p <= 9259; p += 1) {
       try {
         const v = await httpJson(p);
-        if (v && v.Browser) return [p];
+        if (v && v.Browser && portBelongsToApp(p, proc.pid)) return [p];
       } catch { /* not listening */ }
     }
     await new Promise((r) => setTimeout(r, 500));
@@ -138,7 +150,7 @@ export class AppHandle {
     this._logRef = out;
     this._logPath = logPath;
 
-    const ports = await discoverCdpPorts(out);
+    const ports = await discoverCdpPorts(out, this.proc);
     this.ports = ports;
     // One shared browser process: shell (tauri.localhost / dev URL) and tab
     // pages live on the same CDP endpoint; the class helpers filter by URL.

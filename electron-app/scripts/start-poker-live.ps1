@@ -1,6 +1,8 @@
 param(
     [string]$CredentialFile,
-    [string]$TargetDirectory
+    [string]$TargetDirectory,
+    [string]$ExecutablePath,
+    [switch]$PreviewProfile
 )
 $ErrorActionPreference = 'Stop'
 $project = Split-Path $PSScriptRoot -Parent
@@ -15,8 +17,18 @@ if ($CredentialFile) {
     $secret = $null; $raw = $null; $match = $null
 }
 if ($TargetDirectory) { $env:CARGO_TARGET_DIR = $TargetDirectory }
+if ($PreviewProfile) {
+    $env:HAYDEV_DATA_DIR = Join-Path $env:LOCALAPPDATA 'HayDevPokerPreview'
+    New-Item -ItemType Directory -Force -Path $env:HAYDEV_DATA_DIR | Out-Null
+    $env:HAYDEV_QA_MODE = '1'
+}
 $env:CARGO_BUILD_JOBS = '6'
 if (!$env:GEMINI_LIVE_MODEL) { $env:GEMINI_LIVE_MODEL = 'gemini-3.8-live' }
 Push-Location $project
-try { & npm.cmd run dev:tauri; exit $LASTEXITCODE }
+try {
+    if ($ExecutablePath) {
+        if (!(Test-Path -LiteralPath $ExecutablePath)) { throw 'Build the selected executable first' }
+        Start-Process -FilePath $ExecutablePath -WorkingDirectory $project | Out-Null
+    } else { & npm.cmd run dev:tauri; exit $LASTEXITCODE }
+}
 finally { Pop-Location; Remove-Item Env:GEMINI_API_KEY -ErrorAction SilentlyContinue }
