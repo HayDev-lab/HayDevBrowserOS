@@ -278,6 +278,8 @@ export interface ExposedApi {
 
   // Agent Runtime (PROMPT 5)
   agent: AgentApi;
+  /** Available in the native Tauri runtime. */
+  poker?: import('./poker-types').PokerApi;
 
   // Control mode (PROMPT 5)
   control: ControlApi;

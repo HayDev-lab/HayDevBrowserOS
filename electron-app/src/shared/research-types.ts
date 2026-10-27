@@ -29,7 +29,7 @@
  *                 evidence recording into a source ledger, bounded research
  *                 limits, and a structured report completion contract.
  */
-export type AgentRunProfile = 'STANDARD' | 'DEEP_RESEARCH';
+export type AgentRunProfile = 'STANDARD' | 'DEEP_RESEARCH' | 'POKER_HUMAN' | 'POKER_AUTO';
 
 // ---------------------------------------------------------------------------
 // Source ledger

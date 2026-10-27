@@ -536,6 +536,13 @@ pub async fn agent_run(
     app: AppHandle<tauri::Wry>,
     req: crate::agent::AgentRunRequest,
 ) -> AppResult<Value> {
+    let profile = req.profile.clone().unwrap_or_else(|| "STANDARD".to_string());
+    if !matches!(profile.as_str(), "STANDARD" | "DEEP_RESEARCH" | "POKER_HUMAN" | "POKER_AUTO") {
+        return Err(AppError::new("INVALID_PROFILE", "Unknown agent profile"));
+    }
+    let poker = if crate::poker::is_profile(&profile) {
+        Some(crate::poker::Run::new(&app, req.poker.clone().ok_or_else(|| AppError::new("POKER_CONFIG_REQUIRED", "Select a poker tab and format"))?, &profile)?)
+    } else { None };
     let shared = app
         .try_state::<crate::agent::SharedAgent>()
         .ok_or_else(|| AppError::new("STATE_NOT_INITIALIZED", "agent state missing"))?
@@ -569,19 +576,18 @@ pub async fn agent_run(
                 "reason": "CONTROL_HUMAN", "error": "CONTROL_HUMAN",
             }));
         }
-            crate::agent::begin_run(&shared)
+            crate::agent::begin_run_with_budget(&shared, if poker.is_some() { crate::poker::BUDGET } else { crate::agent::RUN_TOTAL_BUDGET })
     };
-    let profile = req.profile.clone().unwrap_or_else(|| "STANDARD".to_string());
     let is_research = profile == "DEEP_RESEARCH";
     let default_steps = if is_research {
         crate::agent::RESEARCH_MAX_STEPS_DEFAULT
     } else {
         crate::agent::MAX_STEPS_DEFAULT
     };
-    let max_steps = req
+    let max_steps = if poker.is_some() { 10000 } else { req
         .max_steps
         .unwrap_or(default_steps)
-        .clamp(1, crate::agent::MAX_STEPS_HARD_CAP);
+        .clamp(1, crate::agent::MAX_STEPS_HARD_CAP) };
     let task = req.command.clone();
     // PROMPT 05: AgentPanel attachments ride the SAME registry the newtab
     // research path uses — text digests compose into the command, images
@@ -602,7 +608,7 @@ pub async fn agent_run(
     let handle = app.clone();
     let run_owner = shared.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        crate::agent::run_loop(handle, shared, &control_for_loop, task, max_steps, &profile, images)
+        crate::agent::run_loop(handle, shared, &control_for_loop, task, max_steps, &profile, images, poker)
     })
     .await
     .map_err(|e| AppError::new("AGENT_JOIN_FAILED", e.to_string()));

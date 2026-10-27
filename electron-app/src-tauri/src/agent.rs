@@ -99,12 +99,14 @@ impl TimelineEntry {
 pub struct AgentSnapshot {
     pub state: AgentStatus,
     pub steps_executed: u32,
+    pub max_steps: u32,
     pub task: String,
     pub reason: Option<String>,
     pub error: Option<String>,
     pub started_at: Option<u64>,
     pub ended_at: Option<u64>,
     pub timeline: Vec<TimelineEntry>,
+    pub poker: Option<Value>,
 }
 
 impl AgentSnapshot {
@@ -112,12 +114,14 @@ impl AgentSnapshot {
         Self {
             state: AgentStatus::Idle,
             steps_executed: 0,
+            max_steps: MAX_STEPS_DEFAULT,
             task: String::new(),
             reason: None,
             error: None,
             started_at: None,
             ended_at: None,
             timeline: Vec::new(),
+            poker: None,
         }
     }
 }
@@ -172,6 +176,9 @@ impl AgentShared {
 }
 /// Called while holding control's start lock, BEFORE starting any worker.
 pub fn begin_run(shared: &SharedAgent) -> SharedAgent {
+    begin_run_with_budget(shared, RUN_TOTAL_BUDGET)
+}
+pub fn begin_run_with_budget(shared: &SharedAgent, budget: Duration) -> SharedAgent {
     let mut active = shared.active.lock().unwrap_or_else(|p| p.into_inner());
     if let Some(old) = active.as_ref() { old.cancel(); }
     let _snapshot = shared.snapshot.lock().unwrap_or_else(|p| p.into_inner());
@@ -179,7 +186,7 @@ pub fn begin_run(shared: &SharedAgent) -> SharedAgent {
     let lease = crate::run_guard::RunGuard {
         id: shared.generation.fetch_add(1, Ordering::SeqCst) + 1,
         cancelled: stop.clone(), generation: shared.generation.clone(), dispatch: Arc::new(Mutex::new(())),
-        deadline: std::time::Instant::now() + RUN_TOTAL_BUDGET,
+        deadline: std::time::Instant::now() + budget,
     };
     *active = Some(lease.clone());
     Arc::new(AgentShared { snapshot: shared.snapshot.clone(), stop, generation: shared.generation.clone(),
@@ -273,13 +280,14 @@ fn status_payload_with_mode(shared: &SharedAgent, control_mode: ControlMode) -> 
         "state": snap.state.ui_state(),
         "controlMode": control_mode.as_str(),
         "stepCount": snap.steps_executed,
-        "maxSteps": MAX_STEPS_DEFAULT,
+        "maxSteps": snap.max_steps,
         "startedAt": snap.started_at,
         "endedAt": snap.ended_at,
         "reason": snap.reason,
         "error": snap.error,
         "providerConfigured": provider.as_ref().map(|p| p.is_configured()).unwrap_or(false),
         "providerConfig": provider.map(|p| p.public_config()),
+        "poker": snap.poker,
     })
 }
 
@@ -333,7 +341,7 @@ fn tool_declarations(profile: &str) -> Value {
         { "type": "function", "function": { "name": "type_text", "description": "Type text into an input/textarea (clears it first).", "parameters": { "type": "object", "properties": { "selector": { "type": "string" }, "text": { "type": "string" } }, "required": ["selector", "text"] } } },
         { "type": "function", "function": { "name": "press_key", "description": "Dispatch a key (e.g. Enter) on the focused element.", "parameters": { "type": "object", "properties": { "key": { "type": "string" } }, "required": ["key"] } } },
         { "type": "function", "function": { "name": "read_page", "description": "Read visible text of the page (bounded).", "parameters": { "type": "object", "properties": { "maxChars": { "type": "integer" } } } } },
-        { "type": "function", "function": { "name": "screenshot", "description": "Save a PNG screenshot of the tab; returns the file path.", "parameters": { "type": "object", "properties": {} } } },
+        { "type": "function", "function": { "name": "screenshot", "description": "Capture the current viewport and send the actual image to your vision input, with tab and timestamp metadata.", "parameters": { "type": "object", "properties": {} } } },
         { "type": "function", "function": { "name": "memory.save", "description": "Propose one durable fact about the user for long-term memory (e.g. a preference). The user must confirm it in the UI before it is stored.", "parameters": { "type": "object", "properties": { "fact": { "type": "string", "description": "The fact, one concise sentence." } }, "required": ["fact"] } } },
         { "type": "function", "function": { "name": "finish", "description": "Finish the task with a short summary for the user.", "parameters": { "type": "object", "properties": { "summary": { "type": "string" } }, "required": ["summary"] } } }
     ])
@@ -362,8 +370,12 @@ fn execute_tool(
     name: &str,
     args: &Value,
     sources: Option<&Mutex<Vec<Value>>>,
+    poker: Option<&crate::poker::Run>,
 ) -> Result<String, String> {
     crate::run_guard::check().map_err(|e| e.code)?;
+    if let Some(poker) = poker {
+        return poker.execute(app, name, args).map(|v| v.to_string()).map_err(|e| e.message);
+    }
     let get = |k: &str| args.get(k).and_then(|v| v.as_str()).unwrap_or("");
     if matches!(name, "web_search" | "web_fetch") && crate::core::with_state(app, |s| s.registry.get(active_tab).is_some_and(|t| t.egress != "direct")).unwrap_or(true) {
         return Err("RESEARCH_PROXY_UNSUPPORTED: active tab uses a proxy; no direct fetch was sent".into());
@@ -433,12 +445,7 @@ fn execute_tool(
                 &format!("document.body.innerText.slice(0, {})", max_chars),
             )
         }
-        "screenshot" => (|| -> Result<Value, String> {
-            let path = crate::lib_app_data_dir().join("screenshots").join(format!("agent-{}.png", now_millis()));
-            let saved = crate::native_webview::screenshot(app, active_tab, &path).map_err(|e| e.code)?;
-            Ok(json!({ "ok": true, "path": saved.to_string_lossy() }))
-        })()
-        .map_err(|e| AppError::new("SCREENSHOT_FAILED", e)),
+        "screenshot" => crate::vision::capture(app, active_tab),
         "finish" => Ok(serde_json::json!({ "summary": get("summary") })),
         // PROMPT 06: real search discovery through the app's LOCAL SearXNG
         // service (our own loopback endpoint — fixed allowlist semantics,
@@ -1022,6 +1029,7 @@ pub fn run_loop(
     max_steps: u32,
     profile: &str,
     initial_images: Vec<String>,
+    poker: Option<crate::poker::Run>,
 ) -> AgentSnapshot {
     if shared.lease.as_ref().is_none_or(|g| g.check().is_err()) { return AgentSnapshot { state: AgentStatus::Stopping, ..AgentSnapshot::idle() }; }
     struct EndLease { app: AppHandle<Wry>, guard: crate::run_guard::RunGuard }
@@ -1069,11 +1077,14 @@ pub fn run_loop(
         snap.reason = None;
         snap.timeline.clear();
         snap.steps_executed = 0;
+        snap.max_steps = max_steps;
         snap.started_at = Some(now_millis());
         snap.ended_at = None;
+        snap.poker = poker.as_ref().map(|p| json!({"sessionId":p.config.session_id,"tabId":p.config.tab_id,"format":p.config.format,"mode":p.mode}));
     }
     let generation = shared.lease.as_ref().expect("run lease").id;
-    let run_deadline = std::time::Instant::now() + RUN_TOTAL_BUDGET;
+    set_status(&app, &shared, AgentStatus::Running, None);
+    let run_deadline = shared.lease.as_ref().unwrap().deadline;
     let _ = app.emit(
         "agent:timeline:update",
         serde_json::json!({ "kind": "clear" }),
@@ -1094,14 +1105,14 @@ pub fn run_loop(
     }
 
     // Which tab do we act on? The active one at start.
-    let active_tab = match crate::core::with_state(&app, |s| {
+    let active_tab = match poker.as_ref().map(|p| p.config.tab_id.clone()).or_else(|| crate::core::with_state(&app, |s| {
         s.registry
             .list()
             .into_iter()
             .find(|t| t.is_active)
             .map(|t| t.id)
     })
-    .unwrap_or_default()
+    .unwrap_or_default())
     {
         Some(id) => id,
         None => {
@@ -1111,7 +1122,7 @@ pub fn run_loop(
         }
     };
 
-    let active_tab = if crate::privacy::global().agent_egress != crate::privacy::Egress::Direct {
+    let active_tab = if poker.is_none() && crate::privacy::global().agent_egress != crate::privacy::Egress::Direct {
         match crate::core::ensure_agent_tab(&app, &active_tab, shared.lease.as_ref().unwrap()) {
             Ok(id) => id,
             Err(e) => return return_llm_error(&app, &shared, &e.code),
@@ -1119,7 +1130,8 @@ pub fn run_loop(
     } else { active_tab };
     let _ = crate::core::with_state(&app, |s| { if let Some(tab) = s.registry.get_mut(&active_tab) { tab.owner_run = Some(generation); } });
     let agent = ureq::AgentBuilder::new().timeout(LLM_TIMEOUT).build();
-    let system_prompt = if is_research { RESEARCH_SYSTEM_PROMPT } else { SYSTEM_PROMPT };
+    let poker_prompt = poker.as_ref().map(|p| p.prompt());
+    let system_prompt = poker_prompt.as_deref().unwrap_or(if is_research { RESEARCH_SYSTEM_PROMPT } else { SYSTEM_PROMPT });
     // Confirmed user facts ride the system prompt (parity: the KNOWN FACTS
     // block in the Electron prompt builder).
     let memory_facts = {
@@ -1160,7 +1172,13 @@ pub fn run_loop(
     ];
     // Still true only while the seeded vision images are part of history.
     let mut vision_fallback_used = images.is_empty();
-    let tools = tool_declarations(profile);
+    let tools = poker.as_ref().map(|p| crate::poker::declarations(&p.mode)).unwrap_or_else(|| tool_declarations(profile));
+    if let Some(p) = &poker {
+        match p.context() {
+            Ok(context) => messages.push(json!({"role":"user","content":context})),
+            Err(e) => return return_llm_error(&app, &shared, &e.message),
+        }
+    }
     let sources: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
     // The structured finish payload (claims/conflicts/unknowns) captured
     // from the `finish` tool call — consumed by the research report builder.
@@ -1201,7 +1219,7 @@ pub fn run_loop(
                 // Non-vision fallback (Electron parity): a model without
                 // image input rejects the seeded images — retry ONCE with a
                 // text-only history before giving up.
-                if !vision_fallback_used && first_err.code == "LLM_HTTP_ERROR" && first_err.message.starts_with("HTTP 400:") && first_err.message.to_ascii_lowercase().contains("image") {
+                if poker.is_none() && !vision_fallback_used && first_err.code == "LLM_HTTP_ERROR" && first_err.message.starts_with("HTTP 400:") && first_err.message.to_ascii_lowercase().contains("image") {
                     vision_fallback_used = true;
                     let had_images = messages.iter().any(|m| {
                         m.get("content").map(|c| c.is_array()).unwrap_or(false)
@@ -1262,6 +1280,22 @@ pub fn run_loop(
             .unwrap_or_default();
 
         if tool_calls.is_empty() {
+            if let Some(p) = &poker {
+                // Conversational replies do not terminate a live session.
+                let lease = shared.lease.clone().unwrap();
+                let delivered = crate::run_guard::scoped(lease, || {
+                    p.execute(&app, "poker_say", &json!({"text":content}))?;
+                    p.execute(&app, "poker_wait", &json!({"seconds":3}))
+                });
+                if delivered.is_err() { break; }
+                messages.push(message);
+                messages.push(json!({"role":"user","content":"Continue: observe a fresh frame and check for new user messages. Use finish only when the session should end."}));
+                if messages.len() > 50 {
+                    let system=messages[0].clone();
+                    messages=vec![system,json!({"role":"user","content":p.context().unwrap_or_else(|_|"Observe again; memory is unavailable.".into())})];
+                }
+                continue;
+            }
             // Plain answer without tools — treat as finished.
             set_status(&app, &shared, AgentStatus::Done, Some("completed".to_string()));
             push_timeline(&app, &shared, "final_answer", "", "completed", content, Some(content.to_string()), None);
@@ -1272,6 +1306,7 @@ pub fn run_loop(
         // Append the assistant message RAW (preserves protocol extras).
         messages.push(message);
 
+        let mut pending_frame_image: Option<(String, String)> = None;
         for call in &tool_calls {
             let call_id = call
                 .get("id")
@@ -1326,9 +1361,10 @@ pub fn run_loop(
             let name_t = name.clone();
             let args_t = args.clone();
             let sources_t = sources.clone();
+            let poker_t = poker.clone();
             let lease = shared.lease.clone().expect("run lease");
             let tool_result = match interruptible(&shared.stop, move || {
-                crate::run_guard::scoped(lease, || execute_tool(&app_t, &shared_t, &active_tab_t, &name_t, &args_t, Some(&sources_t)))
+                crate::run_guard::scoped(lease, || execute_tool(&app_t, &shared_t, &active_tab_t, &name_t, &args_t, Some(&sources_t), poker_t.as_ref()))
             }) {
                 None => {
                     set_status(&app, &shared, AgentStatus::Stopping, Some("user_request".to_string()));
@@ -1358,11 +1394,17 @@ pub fn run_loop(
                 None,
                 None,
             );
+            let mut tool_value: Value = serde_json::from_str(&tool_result).unwrap_or(json!({"error":"INVALID_TOOL_RESULT"}));
+            let frame_image = crate::vision::take_image(&mut tool_value);
+            let tool_result = tool_value.to_string();
             messages.push(serde_json::json!({
                 "role": "tool",
                 "tool_call_id": call_id,
                 "content": tool_result,
             }));
+            if let Some(image) = frame_image {
+                pending_frame_image = Some((image, format!("Current viewport: tab={}, capturedAt={}, frameId={}. Dimensions and visible elements are in the preceding tool result.", tool_value["tabId"], tool_value["capturedAt"], tool_value["frameId"])));
+            }
 
             if name == "finish" {
                 let summary = args.get("summary").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -1383,6 +1425,19 @@ pub fn run_loop(
         }
         if final_snapshot.is_some() {
             break;
+        }
+        if let Some((image, metadata)) = pending_frame_image {
+            // All tool replies must precede a new user/image message.
+            crate::vision::discard_old_images(&mut messages);
+            messages.push(crate::vision::image_message(&image, &metadata));
+        }
+        if let Some(p) = &poker {
+            // Compact only after all tool replies, preserving complete protocol turns.
+            if messages.len() > 50 {
+                let system = messages[0].clone();
+                let context = match p.context() { Ok(v) => v, Err(e) => return return_llm_error(&app, &shared, &e.message) };
+                messages = vec![system, json!({"role":"user","content":format!("Continue the session. Observe a new frame before deciding. {context}")})];
+            }
         }
         if finish == "stop" && tool_calls.is_empty() {
             break;
@@ -1590,6 +1645,7 @@ pub struct AgentRunRequest {
     pub max_steps: Option<u32>,
     /// "STANDARD" (default) | "DEEP_RESEARCH".
     pub profile: Option<String>,
+    pub poker: Option<crate::poker::Config>,
     /// Opaque attachment ids from the SAME registry the newtab bridge uses
     /// (PROMPT 05: AgentPanel gets the newtab research attachment channel).
     pub attachment_ids: Option<Vec<String>>,

@@ -575,6 +575,7 @@ fn start_research_run(
             crate::agent::RESEARCH_MAX_STEPS_DEFAULT,
             &profile,
             images,
+            None,
         );
         {
             let mut cs = control.lock().unwrap_or_else(|p| p.into_inner());

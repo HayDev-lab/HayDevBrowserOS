@@ -253,6 +253,8 @@ export interface AgentRunRequest {
    * structured report completion. Same runtime either way.
    */
   profile?: import('./research-types').AgentRunProfile;
+  /** Selected tab and durable session identity for poker profiles. */
+  poker?: import('./poker-types').PokerConfig;
   /**
    * Base64 images (Ollama vision format) attached to the initial user
    * message — e.g. New Tab image uploads. Bounded by
@@ -271,6 +273,7 @@ export interface AgentRunRequest {
 export const AGENT_RUN_MAX_IMAGES = 4;
 
 export interface AgentStatusSnapshot {
+  poker?: (import('./poker-types').PokerConfig & { mode: 'human' | 'auto' }) | null;
   state: AgentStateName;
   controlMode: ControlMode;
   stepCount: number;

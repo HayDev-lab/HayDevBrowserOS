@@ -1,5 +1,6 @@
 import { attachmentErrorMessage } from '@shared/attachment-errors';
 import { platformApi } from '../platform';
+import { PokerPanel } from './PokerPanel';
 /**
  * AgentPanel — Matrix agent dock (concept 1:1).
  *
@@ -47,7 +48,7 @@ export interface AgentPanelProps {
   onClose: () => void;
 }
 
-type PanelTab = 'conversation' | 'tools' | 'sources';
+type PanelTab = 'conversation' | 'tools' | 'sources' | 'poker';
 
 export function AgentPanel({
   mode,
@@ -198,6 +199,7 @@ export function AgentPanel({
       </div>
 
       <nav className="agent-panel__tabs" role="tablist" aria-label={t('agent.tabsAria')}>
+        <PanelTabButton id="poker" label="Poker" active={tab === 'poker'} onSelect={setTab} />
         <PanelTabButton id="conversation" label={t('agent.tabConversation')} active={tab === 'conversation'} onSelect={setTab} />
         <PanelTabButton id="tools" label={t('agent.tabTools')} active={tab === 'tools'} onSelect={setTab} />
         <PanelTabButton
@@ -314,7 +316,11 @@ export function AgentPanel({
         </div>
       )}
 
-      <footer className="agent-panel__footer">
+      <div hidden={tab !== 'poker'} className="poker-panel-container" role="tabpanel" aria-label="Poker">
+        <PokerPanel agentRunning={agentRunning} status={agentStatus} />
+      </div>
+
+      <footer className="agent-panel__footer" hidden={tab === 'poker'}>
         <div className="agent-panel__footer-actions">
           <button
             type="button"

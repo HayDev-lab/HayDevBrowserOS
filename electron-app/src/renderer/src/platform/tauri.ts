@@ -14,6 +14,7 @@ import { listen } from '@tauri-apps/api/event';
 const ALLOWED_LISTEN_CHANNELS = new Set<string>([
   'agent:state:update',
   'agent:timeline:update',
+  'poker:advice',
   'control:mode:update',
   'vault:prompt:update',
   'memory:prompt:update',
@@ -57,6 +58,22 @@ export const tauriApi: ExposedApi = {
     researchReport: () => invoke('agent_research_report'),
     releaseAttachment: (id) => invoke('agent_release_attachment', { id }),
     pickAttachment: (kind) => invoke('agent_pick_attachment', { kind }),
+  },
+
+  poker: {
+    live: {
+      status: () => invoke('poker_live_status'),
+      importToken: () => invoke('poker_live_import_token'),
+      start: (config, mode, language) => invoke('poker_live_start', { config, mode, language }),
+      frame: (sessionId, runId) => invoke('poker_live_frame', { sessionId, runId }),
+      tool: (sessionId, runId, name, args) => invoke('poker_live_tool', { sessionId, runId, name, args }),
+      refresh: (sessionId, runId) => invoke('poker_live_refresh', { sessionId, runId }),
+      record: (sessionId, runId, role, text) => invoke('poker_live_record', { sessionId, runId, role, text }),
+      stop: (sessionId, runId) => invoke('poker_live_stop', { sessionId, runId }),
+    },
+    memory: (sessionId) => invoke('poker_memory', { sessionId }),
+    message: (sessionId, text) => invoke('poker_message', { sessionId, text }),
+    importKnowledge: (kind) => invoke('poker_import', { kind: kind ?? 'file' }),
   },
 
   control: {
@@ -127,17 +144,19 @@ export const tauriApi: ExposedApi = {
       return () => {};
     }
     let unlisten: (() => void) | undefined;
+    let disposed = false;
     listen(channel, (event) => {
       listener(event.payload);
     })
       .then((u) => {
-        unlisten = u;
+        if (disposed) u(); else unlisten = u;
       })
       .catch((err: unknown) => {
         console.error('[platform:tauri] listen failed:', channel, err);
       });
 
     return () => {
+      disposed = true;
       if (unlisten) unlisten();
     };
   },

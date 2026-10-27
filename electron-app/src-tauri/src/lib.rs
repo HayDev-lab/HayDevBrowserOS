@@ -20,6 +20,9 @@
 //! download cancel mid-flight (wry exposes no cancel handle — verified).
 
 pub mod agent;
+pub mod poker;
+pub mod poker_live;
+pub mod vision;
 pub mod atomic_store;
 pub mod run_guard;
 pub mod attachments;
@@ -101,6 +104,7 @@ pub fn run() {
         })
         .manage(runtime_manager::new_manager())
         .manage(agent::new_agent())
+        .manage(poker_live::State::default())
         .manage(attachments::SharedAttachments::default())
         .manage(control::SharedControl::default())
         .manage(memory::SharedMemory::default())
@@ -155,6 +159,17 @@ pub fn run() {
             commands::browser_downloads_cancel,
             commands::browser_downloads_remove,
             commands::agent_run,
+            poker::poker_memory,
+            poker::poker_message,
+            poker::poker_import,
+            poker_live::poker_live_status,
+            poker_live::poker_live_import_token,
+            poker_live::poker_live_start,
+            poker_live::poker_live_frame,
+            poker_live::poker_live_tool,
+            poker_live::poker_live_refresh,
+            poker_live::poker_live_record,
+            poker_live::poker_live_stop,
             commands::agent_stop,
             commands::agent_status,
             commands::agent_timeline_list,

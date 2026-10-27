@@ -3275,3 +3275,21 @@ input {
 /* ---- icon-only toolbar toggles ------------------------------------------- */
 .action-toggle--icon .action-toggle__label { display: none; }
 .action-toggle--icon { padding: 0 8px; }
+/* Poker sessions share the existing agent dock and control ownership. */
+.poker-panel-container { flex: 1; min-height: 0; overflow-y: auto; }
+.poker-panel-container[hidden], .agent-panel__footer[hidden] { display: none; }
+.poker-panel { padding: 12px; display: grid; gap: 10px; font-size: 12px; }
+.poker-panel label { display: grid; gap: 5px; min-width: 0; }
+.poker-panel select, .poker-panel input:not([type="checkbox"]) { width: 100%; background: var(--nc-bg); color: var(--nc-text-primary); border: 1px solid var(--nc-border); border-radius: 5px; padding: 7px; min-width: 0; }
+.poker-panel button { background: var(--nc-surface-raised); color: var(--nc-text-primary); border: 1px solid var(--nc-border-strong); border-radius: 5px; padding: 7px 9px; cursor: pointer; }
+.poker-panel button:disabled { opacity: .45; cursor: default; }
+.poker-panel button:focus-visible, .poker-panel select:focus-visible, .poker-panel input:focus-visible { outline: 2px solid var(--nc-accent); outline-offset: 2px; }
+.poker-panel__row { display: flex; flex-wrap: wrap; gap: 7px; }
+.poker-panel__row label { flex: 1; }
+.poker-panel__voice { display: flex !important; align-items: center; gap: 7px; }
+.poker-panel__note { opacity: .8; line-height: 1.5; }
+.poker-panel__replies { min-height: 90px; max-height: 300px; overflow: auto; line-height: 1.5; }
+.poker-panel__replies p { white-space: pre-wrap; padding: 8px; background: var(--nc-bg); border-radius: 5px; }
+.poker-panel form { display: grid; gap: 7px; }
+.poker-panel pre { overflow: auto; max-height: 250px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.poker-panel__error { color: var(--nc-danger); overflow-wrap: anywhere; }

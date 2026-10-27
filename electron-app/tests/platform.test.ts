@@ -71,6 +71,34 @@ describe('platform tauri adapter', () => {
   beforeEach(() => {
     invokeMock.mockReset();
     listenMock.mockReset();
+    listenMock.mockResolvedValue(() => {});
+  });
+
+  it('unsubscribes if the panel closes before native listen resolves', async () => {
+    const { tauriApi } = await import('../src/renderer/src/platform/tauri');
+    let resolveListen!: (off: () => void) => void;
+    listenMock.mockImplementationOnce(() => new Promise<() => void>(r => { resolveListen = r; }));
+    const dispose = tauriApi.on('poker:advice', () => {});
+    dispose();
+    const unlisten = vi.fn(); resolveListen(unlisten);
+    await Promise.resolve();
+    expect(unlisten).toHaveBeenCalledOnce();
+  });
+
+  it('preserves poker session binding and maps knowledge/memory commands', async () => {
+    const { tauriApi } = await import('../src/renderer/src/platform/tauri');
+    invokeMock.mockResolvedValue({ accepted: true });
+    const req = { command: 'Observe', profile: 'POKER_HUMAN' as const, poker: { sessionId: 'session', tabId: 'table', format: 'cash' as const } };
+    await tauriApi.agent.run(req);
+    expect(invokeMock).toHaveBeenCalledWith('agent_run', { req });
+    await tauriApi.poker!.memory('session');
+    expect(invokeMock).toHaveBeenCalledWith('poker_memory', { sessionId: 'session' });
+    await tauriApi.poker!.message('session', 'Explain this hand');
+    expect(invokeMock).toHaveBeenCalledWith('poker_message', { sessionId: 'session', text: 'Explain this hand' });
+    await tauriApi.poker!.importKnowledge('skill');
+    expect(invokeMock).toHaveBeenCalledWith('poker_import', { kind: 'skill' });
+    const off=tauriApi.on('poker:advice', () => {});
+    expect(listenMock).toHaveBeenCalledWith('poker:advice', expect.any(Function)); off();
   });
 
   it('maps browser methods to snake_case commands with wrapped args', async () => {
