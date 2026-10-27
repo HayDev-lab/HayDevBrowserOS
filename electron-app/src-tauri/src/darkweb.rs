@@ -996,6 +996,12 @@ pub struct DarkWebService {
     pub jobs: Mutex<HashMap<String, Arc<Mutex<SearchJob>>>>,
     pub cache: Mutex<HashMap<String, (Value, u64)>>,
     pub ahmia_token: Mutex<Option<(String, String, u64)>>,
+    /// Circuit breaker for the flaky ahmia onion mirror: when a probe fails,
+    /// skip the mirror entirely for this window and go straight to the
+    /// clearnet base OVER THE SAME Tor SOCKS (which native-tls/Schannel
+    /// serves reliably). Probing a dead mirror every fetch burns 6s per
+    /// request twice (token + search) for nothing.
+    pub ahmia_mirror_bad_until: Mutex<u64>,
     pub history: Mutex<Vec<Value>>,
     pub job_seq: AtomicU64,
 }
@@ -1023,6 +1029,7 @@ impl DarkWebService {
             jobs: Mutex::new(HashMap::new()),
             cache: Mutex::new(HashMap::new()),
             ahmia_token: Mutex::new(None),
+            ahmia_mirror_bad_until: Mutex::new(0),
             history: Mutex::new(history),
             job_seq: AtomicU64::new(1),
         }
@@ -1423,12 +1430,35 @@ impl DarkWebService {
         }
         let (host, port) = tor_endpoint(app, config).ok_or(FetchError::TorUnavailable("no tor gateway".into()))?;
         const ONION_PROBE_MS: u64 = 6_000;
-        let onion = socks_http::get_via_socks5(&host, port, &format!("{AHMIA_ONION_BASE}{path}"), ONION_PROBE_MS.min(config.fetch_timeout_ms), config.fetch_max_bytes);
+        // Circuit breaker: while the mirror is known-bad, go straight to the
+        // clearnet base over the same Tor SOCKS (no 6s burn per fetch).
+        // Short window: the mirror is intermittently healthy (~50%), so it
+        // must be retried regularly rather than blackholed for minutes.
+        const MIRROR_BAD_WINDOW_MS: u64 = 90_000;
+        let mirror_bad = {
+            let until = self.ahmia_mirror_bad_until.lock().unwrap_or_else(|p| p.into_inner());
+            now_ms() < *until
+        };
+        let onion = if mirror_bad {
+            Err(FetchError::Unreachable("mirror circuit open".into()))
+        } else {
+            socks_http::get_via_socks5(&host, port, &format!("{AHMIA_ONION_BASE}{path}"), ONION_PROBE_MS.min(config.fetch_timeout_ms), config.fetch_max_bytes)
+        };
         match onion {
-            Ok(resp) => Ok(resp),
+            Ok(resp) => {
+                *self.ahmia_mirror_bad_until.lock().unwrap_or_else(|p| p.into_inner()) = 0;
+                Ok(resp)
+            }
             Err(e) => {
+                if !mirror_bad {
+                    *self.ahmia_mirror_bad_until.lock().unwrap_or_else(|p| p.into_inner()) = now_ms() + MIRROR_BAD_WINDOW_MS;
+                }
                 log::warn!("[DARKWEB] ahmia onion mirror unreachable ({}) — retrying via clearnet base through the same Tor SOCKS", e.code());
-                socks_http::get_https_via_socks5(&host, port, &format!("{AHMIA_CLEARNET_BASE}{path}"), config.provider_timeout_ms.saturating_sub(ONION_PROBE_MS).max(5_000), config.fetch_max_bytes)
+                // Full provider budget for the fallback: TLS handshake over
+                // Tor needs several RTTs; curl over the same SOCKS answers
+                // in ~1-3s but short windows (4-5s) die at the OS level.
+                let clear_url = format!("{AHMIA_CLEARNET_BASE}{path}");
+                socks_http::get_https_via_socks5(&host, port, &clear_url, config.provider_timeout_ms.max(10_000), config.fetch_max_bytes)
                     .map_err(|e2| {
                         log::warn!("[DARKWEB] ahmia clearnet-via-Tor fallback failed: {} ({})", e2.code(), e2);
                         e2
