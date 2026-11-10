@@ -21,9 +21,15 @@ test('P14: validated redirects, broken reads and no network/page effects after r
     else {assert.equal(result.untrustedContent,true);assert.match(result.text,/100 degrees Celsius/);}
   }
   assert.equal(obs.requests.includes('/effect'),false,'private redirect never connected');
+  const rejected = obs.toolResults.length;
+  const denied = await invoke(chrome,'agent_run',{req:{command:`!!navigate ${fixtureServer.url('/effect')}`,profile:'DEEP_RESEARCH',maxSteps:3}});
+  assert.equal(denied.status,'ok');
+  assert.match(JSON.stringify(obs.toolResults[rejected]),/TOOL_NOT_ALLOWED/);
+  assert.equal(obs.requests.includes('/effect'),false,'Research cannot navigate even when the model requests it');
   for(const [operation,pathname,revoke] of [['fetch','/slow-redirect','agent_stop'],['navigate','/slow-page','control_take_control']]) {
     await invoke(chrome,'control_set_mode',{mode:'AGENT'});
-    const run=invoke(chrome,'agent_run',{req:{command:`!!${operation} ${fixtureServer.url(pathname)}`,profile:'DEEP_RESEARCH',maxSteps:3}});
+    const profile = operation === 'fetch' ? 'DEEP_RESEARCH' : 'STANDARD';
+    const run=invoke(chrome,'agent_run',{req:{command:`!!${operation} ${fixtureServer.url(pathname)}`,profile,maxSteps:3}});
     const deadline=Date.now()+4000;while(!obs.requests.includes(pathname)&&Date.now()<deadline)await pause(20);
     assert.ok(obs.requests.includes(pathname),'actual request must have started');
     const start=performance.now();await invoke(chrome,revoke,{reason:'synthetic network revocation'});

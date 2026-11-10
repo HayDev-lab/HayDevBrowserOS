@@ -199,7 +199,7 @@ test('Arman VPN WebView2 loop: attach, browse, fail closed, recover, detach and 
     } catch { return false; }
   }, `tab ${tabId} did not show the ${expected} route`);
   async function openProtected(name) {
-    await panel.getByLabel('Site address').fill(url(name));
+    await panel.getByRole('textbox', { name: 'Site address', exact: true }).fill(url(name));
     await panel.getByRole('button', { name: 'Open VPN tab' }).click();
     const tab = await poll(async () => (await tabs()).find(tab => tab.profile === 'arman-vpn' && tab.pendingUrl === url(name)), 'VPN tab was not created');
     assert.equal(tab.isIncognito, true);
