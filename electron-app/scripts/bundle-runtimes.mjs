@@ -1,14 +1,19 @@
 // Pinned Windows runtime bundle. Fail on missing inputs or checksum mismatches.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, cpSync, statSync, rmSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync, readdirSync, cpSync, statSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { RUNNER, PWD_SHIM } from './runtime-runner-templates.mjs';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const lock=JSON.parse(readFileSync(path.join(root,'resources/runtime-lock.json')));
-const cache=path.join(root,'.cache/runtime-archives'),out=path.join(root,'resources/packaged-runtimes');
+const cache=path.join(root,'.cache/runtime-archives');
+const stageRoot=path.join(root,'.cache/runtime-preparation');
+const out=process.env.HAYDEV_RUNTIME_STAGE ? path.resolve(process.env.HAYDEV_RUNTIME_STAGE) : path.join(root,'resources/packaged-runtimes');
+if(process.env.HAYDEV_RUNTIME_STAGE && (!out.startsWith(stageRoot+path.sep) || path.basename(out)!=='runtime' || existsSync(out)))throw Error('Invalid staging directory for runtime bundle');
 mkdirSync(cache,{recursive:true});mkdirSync(out,{recursive:true});
+const resolvedOut=realpathSync(out);
+if(!resolvedOut.startsWith(realpathSync(root)+path.sep))throw Error('Runtime output resolves outside the workspace');
 const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 const quote=s=>`'${s.replaceAll("'","''")}'`;
 async function archive(key){
@@ -44,7 +49,17 @@ const searxSource=path.join(unpack,`searxng-${lock.archives.searxng.commit}`);
 // Freeze the pinned source identity; never let setup.py discover this parent repository.
 const sourceVersion='0.0.0+git.'+lock.archives.searxng.commit.slice(0,12);
 writeFileSync(path.join(searxSource,'searx/version_frozen.py'), `VERSION_STRING = '${sourceVersion}'\nVERSION_TAG = '${sourceVersion}'\nDOCKER_TAG = '${sourceVersion}'\nGIT_URL = 'https://github.com/searxng/searxng'\nGIT_BRANCH = '${lock.archives.searxng.commit}'\n`);
-function freshGenerated(relative) { const target=path.resolve(out,relative); if(!target.startsWith(path.resolve(out)+path.sep))throw Error('Invalid generated target'); rmSync(target,{recursive:true,force:true}); mkdirSync(target,{recursive:true}); return target; }
+function freshGenerated(relative) {
+  const target=path.resolve(out,relative);
+  if(!target.startsWith(out+path.sep))throw Error('Invalid generated target');
+  if(existsSync(target)){
+    const resolved=realpathSync(target);
+    if(!lstatSync(target).isDirectory()||!resolved.startsWith(resolvedOut+path.sep))throw Error('Invalid resolved generated target');
+    rmSync(resolved,{recursive:true,force:true});
+  }
+  mkdirSync(target,{recursive:true});
+  return target;
+}
 const requirements=path.join(root,'resources/python-requirements.lock');
 if(process.argv.includes('--resolve-python')){
   const report=path.join(cache,'python-resolution.json');

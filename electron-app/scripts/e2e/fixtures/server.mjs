@@ -26,6 +26,7 @@ const HTML = (title, body) =>
 
 let effectCount = 0;
 const observations = { requests: [], toolResults: [], video: null };
+observations.llm = [];
 const pages = {
   '/effects': () => HTML('Effects', `<input id="effect-input"><button id="effect-button" onclick="fetch('/effect',{method:'POST'})">Effect</button>`),
   '/static': () =>
@@ -247,9 +248,10 @@ function respondScripted(body, mode, res) {
 function handleLlm(req, res) {
   let raw = '';
   req.on('data', (c) => (raw += c));
-  req.on('end', () => {
+  req.on('end', async () => {
     let body = {};
     try { body = JSON.parse(raw || '{}'); } catch { /* fallthrough */ }
+    observations.llm.push({model:body.model,reasoning:body.reasoning_effort??null,stream:body.stream===true});
     const lastUser = [...(body.messages || [])].reverse().find((m) => m.role === 'user');
     const userText = typeof lastUser?.content === 'string'
       ? lastUser.content
@@ -369,6 +371,21 @@ const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://${HOST}:${ACTIVE_PORT}`);
   const p = url.pathname;
   observations.requests.push(p);
+  if (/^\/v1\/models\/[^/]+:generateContent$/.test(p)) {
+    let raw='';req.on('data',c=>{raw+=c;});
+    req.on('end',async()=>{
+      try{
+        const body=JSON.parse(raw);(observations.advisor??=[]).push(body);
+        if(observations.beforeAdvisorReply)await observations.beforeAdvisorReply(body);
+        if(observations.advisorHttpError)return send(res,observations.advisorHttpError,{'content-type':'application/json'},JSON.stringify({error:{message:'synthetic provider failure'}}));
+        const proposal=observations.advisorProposal??{action:'call',amountTo:20,reason:'Synthetic conditional proposal'};
+        const calibration=!!body.generationConfig?.responseJsonSchema?.properties?.table;
+        const frameId=/frameId=([^ .]+)/.exec(body.contents?.[0]?.parts?.[0]?.text??'')?.[1];
+        const result=calibration?(observations.advisorCalibration??{table:{x:0,y:0,width:1000,height:1000}}):observations.advisorState?{...observations.advisorState,frameId}:proposal;
+        send(res,200,{'content-type':'application/json'},JSON.stringify({candidates:[{content:{parts:[{text:JSON.stringify(result)}]}}],usageMetadata:{promptTokenCount:100,candidatesTokenCount:20}}));
+      }catch{send(res,500,{'content-type':'application/json'},'{"error":"fixture failure"}');}
+    });return;
+  }
   if (p === '/slow-redirect' || p === '/slow-page') {
     const timer = setTimeout(() => {
       if (p === '/slow-redirect') { res.writeHead(302, {location:'/effect'}); res.end(); }

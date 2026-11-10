@@ -117,7 +117,7 @@ pub fn runtime_manager_stop(app: AppHandle<tauri::Wry>) -> AppResult<bool> {
 /// surface for the BrowserAutomationBridge and E2E tooling.
 #[tauri::command]
 pub fn browser_debug_port() -> u16 {
-    core::tab_debug_port()
+    if core::automation_debug_enabled(){core::tab_debug_port()}else{0}
 }
 
 // ---------------------------------------------------------------------------
@@ -320,13 +320,16 @@ pub fn profile_clear(app: AppHandle<tauri::Wry>, kind: String) -> AppResult<bool
     if profile == crate::profiles::ProfileKind::Private {
         return Ok(false);
     }
+    if profile == crate::profiles::ProfileKind::Default {
+        return Err(AppError::new("PROFILE_IN_USE", "The application shell uses the default profile"));
+    }
     // Live-tab guard: refuse while tabs reference this profile.
     let in_use = core::with_state(&app, |state| {
         state
             .registry
             .list()
             .iter()
-            .any(|t| !t.is_incognito == (profile == crate::profiles::ProfileKind::Default))
+            .any(|tab| tab.profile == profile.dir_name())
     })?;
     if in_use {
         return Err(AppError::new(
@@ -417,6 +420,14 @@ pub fn browser_tabs_activate(
     req: types::TabIdRequest,
 ) -> AppResult<bool> {
     core::activate_tab(&app, &req.tab_id)
+}
+
+#[tauri::command]
+pub fn browser_active_tab_set_visible(
+    app: AppHandle<tauri::Wry>,
+    visible: bool,
+) -> AppResult<bool> {
+    Ok(core::set_active_tab_visible(&app, visible))
 }
 
 #[tauri::command]
@@ -536,6 +547,10 @@ pub async fn agent_run(
     app: AppHandle<tauri::Wry>,
     req: crate::agent::AgentRunRequest,
 ) -> AppResult<Value> {
+    let profile = req.profile.clone().unwrap_or_else(|| "STANDARD".to_string());
+    if !matches!(profile.as_str(), "STANDARD" | "DEEP_RESEARCH") {
+        return Err(AppError::new("INVALID_PROFILE", "Unknown agent profile"));
+    }
     let shared = app
         .try_state::<crate::agent::SharedAgent>()
         .ok_or_else(|| AppError::new("STATE_NOT_INITIALIZED", "agent state missing"))?
@@ -562,16 +577,15 @@ pub async fn agent_run(
         .clone();
     let shared = {
         let mut cs = control.lock().unwrap_or_else(|p| p.into_inner());
-        if !cs.mark_run_started() {
+        if !(cs.mark_run_started()) {
             return Ok(serde_json::json!({
                 "status": "error",
                 "state": "FAILED", "answer": null, "stepCount": 0,
                 "reason": "CONTROL_HUMAN", "error": "CONTROL_HUMAN",
             }));
         }
-            crate::agent::begin_run(&shared)
+            crate::agent::begin_run_with_budget(&shared, crate::agent::RUN_TOTAL_BUDGET)
     };
-    let profile = req.profile.clone().unwrap_or_else(|| "STANDARD".to_string());
     let is_research = profile == "DEEP_RESEARCH";
     let default_steps = if is_research {
         crate::agent::RESEARCH_MAX_STEPS_DEFAULT
@@ -1128,6 +1142,7 @@ pub fn shield_set_enabled(app: AppHandle<tauri::Wry>, enabled: bool) -> AppResul
     cfg.shield_enabled = enabled;
     tx.write_json(&cfg)?;
     s.enabled.store(enabled, std::sync::atomic::Ordering::SeqCst);
+    crate::youtube::refresh(&app);
     // privacy::global() is a OnceLock snapshot; the live flag is the atomic.
     Ok(serde_json::json!({ "accepted": true, "enabled": enabled }))
 }
@@ -1137,6 +1152,7 @@ pub fn shield_allow_site(app: AppHandle<tauri::Wry>, host: String) -> AppResult<
     let s = shield_state(&app)
         .ok_or_else(|| AppError::new("STATE_NOT_INITIALIZED", "shield state missing"))?;
     let added = crate::shield::allow_site(&s, &host);
+    crate::youtube::refresh(&app);
     Ok(serde_json::json!({ "accepted": added, "host": host }))
 }
 
@@ -1145,6 +1161,7 @@ pub fn shield_disallow_site(app: AppHandle<tauri::Wry>, host: String) -> AppResu
     let s = shield_state(&app)
         .ok_or_else(|| AppError::new("STATE_NOT_INITIALIZED", "shield state missing"))?;
     let removed = crate::shield::disallow_site(&s, &host);
+    crate::youtube::refresh(&app);
     Ok(serde_json::json!({ "accepted": removed, "host": host }))
 }
 

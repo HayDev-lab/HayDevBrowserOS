@@ -1,10 +1,4 @@
-/**
- * Platform abstraction layer tests (migration Phase 2).
- *
- * Covers: runtime detection, the Electron bridge proxy (window.api), and the
- * Tauri adapter's command mapping + push-channel allowlist.
- */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const invokeMock = vi.fn();
 const listenMock = vi.fn();
@@ -16,61 +10,29 @@ vi.mock('@tauri-apps/api/event', () => ({
   listen: (...args: unknown[]) => listenMock(...args),
 }));
 
-describe('platform runtime detection', () => {
-  const originalWindow = globalThis.window;
-
-  afterEach(() => {
-    vi.resetModules();
-    globalThis.window = originalWindow;
-    delete (globalThis as Record<string, unknown>).__TAURI_INTERNALS__;
-  });
-
-  function freshWindowFixture(props: Record<string, unknown>): void {
-    // @ts-expect-error test fixture replaces the global
-    globalThis.window = { ...props };
-  }
-
-  it('detects Tauri when __TAURI_INTERNALS__ is injected', async () => {
-    freshWindowFixture({ __TAURI_INTERNALS__: {} });
-    const { detectRuntime } = await import('../src/renderer/src/platform');
-    expect(detectRuntime()).toBe('tauri');
-  });
-
-  it('detects Electron when only window.api exists', async () => {
-    freshWindowFixture({ api: { getVersion: () => Promise.resolve({}) } });
-    const { detectRuntime } = await import('../src/renderer/src/platform');
-    expect(detectRuntime()).toBe('electron');
-  });
-
-  it('falls back to the electron adapter without any runtime marker', async () => {
-    freshWindowFixture({});
-    const { runtime } = await import('../src/renderer/src/platform');
-    expect(runtime).toBe('electron');
-  });
-
-  it('exposes the electron bridge through platformApi (no circular proxy)', async () => {
-    const getVersion = () => Promise.resolve({ electron: 'test', chrome: '', node: '', appVersion: '1' });
-    freshWindowFixture({ api: { getVersion } });
-    const { platformApi } = await import('../src/renderer/src/platform');
-    await expect(platformApi.getVersion()).resolves.toEqual({
-      electron: 'test',
-      chrome: '',
-      node: '',
-      appVersion: '1',
-    });
-  });
-
-  it('returns undefined for surfaces the bridge does not expose', async () => {
-    freshWindowFixture({ api: {} });
-    const { electronApi } = await import('../src/renderer/src/platform/electron');
-    expect((electronApi as unknown as Record<string, unknown>).nonexistent).toBeUndefined();
-  });
-});
-
 describe('platform tauri adapter', () => {
   beforeEach(() => {
     invokeMock.mockReset();
     listenMock.mockReset();
+    listenMock.mockResolvedValue(() => {});
+  });
+
+  it('routes the renderer platform entry point to Tauri IPC', async () => {
+    const { platformApi } = await import('../src/renderer/src/platform');
+    invokeMock.mockResolvedValue({ appVersion: 'fixture' });
+    await expect(platformApi.getVersion()).resolves.toEqual({ appVersion: 'fixture' });
+    expect(invokeMock).toHaveBeenCalledWith('app_version');
+  });
+
+  it('unsubscribes if the panel closes before native listen resolves', async () => {
+    const { tauriApi } = await import('../src/renderer/src/platform/tauri');
+    let resolveListen!: (off: () => void) => void;
+    listenMock.mockImplementationOnce(() => new Promise<() => void>(r => { resolveListen = r; }));
+    const dispose = tauriApi.on('agent:state:update', () => {});
+    dispose();
+    const unlisten = vi.fn(); resolveListen(unlisten);
+    await Promise.resolve();
+    expect(unlisten).toHaveBeenCalledOnce();
   });
 
   it('maps browser methods to snake_case commands with wrapped args', async () => {

@@ -1114,10 +1114,7 @@ ${newsBlock}
         searchNavigate('search', '?q=' + encodeURIComponent(v) + '&src=web');
         return;
       }
-      // HayDev chip = the flagship: Deep Research agent pipeline (src=research
-      // auto-launches on the search page and auto-switches to AGENT mode).
-      status(L('search.haydev'));
-      searchNavigate('search', '?q=' + encodeURIComponent(v) + '&src=research');
+      runResearch(v);
     });
 
     document.getElementById('sicon').addEventListener('click', function () {

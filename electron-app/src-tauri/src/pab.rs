@@ -20,25 +20,17 @@ use tauri::AppHandle;
 use crate::core;
 use crate::types::HistoryQuery;
 
-/// Where the build step writes the rendered internal pages, relative to the
-/// electron-app working directory (dev) — resolved via candidates below.
-const INTERNAL_PAGES_RELATIVE: &str = ".vite/build/internal";
-
 fn internal_pages_candidates() -> Vec<PathBuf> {
     let mut out = Vec::new();
-    if let Ok(cwd) = std::env::current_dir() {
-        out.push(cwd.join(INTERNAL_PAGES_RELATIVE));
-        out.push(cwd.join("..").join(INTERNAL_PAGES_RELATIVE));
-    }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            // dev: target/{debug,release}/../../.vite/build/internal
-            out.push(dir.join("../../../.vite/build/internal"));
             // packaged NSIS: <install>/internal (bundled via bundle.resources)
             out.push(dir.join("internal"));
             out.push(dir.join("resources/internal"));
         }
     }
+    #[cfg(debug_assertions)]
+    out.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.vite/build/internal"));
     out
 }
 
@@ -72,6 +64,8 @@ fn html_response(body: String) -> http::Response<Vec<u8>> {
     http::Response::builder()
         .header(http::header::CONTENT_TYPE, "text/html; charset=utf-8")
         .header(http::header::CACHE_CONTROL, "no-store")
+        .header("Content-Security-Policy", "frame-ancestors 'none'")
+        .header("X-Frame-Options", "DENY")
         .body(body.into_bytes())
         .unwrap_or_else(|_| http::Response::new(Vec::new()))
 }
@@ -536,6 +530,9 @@ fn start_research_run(
     let mut escalated = false;
     let shared = {
         let mut cs = control.lock().unwrap_or_else(|p| p.into_inner());
+        if cs.takeover_latched {
+            return serde_json::json!({ "started": false, "error": "HUMAN_TAKEOVER" });
+        }
         if !cs.mark_run_started() {
             if cs.switch_to_agent() && cs.mark_run_started() {
                 escalated = true;
@@ -548,6 +545,21 @@ fn start_research_run(
         }
             crate::agent::begin_run(&shared)
     };
+    let lease = shared.lease.as_ref().unwrap();
+    let attachments = match crate::attachments::for_run(app, attachment_ids, owner, lease.id) {
+        Ok(a) => a,
+        Err(e) => {
+            lease.cancel();
+            let mut cs = control.lock().unwrap_or_else(|p| p.into_inner());
+            if shared.is_current() {
+                cs.mark_run_ended();
+                if escalated && !cs.takeover_latched {
+                    cs.switch_to_human();
+                }
+            }
+            return serde_json::json!({"started":false,"error":e.code});
+        }
+    };
     if escalated {
         use tauri::Emitter;
         let _ = app.emit(
@@ -556,10 +568,6 @@ fn start_research_run(
         );
         log::info!("[CONTROL] HUMAN -> AGENT auto-escalation for Deep Research");
     }
-    let attachments = match crate::attachments::for_run(app, attachment_ids, owner, shared.lease.as_ref().unwrap().id) {
-        Ok(a) => a,
-        Err(e) => { control.lock().unwrap_or_else(|p| p.into_inner()).mark_run_ended(); return serde_json::json!({"started":false,"error":e.code}); }
-    };
     let digests = &attachments.digests;
     let images = attachments.images.clone();
     let command = crate::attachments::compose_research_command(query, &digests);
@@ -647,16 +655,15 @@ fn serve_search(
                 .filter(|v| !v.is_empty())
         })
         .unwrap_or_else(|| "deepseek-v4-pro:0813".to_string());
-    let query = uri
-        .query()
-        .and_then(|q| q.split('&').find(|p| p.starts_with("q=")))
-        .map(|p| urldecode(&p[2..]))
-        .unwrap_or_default();
     html = html
-        .replace("__PAB_PERPLEXICA_URL__", &endpoint)
-        .replace("__PAB_PERPLEXICA_MODEL__", &model)
-        .replace("__PAB_SEARCH_QUERY__", &query);
+        .replace("\"__PAB_PERPLEXICA_URL__\"", &script_string(&endpoint))
+        .replace("\"__PAB_PERPLEXICA_MODEL__\"", &script_string(&model));
     html_response(html)
+}
+
+fn script_string(value: &str) -> String {
+    // A JSON string can still contain an HTML script end tag.
+    serde_json::Value::String(value.to_owned()).to_string().replace('<', "\\u003c")
 }
 
 fn urldecode(input: &str) -> String {
@@ -710,18 +717,14 @@ pub fn handle_pab(app: &AppHandle<tauri::Wry>, request: &tauri::http::Request<Ve
         .headers()
         .get(http::header::REFERER)
         .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
+        .and_then(internal_page_of);
     // Relative fetches inside a page at http://pab.localhost/<page> resolve
     // to http://pab.localhost/api/... — attribute /api/* to the calling page
     // via Referer (default: the newtab page, the historical behavior).
-    let from_darkweb = referer.contains("darkweb");
+    let referring_page = referer.unwrap_or("newtab");
     let (page, sub_path) =
         if raw_host == "pab.localhost" && raw_path.trim_start_matches('/').starts_with("api/") {
-            if from_darkweb {
-                ("darkweb".to_string(), raw_path.to_string())
-            } else {
-                ("newtab".to_string(), raw_path.to_string())
-            }
+            (referring_page.to_string(), raw_path.to_string())
         } else if raw_host == "pab.localhost" || raw_host == "pab" {
             let mut segs = raw_path.trim_start_matches('/').splitn(2, '/');
             let page = segs.next().unwrap_or("newtab").to_string();
@@ -730,12 +733,54 @@ pub fn handle_pab(app: &AppHandle<tauri::Wry>, request: &tauri::http::Request<Ve
         } else {
             (raw_host.to_string(), raw_path.to_string())
         };
+    let fetch_destination = request.headers().get("sec-fetch-dest");
+    let fetch_site = request.headers().get("sec-fetch-site");
+    let api = sub_path.trim_start_matches('/').starts_with("api/") || sub_path == "/open"
+        || request.method() != http::Method::GET;
+    let same_internal_origin = fetch_site.is_some_and(|value| value == "same-origin")
+        && referer == Some(page.as_str());
+    let external_document = fetch_destination.is_some_and(|value| value == "document")
+        && fetch_site.is_some_and(|value| value == "cross-site" || value == "same-site")
+        && referer.is_none();
+    let proxy_tab = owner.strip_prefix("browser-tab-").is_some_and(|id| {
+        core::with_state(app, |state| state.registry.get(id).is_some_and(|tab| {
+            [crate::profiles::ProfileKind::ArmanVpn, crate::profiles::ProfileKind::TorProxy]
+                .iter().any(|profile| profile.dir_name() == tab.profile)
+        })).unwrap_or(true)
+    });
+    if proxy_tab || external_document || fetch_destination.is_some_and(|value| value == "iframe" || value == "frame")
+        || (api && !same_internal_origin) {
+        let mut response = json_response(r#"{"error":"PAB_ORIGIN_FORBIDDEN"}"#.to_string());
+        *response.status_mut() = http::StatusCode::FORBIDDEN;
+        return response;
+    }
     log::info!("[WEBVIEW] pab request page={page} path={sub_path}");
     match page.as_str() {
         "newtab" => serve_newtab(app, &sub_path, &uri, request, owner),
         "search" => serve_search(app, &uri, request, owner),
         "darkweb" => serve_darkweb(app, &sub_path, &uri, request, owner),
         _ => not_found("pab:// page"),
+    }
+}
+
+fn internal_page_of(raw_url: &str) -> Option<&'static str> {
+    let url = url::Url::parse(raw_url).ok()?;
+    if !matches!(url.scheme(), "http" | "https" | "pab") || url.port().is_some()
+        || !url.username().is_empty() || url.password().is_some() {
+        return None;
+    }
+    let host = url.host_str()?;
+    let page = match (url.scheme(), host) {
+        ("pab", "newtab" | "search" | "darkweb") => host,
+        ("http" | "https", "pab.localhost") => url.path().split('/').nth(1)?,
+        ("http" | "https", "pab.newtab" | "pab.search" | "pab.darkweb") => host.strip_prefix("pab.")?,
+        _ => return None,
+    };
+    match page {
+        "newtab" => Some("newtab"),
+        "search" => Some("search"),
+        "darkweb" => Some("darkweb"),
+        _ => None,
     }
 }
 

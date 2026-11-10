@@ -11,7 +11,7 @@
     "overlay/package.json": "760618008f61c2b88dff437293b8cb12090deb7b17d5c9015447ec38a79c67df",
     "overlay/next.config.mjs": "550a03302ff1cd28d240a23f59194bb6e8fc7d1060b7f59966beeb9f9e3052f0",
     "overlay/src/lib/uploads/manager.ts": "8f9f7888c90b147e746fa224d8311654921d069ccd0739fe8d9470f43e12ce9f",
-    "overlay/src/proxy.ts": "32482f4b4aee8a7a84acc7a8b6df09090409b8007659a34ad2be4962356a39a6",
+    "overlay/src/proxy.ts": "1a48a036b983d5c48b4b14d9bf39b6118ae047f3670da555716147d463759642",
     "overlay/src/app/fonts/Montserrat.ttf": "0f7b311b2f3279e4eef9b2f968bcdbab6e28f4daeb1f049f4f278a902bcd82f7",
     "overlay/src/app/fonts/OFL.txt": "8b7141c03fa4f8d44e6345d5d4931709290f0f67875e452e95ac1fd3a027802e",
     "overlay/src/app/fonts/SOURCE.txt": "99eeb0f403cfafb4dbe7e269e82b480b241058ec81c7cfa145c0d71720695242",

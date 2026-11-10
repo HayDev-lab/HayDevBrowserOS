@@ -263,6 +263,12 @@ export function AgentPanel({
                   <span className="agent-panel__timeline-state">
                     {t(`agent.tl.${entry.state}`)}
                   </span>
+                  {entry.fullText && entry.state === 'failed' && (
+                    <details className="agent-panel__timeline-detail">
+                      <summary>{entry.summary}</summary>
+                      <pre>{entry.fullText}</pre>
+                    </details>
+                  )}
                 </li>
               ))}
             </ul>

@@ -8,7 +8,7 @@ import {
   getTabDisplayTitle,
   getFaviconFallback,
   truncateTitle,
-  isWebAppTabActive,
+  findWebAppTabId,
 } from '../store/ui-logic';
 
 interface TabStripProps {
@@ -31,42 +31,60 @@ export function TabStrip({
   onActivateTab,
 }: TabStripProps) {
   const { t } = useI18n();
-  const activeTabUrl = tabs.find((t) => t.id === activeTabId)?.url ?? '';
+  const pinnedApps = WEB_APP_PINS.map(app => {
+    const tabId = findWebAppTabId(tabs, app);
+    return { app, tab: tabs.find(tab => tab.id === tabId) };
+  });
+  const pinnedTabIds = new Set(pinnedApps.map(({ tab }) => tab?.id));
 
   return (
     <div className="tabstrip" role="tablist" aria-label={t('tabs.listAria')}>
       <div className="tabstrip__apps" role="group" aria-label={t('tabs.appsAria')}>
-        {WEB_APP_PINS.map((app) => (
-          <button
-            key={app.id}
-            type="button"
-            className={`webapp-pin webapp-pin--card webapp-pin--${app.id} ${
-              isWebAppTabActive(activeTabUrl, app) ? 'webapp-pin--active' : ''
-            }`}
-            onClick={() => onOpenWebApp(app)}
-            aria-label={t('tabs.openApp', { app: app.label })}
-            aria-pressed={isWebAppTabActive(activeTabUrl, app)}
-            title={app.label}
-          >
-            {app.id === 'whatsapp' ? (
-              <WhatsAppGlyph />
-            ) : app.id === 'telegram' ? (
-              <TelegramGlyph />
-            ) : app.id === 'proton' ? (
-              <ProtonGlyph />
-            ) : app.id === 'youtube' ? (
-              <YouTubeGlyph />
-            ) : app.id === 'hdrezka' ? (
-              <HdRezkaGlyph />
-            ) : (
-              <HayDevGlyph />
-            )}
-            <span className="webapp-pin__label">{app.label}</span>
-          </button>
+        {pinnedApps.map(({ app, tab }) => (
+          <div className="webapp-pin-group" key={app.id}>
+            <button
+              type="button"
+              className={`webapp-pin webapp-pin--card webapp-pin--${app.id} ${tab ? 'webapp-pin--open' : ''} ${
+                tab?.id === activeTabId ? 'webapp-pin--active' : ''
+              }`}
+              data-app-id={app.id}
+              onClick={() => onOpenWebApp(app)}
+              onAuxClick={event => {
+                if (event.button === 1 && tab) {
+                  event.preventDefault();
+                  onCloseTab(tab.id);
+                }
+              }}
+              aria-label={t('tabs.openApp', { app: app.label })}
+              aria-pressed={tab?.id === activeTabId}
+              aria-busy={tab?.loadState === 'loading'}
+              title={tab?.title || app.label}
+            >
+              {app.id === 'whatsapp' ? (
+                <WhatsAppGlyph />
+              ) : app.id === 'telegram' ? (
+                <TelegramGlyph />
+              ) : app.id === 'youtube' ? (
+                <VideoGlyph />
+              ) : (
+                <ProtonGlyph />
+              )}
+              <span className="webapp-pin__label">{app.label}</span>
+              {tab?.loadState === 'loading' && <span className="tab__spinner" aria-hidden />}
+              {tab && tab.unreadCount > 0 && <span className="tab__badge"
+                aria-label={t('tabs.unreadAria', { count: tab.unreadCount })}>
+                {tab.unreadCount > 99 ? '99+' : tab.unreadCount}
+              </span>}
+            </button>
+            {tab && <button type="button" className="webapp-pin__close"
+              onClick={() => onCloseTab(tab.id)}
+              aria-label={t('tabs.closeAria', { title: app.label })}
+              title={t('tabs.closeTip')}>×</button>}
+          </div>
         ))}
       </div>
       <div className="tabstrip__scroll" role="presentation">
-        {tabs.map((tab) => (
+        {tabs.filter(tab => !pinnedTabIds.has(tab.id)).map((tab) => (
           <TabButton
             key={tab.id}
             tab={tab}
@@ -113,18 +131,6 @@ function TelegramGlyph() {
   );
 }
 
-function HayDevGlyph() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden focusable="false">
-      <path
-        className="webapp-pin__glyph"
-        d="M15.5 14h-.79l-.28-.27a6.5 6.5 0 1 0-.7.7l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0A4.5 4.5 0 1 1 14 9.5 4.49 4.49 0 0 1 9.5 14zm-.5-7h1v2h2v1h-2v2H9v-2H7V9h2z"
-      />
-      <path className="webapp-pin__glyph" d="M4 4h6v1.5H4zM4 7h4v1.5H4z" opacity="0.55" />
-    </svg>
-  );
-}
-
 /* Proton Mail pin — envelope mark. */
 function ProtonGlyph() {
   return (
@@ -137,26 +143,11 @@ function ProtonGlyph() {
   );
 }
 
-/* YouTube pin (Simple Icons play-button mark, viewBox 0 0 24 24). */
-function YouTubeGlyph() {
+function VideoGlyph() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden focusable="false">
-      <path
-        className="webapp-pin__glyph"
-        d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"
-      />
-    </svg>
-  );
-}
-
-/* HDRezka pin — film clapper mark (Material movie path). */
-function HdRezkaGlyph() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden focusable="false">
-      <path
-        className="webapp-pin__glyph"
-        d="M18 4l2 4h-3l-2-4h-2l2 4h-3l-2-4H8l2 4H7L5 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V4h-4z"
-      />
+      <rect x="3" y="4" width="18" height="16" rx="4" fill="none" stroke="currentColor" strokeWidth="2" />
+      <path className="webapp-pin__glyph" d="M10 8.5v7l5-3.5z" />
     </svg>
   );
 }

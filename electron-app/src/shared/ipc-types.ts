@@ -152,6 +152,8 @@ export interface BrowserApi {
   openTab(request: OpenTabRequest): Promise<string>;
   closeTab(tabId: string): Promise<boolean>;
   activateTab(tabId: string): Promise<boolean>;
+  /** Temporarily hide the native active tab while a system picker is foregrounded. */
+  setActiveTabVisible?(visible: boolean): Promise<boolean>;
 
   // Navigation
   navigate(request: NavigateRequest): Promise<boolean>;
@@ -269,6 +271,8 @@ export interface VaultApi {
  * MUST stay serialisable (no functions carrying closures over Node objects).
  */
 export interface ExposedApi {
+  aiSettings?: import('./ai-settings').AiSettingsApi;
+  haydevVpn?: HayDevVpnApi;
   // Foundation
   getVersion(): Promise<AppVersionInfo>;
   ping(payload: FoundationPingPayload): Promise<FoundationPingResult>;
@@ -307,6 +311,37 @@ export interface ExposedApi {
 
   // Event subscription (whitelisted channels only)
   on(channel: string, listener: (data: unknown) => void): () => void;
+}
+
+export const HAYDEV_VPN_NAME = 'HayDevVPN';
+
+export interface HayDevVpnStatus {
+  state: 'off' | 'ready' | 'blocked';
+  dataDir: string | null;
+  issue: string | null;
+  selection: string;
+  locations: Array<{ code: string; name: string }>;
+  locationsIssue: string | null;
+  exitCountry: string | null;
+}
+
+export interface HayDevVpnApi {
+  status(): Promise<HayDevVpnStatus>;
+  prepare(): Promise<HayDevVpnStatus>;
+  setLocation(country: string): Promise<HayDevVpnStatus>;
+  pickFolder(): Promise<string | null>;
+  saveSettings(dataDir: string): Promise<HayDevVpnStatus>;
+  openSettings(): Promise<void>;
+  connect(): Promise<HayDevVpnStatus>;
+  openTab(url: string): Promise<string>;
+  openTorTab(url: string): Promise<string>;
+  windowsRoutes(): Promise<WindowsRoutes>;
+  disconnect(): Promise<HayDevVpnStatus>;
+}
+
+export interface WindowsRoutes {
+  ipv4: { index: number; name: string } | null;
+  ipv6: { index: number; name: string } | null;
 }
 
 declare global {
@@ -367,4 +402,3 @@ export interface ShieldApi {
   allowSite(host: string): Promise<{ accepted: boolean; host: string }>;
   disallowSite(host: string): Promise<{ accepted: boolean; host: string }>;
 }
-

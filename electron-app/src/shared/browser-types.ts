@@ -33,7 +33,7 @@ export interface TabState {
   canGoForward: boolean;
   /** True if the tab belongs to an Incognito session. */
   isIncognito: boolean;
-  profile?: "default" | "agent" | "private" | "darkweb";
+  profile?: "default" | "agent" | "private" | "darkweb" | "arman-vpn";
   egress?: string;
   ownerRun?: number | null;
   /**
@@ -97,25 +97,17 @@ export const PAB_DARKWEB_URL = 'pab://darkweb';
 
 /** A pinned web app shortcut rendered in the tab strip. */
 export interface WebAppPin {
-  id: 'whatsapp' | 'telegram' | 'proton' | 'youtube' | 'hdrezka';
+  id: 'whatsapp' | 'telegram' | 'proton' | 'youtube';
   label: string;
   /** Origin the app lives at; also the URL opened on first launch. */
   url: string;
 }
 
 export const WEB_APP_PINS: readonly WebAppPin[] = [
-  // Matrix NTP concept: messengers sit right next to the New Tab area —
-  // [ New Tab | WhatsApp | Telegram | + ].
-  // (2026-10-03, user decision: messenger pins only — the search pins
-  // [haydev/darkweb] were removed; search lives on the New Tab engine
-  // chips and the RESEARCH quick action.)
-  // (2026-10-03, user request: Proton Mail / YouTube / HDRezka quick
-  // launches added to the strip.)
   { id: 'whatsapp', label: 'WhatsApp', url: 'https://web.whatsapp.com/' },
   { id: 'telegram', label: 'Telegram', url: 'https://web.telegram.org/' },
   { id: 'proton', label: 'Proton Mail', url: 'https://mail.proton.me/' },
   { id: 'youtube', label: 'YouTube', url: 'https://www.youtube.com/' },
-  { id: 'hdrezka', label: 'HDRezka', url: 'https://hdrezka.me/' },
 ] as const;
 
 // ---------------------------------------------------------------------------

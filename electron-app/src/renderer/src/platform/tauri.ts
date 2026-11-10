@@ -23,6 +23,24 @@ const ALLOWED_LISTEN_CHANNELS = new Set<string>([
 ]);
 
 export const tauriApi: ExposedApi = {
+  haydevVpn: {
+    status: () => invoke('arman_vpn_status'),
+    prepare: () => invoke('arman_vpn_prepare'),
+    setLocation: (country) => invoke('arman_vpn_set_location', { country }),
+    pickFolder: () => invoke('arman_vpn_pick_folder'),
+    saveSettings: (dataDir) => invoke('arman_vpn_save_settings', { dataDir }),
+    openSettings: () => invoke('arman_vpn_open_settings'),
+    connect: () => invoke('arman_vpn_connect'),
+    openTab: (url) => invoke('arman_vpn_open_tab', { url }),
+    openTorTab: (url) => invoke('tor_open_tab', { url }),
+    windowsRoutes: () => invoke('windows_route_status'),
+    disconnect: () => invoke('arman_vpn_disconnect'),
+  },
+  aiSettings: {
+    get: () => invoke('ai_settings_get'),
+    save: (patch) => invoke('ai_settings_save', { patch }),
+    models: (provider) => invoke('ai_settings_models', { provider }),
+  },
   getVersion: () => invoke('app_version'),
   ping: (payload) => invoke('foundation_ping', { payload }),
   runtimeStatus: () => invoke('app_runtime_status'),
@@ -32,6 +50,7 @@ export const tauriApi: ExposedApi = {
     openTab: (req) => invoke('browser_tabs_open', { req }),
     closeTab: (tabId) => invoke('browser_tabs_close', { req: { tabId } }),
     activateTab: (tabId) => invoke('browser_tabs_activate', { req: { tabId } }),
+    setActiveTabVisible: (visible) => invoke('browser_active_tab_set_visible', { visible }),
     navigate: (req) => invoke('browser_navigate', { req }),
     back: (tabId) => invoke('browser_back', { req: { tabId } }),
     forward: (tabId) => invoke('browser_forward', { req: { tabId } }),
@@ -127,17 +146,19 @@ export const tauriApi: ExposedApi = {
       return () => {};
     }
     let unlisten: (() => void) | undefined;
+    let disposed = false;
     listen(channel, (event) => {
       listener(event.payload);
     })
       .then((u) => {
-        unlisten = u;
+        if (disposed) u(); else unlisten = u;
       })
       .catch((err: unknown) => {
         console.error('[platform:tauri] listen failed:', channel, err);
       });
 
     return () => {
+      disposed = true;
       if (unlisten) unlisten();
     };
   },

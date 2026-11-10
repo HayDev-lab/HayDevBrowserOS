@@ -450,26 +450,34 @@ export function getLayoutModifier(kind: LayoutKind): string {
 // ---------------------------------------------------------------------------
 
 /**
- * Find the tab already showing a pinned web app (origin-prefix match on
- * committed or pending URL). Returns the tab id, or null when the app has
- * no open tab — the caller then opens a fresh one.
+ * Find the ordinary tab represented by the app pin. A loading tab uses
+ * its requested URL, and a committed tab uses its current document.
  */
 export function findWebAppTabId(tabs: TabState[], app: WebAppPin): string | null {
-  const tab = tabs.find(
-    (t) => t.url.startsWith(app.url) || t.pendingUrl.startsWith(app.url)
-  );
+  const tab = tabs.find(t => {
+    if (t.isIncognito || t.isDarkWeb || (t.profile && t.profile !== 'default')) return false;
+    const url = t.loadState === 'loading' ? t.pendingUrl || t.url : t.url || t.pendingUrl;
+    return isWebAppTabActive(url, app);
+  });
   return tab?.id ?? null;
 }
 
 /** True when the given (active) tab URL belongs to the pinned app. */
 export function isWebAppTabActive(activeTabUrl: string, app: WebAppPin): boolean {
-  return activeTabUrl.startsWith(app.url);
+  try {
+    const url = new URL(activeTabUrl);
+    if (url.origin === new URL(app.url).origin) return true;
+    return app.id === 'youtube' && url.protocol === 'https:' && !url.port &&
+      ['youtube.com', 'm.youtube.com', 'youtu.be', 'consent.youtube.com'].includes(url.hostname);
+  } catch {
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Side panels (history / bookmarks / downloads)
 // ---------------------------------------------------------------------------
-export type PanelKind = 'history' | 'bookmarks' | 'downloads' | 'vault';
+export type PanelKind = 'history' | 'bookmarks' | 'downloads' | 'vault' | 'settings' | 'vpn';
 
 /**
  * Returns true if the given panel kind matches the active panel.

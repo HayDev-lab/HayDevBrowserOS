@@ -354,11 +354,19 @@ export function buildSearchPageHtml(opts: SearchPageOptions): string {
     chat.appendChild(d);
     return d;
   }
+  function sourceUrl(value) {
+    try {
+      var url = new URL(value);
+      if ((url.protocol === 'http:' || url.protocol === 'https:') && !url.username && !url.password) return url.href;
+    } catch (_) {}
+    return null;
+  }
   function addSources(items) {
     var box = el('div', 'srcs');
     items.slice(0, 10).forEach(function (s) {
       var title = (s.metadata && s.metadata.title) || s.title || '';
-      var url = (s.metadata && s.metadata.url) || s.url || '#';
+      var url = sourceUrl((s.metadata && s.metadata.url) || s.url);
+      if (!url) return;
       var a = document.createElement('a');
       a.className = 'src';
       a.href = url;
@@ -536,7 +544,8 @@ export function buildSearchPageHtml(opts: SearchPageOptions): string {
 
   form.addEventListener('submit', function (e) {
     e.preventDefault();
-    ask(input.value.trim());
+    if (mode === 'research') startResearch(input.value.trim());
+    else ask(input.value.trim());
     input.focus();
   });
 
@@ -624,12 +633,14 @@ export function buildSearchPageHtml(opts: SearchPageOptions): string {
       return;
     }
     if (id === 'research') {
-      var rq = (new URLSearchParams(location.search).get('q') || input.value || '').trim();
+      mode = id;
+      renderModes();
+      var rq = (input.value || new URLSearchParams(location.search).get('q') || '').trim();
       startResearch(rq);
     }
   }
 
-  /** Launch the Deep Research agent (mode chip OR src=research autoload). */
+  /** Launch Deep Research after a click on its mode or an explicit submit. */
   function startResearch(rq) {
     if (!bridge) { modeNoteMsg(L('note.researchUnavailable'), true); return; }
     if (!rq) { modeNoteMsg(L('note.researchNeedQuery'), true); return; }
@@ -691,8 +702,10 @@ export function buildSearchPageHtml(opts: SearchPageOptions): string {
       head.textContent = L('sources.head', { n: srcs.length });
       box.appendChild(head);
       srcs.forEach(function (src) {
+        var url = sourceUrl(src.url);
+        if (!url) return;
         var a = document.createElement('a');
-        a.href = String(src.url || '');
+        a.href = url;
         a.textContent = String(src.title || src.url || '');
         a.className = 'sources__link';
         a.rel = 'noreferrer noopener';
@@ -708,8 +721,7 @@ export function buildSearchPageHtml(opts: SearchPageOptions): string {
   if (mode !== 'web') modeNoteMsg(L('note.mode', { mode: mode.toUpperCase() }));
 
   if (q) {
-    // src=research (the HayDev engine chip): auto-launch the agent pipeline.
-    if (mode === 'research') startResearch(q);
+    if (mode === 'research') input.value = q;
     else ask(q);
   } else input.focus();
 })();

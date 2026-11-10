@@ -20,6 +20,10 @@
 //! download cancel mid-flight (wry exposes no cancel handle — verified).
 
 pub mod agent;
+pub mod ai_settings;
+pub mod arman_vpn;
+pub mod debugging;
+pub mod vision;
 pub mod atomic_store;
 pub mod run_guard;
 pub mod attachments;
@@ -52,6 +56,9 @@ pub mod registry;
 pub mod runtime_manager;
 pub mod shield;
 pub mod site_ua;
+mod tor_tabs;
+mod windows_routes;
+pub mod youtube;
 pub mod socks_http;
 pub mod stores;
 pub mod types;
@@ -72,10 +79,16 @@ pub fn run() {
     let darkweb_index: crawl::SharedIndex = std::sync::Arc::new(std::sync::Mutex::new(
         crawl::LocalIndex::default(),
     ));
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         // Native file dialogs for the __pabNewTab attachment bridge (Rust
         // API only — no JS-side permissions are granted by this plugin).
-        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_dialog::init());
+    // Isolated debug QA must not focus or attach to a running user instance.
+    let isolated_data = std::env::var("HAYDEV_QA_MODE").as_deref() == Ok("1")
+        && std::env::var_os("HAYDEV_DATA_DIR")
+            .is_some_and(|p| std::path::Path::new(&p).is_absolute());
+    let isolated_qa = cfg!(debug_assertions) && isolated_data;
+    let builder = if isolated_qa { builder } else { builder
         // Single instance: a second launch focuses the existing window instead
         // of forking a second browser state (Electron had this; parity).
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -85,7 +98,8 @@ pub fn run() {
             let _ = win.set_focus();
           }
           log::info!("[TAURI] second-instance signal — focused existing window");
-        }))
+        })) };
+    builder
         // ASYNC protocol handler (UI-freeze fix, 2026-10-01): WebView2 raises
         // WebResourceRequested on the UI thread — the SYNC variant made every
         // slow pab endpoint (darkweb preview/fetch over Tor, up to ~25 s)
@@ -113,7 +127,8 @@ pub fn run() {
         .manage(downloads::SharedQuarantine::default())
         .manage(shield::new_shield(crate::privacy::global().shield_enabled))
         .manage(core::shared(initial_state()))
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler({
+            let handle: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
             commands::app_version,
             commands::build_identity,
             commands::foundation_ping,
@@ -139,6 +154,7 @@ pub fn run() {
             commands::browser_tabs_open,
             commands::browser_tabs_close,
             commands::browser_tabs_activate,
+            commands::browser_active_tab_set_visible,
             commands::browser_navigate,
             commands::browser_back,
             commands::browser_forward,
@@ -155,6 +171,9 @@ pub fn run() {
             commands::browser_downloads_cancel,
             commands::browser_downloads_remove,
             commands::agent_run,
+            ai_settings::ai_settings_get,
+            ai_settings::ai_settings_save,
+            ai_settings::ai_settings_models,
             commands::agent_stop,
             commands::agent_status,
             commands::agent_timeline_list,
@@ -165,6 +184,17 @@ pub fn run() {
             commands::control_take_control,
             commands::control_get_mode,
             commands::privacy_status,
+            arman_vpn::arman_vpn_status,
+            arman_vpn::arman_vpn_prepare,
+            arman_vpn::arman_vpn_set_location,
+            arman_vpn::arman_vpn_pick_folder,
+            arman_vpn::arman_vpn_save_settings,
+            arman_vpn::arman_vpn_open_settings,
+            arman_vpn::arman_vpn_connect,
+            arman_vpn::arman_vpn_open_tab,
+            arman_vpn::arman_vpn_disconnect,
+            tor_tabs::tor_open_tab,
+            windows_routes::windows_route_status,
             commands::privacy_set_fingerprint_noise,
             commands::set_locale,
             commands::ui_locale,
@@ -186,16 +216,31 @@ pub fn run() {
             commands::window_toggle_maximize,
             commands::window_set_agent_panel_open,
             commands::window_close,
-        ])
-        .setup(|app| {
+            ];
+            move |invoke: tauri::ipc::Invoke<tauri::Wry>| {
+                if arman_vpn::trusted(invoke.message.webview_ref()).is_ok() {
+                    handle(invoke)
+                } else {
+                    invoke.resolver.reject("IPC_ORIGIN_FORBIDDEN");
+                    true
+                }
+            }
+        })
+        .setup(move |app| {
             // Logging in BOTH debug and release. Release diagnostics go to
             // the OS log dir (rotated); stdout is invisible in a GUI app but
             // harmless. Without this, "works on my machine" is unprovable.
             {
                 use tauri_plugin_log::{Builder as LogBuilder, RotationStrategy, Target, TargetKind};
+                // QA logs belong to the isolated profile, never the user's OS log directory.
+                let file_target = if isolated_data {
+                    TargetKind::Folder { path: lib_app_data_dir().join("logs"), file_name: Some("haydev.log".into()) }
+                } else {
+                    TargetKind::LogDir { file_name: Some("haydev.log".into()) }
+                };
                 let mut targets = vec![
                     Target::new(TargetKind::Stdout),
-                    Target::new(TargetKind::LogDir { file_name: Some("haydev.log".into()) }),
+                    Target::new(file_target),
                 ];
                 if cfg!(debug_assertions) {
                     targets.push(Target::new(TargetKind::Webview));
@@ -261,7 +306,8 @@ pub fn run() {
                 tauri::LogicalPosition::new(0.0, 0.0),
                 window.inner_size()?,
             )?;
-            log::info!("[TAURI] chrome window ready (debug port {chrome_port}, tab port {})", core::tab_debug_port());
+            if core::automation_debug_enabled(){log::info!("[TAURI] chrome window ready (debug port {chrome_port}, tab port {})",core::tab_debug_port());}
+            else{log::info!("[TAURI] chrome window ready (CDP disabled)");}
 
             // Tab webview layout follows window resizes.
             core::watch_window_events(&handle);
@@ -299,6 +345,7 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app, event| {
             if let RunEvent::ExitRequested { .. } = event {
+                arman_vpn::shutdown();
                 // Persist the open tabs for the next launch (parity with the
                 // Electron runtime's before-quit session save).
                 core::persist_session(app);
@@ -315,29 +362,6 @@ pub fn run() {
                 log::info!("[TAURI] session persisted; engines stopped; exiting");
             }
         });
-}
-
-/// App-data dir WITHOUT the create_dir_all side effect (for optional reads
-/// like the user .env lookup).
-fn app_data_dir_opt() -> Option<std::path::PathBuf> {
-    let ident = "com.haydev.browser";
-    if cfg!(target_os = "windows") {
-        std::env::var_os("APPDATA")
-            .map(|base| std::path::PathBuf::from(base).join(ident))
-    } else if cfg!(target_os = "macos") {
-        std::env::var_os("HOME").map(|h| {
-            std::path::PathBuf::from(h)
-                .join("Library/Application Support")
-                .join(ident)
-        })
-    } else {
-        std::env::var_os("XDG_CONFIG_HOME")
-            .map(std::path::PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config"))
-            })
-            .map(|base| base.join(ident))
-    }
 }
 
 fn initial_state() -> core::BrowserState {    let dir = app_data_dir();
@@ -413,6 +437,8 @@ fn wipe_ephemeral_profiles() {
         // PRIVATE hosts an isolated InPrivate environment; wipe guarantees
         // nothing from a previous session survives (privacy.rs contract).
         crate::profiles::ProfileKind::Private,
+        crate::profiles::ProfileKind::ArmanVpn,
+        crate::profiles::ProfileKind::TorProxy,
     ] {
         if let Some(dir) = manager.data_dir(kind) {
             if dir.exists() {
@@ -470,15 +496,12 @@ fn app_data_dir() -> std::path::PathBuf {
 /// dotenv; parity for AI/search endpoint configuration without adding a
 /// dependency. Existing environment variables always win.
 fn load_dev_env() {
-    let mut candidates = vec![
-        std::path::PathBuf::from(".env"),
-        std::path::PathBuf::from("../.env"),
-    ];
-    // Installed builds have no project .env in CWD (Program Files) — the
-    // user-configured location is the app-data dir:
-    //   %APPDATA%\com.haydev.browser\.env
-    if let Some(data_env) = app_data_dir_opt().map(|d| d.join(".env")) {
-        candidates.insert(0, data_env);
+    let mut candidates = vec![app_data_dir().join(".env")];
+    // A selected profile has its own configuration. Only development
+    // launches using the default profile can load a project .env.
+    let explicit_data = std::env::var_os("HAYDEV_DATA_DIR").is_some_and(|dir| !dir.is_empty());
+    if cfg!(debug_assertions) && !explicit_data {
+        candidates.extend([".env".into(), "../.env".into()]);
     }
     for path in candidates {
         let Ok(contents) = std::fs::read_to_string(&path) else {
@@ -501,7 +524,8 @@ fn load_dev_env() {
             {
                 value = stripped.to_string();
             }
-            if std::env::var_os(key).is_none() && !key.is_empty() {
+            if !key.to_ascii_uppercase().starts_with("WEBVIEW2_")
+                && !key.is_empty() && std::env::var_os(key).is_none() {
                 std::env::set_var(key, &value);
             }
         }

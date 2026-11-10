@@ -1,7 +1,7 @@
 {
   "name": "haydev-browser-os",
   "productName": "HayDev Browser OS",
-  "version": "0.1.0",
+  "version": "0.1.3",
   "description": "Personal Windows agentic browser РІР‚вЂќ Tauri 2 (Rust + WebView2 + TypeScript + React).",
   "license": "UNLICENSED",
   "private": true,
@@ -22,6 +22,7 @@
     "dev:tauri": "tauri dev",
     "build:internal-pages": "node scripts/build-internal-pages.mjs",
     "bundle:runtimes": "node scripts/bundle-runtimes.mjs",
+    "prepare:windows-runtimes": "node scripts/prepare-windows-runtimes.mjs",
     "build:vite": "vite build -c vite.renderer.config.ts",
     "build:tauri": "tauri build",
     "integration:prepare": "node scripts/prepare-perplexica.mjs",
@@ -48,7 +49,7 @@
     "ws": "^8.22.0"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.31.0",
+    "@modelcontextprotocol/sdk": "1.32.2",
     "@tauri-apps/api": "^2.11.1",
     "dotenv": "^17.4.2",
     "react": "^18.3.1",

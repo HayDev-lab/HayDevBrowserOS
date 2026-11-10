@@ -816,4 +816,28 @@ describe('ui-logic / web app pins', () => {
     expect(isWebAppTabActive('https://web.telegram.org/', whatsapp)).toBe(false);
     expect(isWebAppTabActive('', telegram)).toBe(false);
   });
+
+  it('recognizes YouTube redirects without matching unrelated domains', () => {
+    const youtube = WEB_APP_PINS.find(pin => pin.id === 'youtube')!;
+    for (const url of ['https://www.youtube.com', 'https://youtube.com/watch?v=one',
+      'https://m.youtube.com/watch?v=one', 'https://youtu.be/one', 'https://consent.youtube.com/']) {
+      expect(isWebAppTabActive(url, youtube)).toBe(true);
+    }
+    expect(isWebAppTabActive('https://www.youtube.com.attacker.example/', youtube)).toBe(false);
+    expect(isWebAppTabActive('https://youtube.com:8443/', youtube)).toBe(false);
+  });
+
+  it('keeps private and routed tabs separate from ordinary app pins', () => {
+    expect(findWebAppTabId([
+      makeTab({ id: 'private', url: whatsapp.url, isIncognito: true }),
+      makeTab({ id: 'vpn', url: whatsapp.url, profile: 'arman-vpn' }),
+      makeTab({ id: 'ordinary', url: whatsapp.url, profile: 'default' }),
+    ], whatsapp)).toBe('ordinary');
+  });
+
+  it('uses the committed document after a tab leaves the app', () => {
+    expect(findWebAppTabId([
+      makeTab({ url: 'https://example.com/', pendingUrl: whatsapp.url, loadState: 'committed' }),
+    ], whatsapp)).toBeNull();
+  });
 });

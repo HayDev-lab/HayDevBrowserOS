@@ -81,6 +81,7 @@ impl ServiceStatus {
 struct Svc {
     status: Option<ServiceStatus>,
     child_pid: Option<u32>,
+    bundled_tor: bool,
     #[cfg(windows)]
     job: Option<Arc<RuntimeJob>>,
     restarts: u32,
@@ -132,7 +133,20 @@ impl RuntimeManagerState {
         self.svcs
             .get("tor")
             .and_then(|s| s.status.as_ref())
+            .filter(|status| status.state == ServiceState::Ready)
             .and_then(|s| s.endpoint.clone())
+    }
+
+    /// The regular-web Tor tabs only use the browser-owned Tor process.
+    pub(crate) fn managed_tor_proxy(&self) -> Option<(std::net::SocketAddrV4, u32)> {
+        let service = self.svcs.get("tor")?;
+        let status = service.status.as_ref()?;
+        if self.stopping || status.state != ServiceState::Ready || !service.bundled_tor {
+            return None;
+        }
+        let address: std::net::SocketAddrV4 =
+            status.endpoint.as_deref()?.strip_prefix("socks5://")?.parse().ok()?;
+        (address.ip().is_loopback() && address.port() != 0).then_some((address, service.child_pid?))
     }
 }
 
@@ -419,7 +433,7 @@ fn start_searxng(m: SharedRuntimeManager, external_url: Option<String>) {
         });
         match spawn_service(
             &m, "searxng", &python_exe,
-            &[runner.to_string_lossy().as_ref()],
+            &["-B", runner.to_string_lossy().as_ref()],
             &app_dir,
             &[
                 (
@@ -976,6 +990,9 @@ fn start_tor(m: SharedRuntimeManager) {
             Ok(child) => {
                 let pid = child.id();
                 let _lease = ServiceLease { manager: m.clone(), key: "tor", pid };
+                if let Some(service) = m.lock().unwrap_or_else(|p| p.into_inner()).svcs.get_mut("tor") {
+                    service.bundled_tor = provenance == "bundled";
+                }
                 set_status(&m, "tor", |s| s.pid = Some(pid));
                 log::info!(
                     "[PROCESS] tor spawned pid={pid} socks={socks_port} control={control_port}"

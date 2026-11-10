@@ -1,7 +1,8 @@
 import haydevLogo from '../assets/haydev-logo.png';
+import { AI_SETTINGS_TITLE } from './panels/AiSettingsPanel';
 import { useEffect, useState } from 'react';
 import { platformApi } from '../platform';
-import type { ShieldStatus } from '@shared/ipc-types';
+import { HAYDEV_VPN_NAME, type ShieldStatus } from '@shared/ipc-types';
 /**
  * TopBar — cohesive top browser surface (Matrix concept, 3 rows):
  *   row 0  title bar: brand + status + window controls (frameless)
@@ -125,7 +126,9 @@ export function TopBar(props: TopBarProps) {
           onStop={props.onStop}
         />
         <div className="topbar__actions">
-          <IncognitoBadge state={incognito} />
+          <ActionToggle glyph="⚙" label={AI_SETTINGS_TITLE[lang]} title={AI_SETTINGS_TITLE[lang]} active={props.activePanel === 'settings'} onClick={() => props.onTogglePanel('settings')} iconOnly />
+          {platformApi.haydevVpn && <ActionToggle glyph="" label={HAYDEV_VPN_NAME} title={HAYDEV_VPN_NAME} active={props.activePanel === 'vpn'} onClick={() => props.onTogglePanel('vpn')} />}
+          {props.activeTab?.profile !== 'arman-vpn' && <IncognitoBadge state={incognito} />}
           {props.activeTab?.isDarkWeb && <OnionBadge />}
           <ActionToggle
             glyph="★"
@@ -266,6 +269,7 @@ function ActionToggle({
  */
 function FingerprintPill() {
   const [noise, setNoise] = useState<boolean | null>(null);
+  const [saving, setSaving] = useState(false);
   useEffect(() => {
     let alive = true;
     void platformApi.privacy
@@ -281,12 +285,15 @@ function FingerprintPill() {
     };
   }, []);
   const toggle = () => {
+    if (saving || noise === null) return;
+    setSaving(true);
     const next = !(noise ?? true);
     setNoise(next); // optimistic; the host answers in ms
     void platformApi.privacy
       .setFingerprintNoise(next)
       .then((r) => setNoise(r.fingerprintNoise))
-      .catch(() => setNoise(noise));
+      .catch(() => setNoise(noise))
+      .finally(() => setSaving(false));
   };
   const on = noise ?? true;
   return (
@@ -295,6 +302,8 @@ function FingerprintPill() {
       className={`titlebar__pill titlebar__pill--btn ${on ? '' : 'titlebar__pill--down'}`}
       title="Fingerprint noise (private tabs): spoof canvas/audio/WebGL/hardware — applies to NEW private tabs"
       data-testid="fingerprint-pill"
+      disabled={saving || noise === null}
+      aria-pressed={on}
       onClick={toggle}
     >
       <span className="titlebar__dot titlebar__dot--dim" aria-hidden />

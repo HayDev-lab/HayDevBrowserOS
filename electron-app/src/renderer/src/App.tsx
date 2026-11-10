@@ -1,6 +1,6 @@
 import { platformApi } from './platform';
 import { nativeErrorCode, nativeErrorMessage } from '@shared/native-errors';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useBrowserUi, useBrowserActions } from './store/browser-store';
 import { useAgentStore } from './store/agent-store';
 import { TopBar } from './components/TopBar';
@@ -11,6 +11,8 @@ import { HistoryPanel } from './components/panels/HistoryPanel';
 import { BookmarksPanel } from './components/panels/BookmarksPanel';
 import { DownloadsPanel } from './components/panels/DownloadsPanel';
 import { VaultPanel } from './components/panels/VaultPanel';
+import { AiSettingsPanel } from './components/panels/AiSettingsPanel';
+import { HayDevVpnPanel } from './components/panels/HayDevVpnPanel';
 import { pickLayoutKind, getLayoutModifier, findWebAppTabId, type PanelKind } from './store/ui-logic';
 import { useI18n } from './i18n';
 import type { WebAppPin } from '@shared/browser-types';
@@ -22,6 +24,7 @@ export function App() {
   const ui = useBrowserUi();
   const actions = useBrowserActions();
   const agent = useAgentStore();
+  const openingApps = useRef(new Set<WebAppPin['id']>());
   const [activePanel, setActivePanel] = useState<PanelKind | null>(null);
   const [agentPanelOpen, setAgentPanelOpen] = useState(true);
   const [storageError, setStorageError] = useState(false);
@@ -94,14 +97,15 @@ export function App() {
   const activeTab = ui.tabs.find((t) => t.isActive) ?? null;
   const layoutKind = pickLayoutKind(windowWidth);
   const layoutMod = getLayoutModifier(layoutKind);
-  const showAgentPanel = layoutKind !== 'narrow' && agentPanelOpen;
+  const showAgentPanel = activePanel === null && layoutKind !== 'narrow' && agentPanelOpen;
+  const rightRailOpen = activePanel !== null || showAgentPanel;
 
   // Native tab webviews sit above the React shell. Keep their right edge in
   // lockstep with the visible agent rail so closing the panel releases the
   // space instead of leaving a black strip.
   useEffect(() => {
-    void platformApi.window.setAgentPanelOpen?.(showAgentPanel);
-  }, [showAgentPanel]);
+    void platformApi.window.setAgentPanelOpen?.(rightRailOpen);
+  }, [rightRailOpen]);
 
   const handleOpenTab = useCallback(async () => {
     await actions.openTab({ url: PAB_NEW_TAB_URL, activate: true });
@@ -112,15 +116,23 @@ export function App() {
   // open one. The pin itself stays in the strip — tabs come and go.
   const handleOpenWebApp = useCallback(
     async (app: WebAppPin) => {
-      const existing = findWebAppTabId(ui.tabs, app);
-      if (existing) {
-        await actions.activateTab(existing);
-      } else {
-        await actions.openTab({ url: app.url, activate: true });
+      if (openingApps.current.has(app.id)) return;
+      openingApps.current.add(app.id);
+      try {
+        const tabs = await platformApi.browser.listTabs();
+        const existing = findWebAppTabId(tabs, app);
+        if (!existing || !await actions.activateTab(existing)) {
+          await actions.openTab({ url: app.url, activate: true });
+        }
+        await ui.refreshTabs();
+        setActivePanel(null);
+      } catch (error) {
+        reportActionError(error);
+      } finally {
+        openingApps.current.delete(app.id);
       }
-      await ui.refreshTabs();
     },
-    [actions, ui]
+    [actions, ui, reportActionError]
   );
 
   const handleCloseTab = useCallback(
@@ -246,15 +258,23 @@ export function App() {
 
   const handleSetControlMode = useCallback(
     (mode: 'HUMAN' | 'AGENT') => {
-      if (mode === 'AGENT') setAgentPanelOpen(true);
+      if (mode === 'AGENT') {
+        setActivePanel(null);
+        setAgentPanelOpen(true);
+      }
       void agent.setMode(mode).catch(reportActionError);
     },
     [agent, reportActionError]
   );
 
   const handleToggleAgentPanel = useCallback(() => {
-    setAgentPanelOpen((open) => !open);
-  }, []);
+    if (activePanel !== null) {
+      setActivePanel(null);
+      setAgentPanelOpen(true);
+    } else {
+      setAgentPanelOpen((open) => !open);
+    }
+  }, [activePanel]);
 
   const handleTakeControl = useCallback(() => {
     void agent.takeControl('user_request').catch(reportActionError);
@@ -314,7 +334,8 @@ export function App() {
         onToggleAgentPanel={handleToggleAgentPanel}
       />
 
-      {showAgentPanel && (
+      {/* Keep drafts and attachments mounted while another rail panel is open. */}
+      <div hidden={!showAgentPanel}>
         <AgentPanel
           mode={agent.controlMode}
           agentRunning={agentRunning}
@@ -330,7 +351,7 @@ export function App() {
           onClearChat={agent.clearChat}
           onClose={() => setAgentPanelOpen(false)}
         />
-      )}
+      </div>
 
       <PasswordPrompt />
       <MemoryPrompt />
@@ -370,6 +391,8 @@ export function App() {
         onClose={() => setActivePanel(null)}
         activeTabId={ui.activeTabId}
       />
+      {activePanel === 'settings' && <AiSettingsPanel onClose={() => setActivePanel(null)} agentRunning={agentRunning} />}
+      {activePanel === 'vpn' && <HayDevVpnPanel onClose={() => setActivePanel(null)} onTabsChanged={ui.refreshTabs} />}
 
       <footer className="app__footer" role="contentinfo">
         <div className="app__footer-left">

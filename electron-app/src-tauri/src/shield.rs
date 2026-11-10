@@ -3,9 +3,9 @@
 //!
 //! Honesty contract:
 //! - a block supplies a native 403 response before the request leaves WebView2;
-//! - this is a BASIC domain blocklist (embedded defaults + optional user
-//!   file), NOT "полный uBlock": no cosmetic filtering, no filter-list
-//!   subscription ecosystem. The UI says exactly that;
+//! - domain filtering uses embedded defaults. The YouTube helper adds
+//!   scoped cosmetic rules and skips recognized player advertisements.
+//!   Filter-list subscriptions are outside this module;
 //! - site exceptions (allowlist) are explicit and persisted;
 //! - the extension path (uBO into WebView2) is documented as incompatible
 //!   with the current stack (wry exposes no AddBrowserExtension API) —
@@ -123,9 +123,13 @@ pub fn should_block(state: &ShieldState, host: &str) -> bool {
 
 /// Exceptions belong to the top-level site being visited, not the tracker.
 pub fn should_block_on_site(state: &ShieldState, request_host: &str, page_host: &str) -> bool {
-    if !state.enabled.load(Ordering::SeqCst) { return false; }
-    if state.allow.lock().unwrap_or_else(|p| p.into_inner()).iter().any(|rule| host_matches(page_host, rule)) { return false; }
+    if !filtering_enabled_on_site(state, page_host) { return false; }
     DEFAULT_BLOCKLIST.iter().any(|rule| host_matches(request_host, rule))
+}
+
+pub fn filtering_enabled_on_site(state: &ShieldState, page_host: &str) -> bool {
+    state.enabled.load(Ordering::SeqCst) && !state.allow.lock()
+        .unwrap_or_else(|p| p.into_inner()).iter().any(|rule| host_matches(page_host, rule))
 }
 
 /// Record a REAL block only after WebResourceRequested.SetResponse succeeds.

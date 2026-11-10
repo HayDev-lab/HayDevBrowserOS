@@ -18,11 +18,20 @@ export function proxy(request: NextRequest) {
       (!origin && request.headers.get('sec-fetch-site') === 'cross-site')) {
     return NextResponse.json({ error: 'ORIGIN_DENIED' }, { status: 403 });
   }
+  if (origin && internalOrigins.has(origin)) {
+    const method = request.method === 'OPTIONS'
+      ? request.headers.get('access-control-request-method')
+      : request.method;
+    const path = request.nextUrl.pathname;
+    if (!((path === '/api/providers' && method === 'GET') || (path === '/api/search' && method === 'POST'))) {
+      return NextResponse.json({ error: 'API_DENIED' }, { status: 403 });
+    }
+  }
   const response = request.method === 'OPTIONS' ? new NextResponse(null, { status: 204 }) : NextResponse.next();
   if (origin) {
     response.headers.set('Access-Control-Allow-Origin', origin);
     response.headers.set('Vary', 'Origin');
-    response.headers.set('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+    response.headers.set('Access-Control-Allow-Methods', internalOrigins.has(origin) ? 'GET,POST,OPTIONS' : 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
     response.headers.set('Access-Control-Allow-Headers', 'content-type');
   }
   return response;

@@ -16,6 +16,7 @@
  */
 import { useState, useEffect, useCallback, type KeyboardEvent } from 'react';
 import type { TabState } from '@shared/browser-types';
+import { HAYDEV_VPN_NAME } from '@shared/ipc-types';
 import { useI18n } from '../i18n';
 import {
   getCommandBarState,
@@ -117,7 +118,7 @@ export function CommandBar({
       />
 
       <div className="commandbar__field">
-        {tab?.egress && <span className="commandbar__route" title={`${tab.profile}: ${tab.egress}`}>{tab.egress === 'direct' ? 'DIRECT' : 'SOCKS5'}</span>}
+        {tab?.egress && <span className="commandbar__route" title={`${tab.profile === 'arman-vpn' ? HAYDEV_VPN_NAME : tab.profile}: ${tab.egress}`}>{tab.profile === 'arman-vpn' ? HAYDEV_VPN_NAME : tab.egress === 'direct' ? 'DIRECT' : 'SOCKS5'}</span>}
         <StateIndicator state={state} isIncognito={!!tab?.isIncognito} />
         <input
           className="commandbar__input"

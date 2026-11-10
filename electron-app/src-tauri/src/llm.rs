@@ -19,7 +19,7 @@ pub const NVIDIA_BASE: &str = "https://integrate.api.nvidia.com/v1";
 /// Ollama Cloud / local Ollama, OpenAI-compatible endpoint.
 pub const OLLAMA_BASE: &str = "https://ollama.com/v1";
 
-pub const DEFAULT_GEMINI_MODEL: &str = "gemini-3.5-flash-lite";
+pub const DEFAULT_GEMINI_MODEL: &str = "gemini-3.6-flash";
 pub const DEFAULT_NVIDIA_MODEL: &str = "openai/gpt-oss-20b";
 pub const DEFAULT_OLLAMA_MODEL: &str = "glm-5.3-flash";
 /// DEEP_RESEARCH profile model for the Ollama stack (heavier model for
@@ -38,21 +38,25 @@ pub struct LlmProvider {
     pub research_model: Option<String>,
     /// Env var holding the API key — read at call time, never copied.
     pub api_key_env: &'static str,
+    pub reasoning: crate::ai_settings::GeminiReasoning,
+    pub profile: String,
 }
 
 impl LlmProvider {
     /// UI-facing config (NO key material) — shape matches Electron's
     /// `OllamaClientConfig { baseUrl, model, credentialRef }`.
     pub fn public_config(&self) -> serde_json::Value {
+        let saved = crate::ai_settings::load().ok().is_some_and(|s| s.providers.get(self.id).is_some_and(|p| p.encrypted_key.is_some()));
         serde_json::json!({
             "baseUrl": self.base_url,
             "model": self.model,
-            "credentialRef": format!("env:{}", self.api_key_env),
+            "reasoningMode": if self.id == "gemini" { serde_json::to_value(self.reasoning).ok() } else { None },
+            "credentialRef": if saved {format!("settings:{}", self.id)} else {format!("env:{}", self.api_key_env)},
         })
     }
 
     pub fn is_configured(&self) -> bool {
-        env_key(self.api_key_env)
+        !self.model.is_empty() && env_key(self.api_key_env)
             .map(|k| !k.is_empty())
             .unwrap_or(false)
     }
@@ -71,9 +75,31 @@ impl LlmProvider {
             self.model.clone()
         }
     }
+
+    /// Keep ordinary tool interaction quick; deepen only a research run.
+    /// Never silently change models.
+    pub fn reasoning_effort(&self, messages: &[serde_json::Value]) -> Option<&'static str> {
+        use crate::ai_settings::GeminiReasoning::*;
+        if self.id != "gemini" { return None; }
+        match self.reasoning {
+            Default => None, Low => Some("low"), Medium => Some("medium"), High => Some("high"),
+            Adaptive => {
+                let _ = messages;
+                Some(if self.profile == "DEEP_RESEARCH" { "medium" } else { "low" })
+            }
+        }
+    }
+
+    pub fn request_timeout(&self, messages: &[serde_json::Value]) -> std::time::Duration {
+        std::time::Duration::from_secs(match self.reasoning_effort(messages) {
+            Some("low") => 20, Some("medium") => 60, _ => 120,
+        })
+    }
 }
 
 fn env_key(name: &str) -> Option<String> {
+    let provider = match name { "GEMINI_API_KEY" => Some("gemini"), "OPENAI_API_KEY" => Some("openai"), "OPENROUTER_API_KEY" => Some("openrouter"), _ => None };
+    if let Some(provider) = provider { return crate::ai_settings::key(provider).ok().flatten(); }
     std::env::var(name).ok().map(|v| v.trim().to_string())
 }
 
@@ -85,15 +111,19 @@ fn env_str(name: &str) -> Option<String> {
 }
 
 fn build(id: &'static str, base: String, model: String, research: Option<String>, env: &'static str) -> LlmProvider {
-    LlmProvider { id, base_url: base, model, research_model: research, api_key_env: env }
+    let reasoning = if id == "gemini" { crate::ai_settings::load().map(|s| s.gemini_reasoning).unwrap_or_default() } else { crate::ai_settings::GeminiReasoning::Default };
+    LlmProvider { id, base_url: base, model, research_model: research, api_key_env: env, reasoning, profile: "STANDARD".into() }
 }
 
 /// Resolve the active provider. `Ok(None)` means "no stack is usable" —
 /// the caller answers AI_PROVIDER_NOT_CONFIGURED honestly.
 pub fn resolve_provider() -> Option<LlmProvider> {
-    let forced = env_str("AI_PROVIDER").map(|v| v.to_lowercase());
+    let settings = crate::ai_settings::load().ok()?;
+    let forced = settings.active_provider.or_else(|| env_str("AI_PROVIDER")).map(|v| v.to_lowercase());
     match forced.as_deref() {
         Some("gemini") => return Some(gemini_provider()),
+        Some("openai") => return Some(compatible_provider("openai")),
+        Some("openrouter") => return Some(compatible_provider("openrouter")),
         Some("nvidia") => return Some(nvidia_provider()),
         Some("ollama") => return Some(ollama_provider()),
         Some(other) => {
@@ -108,13 +138,39 @@ pub fn resolve_provider() -> Option<LlmProvider> {
     if env_key("NVIDIA_API_KEY").is_some_and(|k| !k.is_empty()) {
         return Some(nvidia_provider());
     }
+    if env_key("OPENROUTER_API_KEY").is_some_and(|k| !k.is_empty()) { return Some(compatible_provider("openrouter")); }
+    if env_key("OPENAI_API_KEY").is_some_and(|k| !k.is_empty()) { return Some(compatible_provider("openai")); }
     Some(ollama_provider())
 }
 
+fn configured_model(provider: &str, env: &str, default: &str) -> String {
+    crate::ai_settings::load().ok().and_then(|s| s.providers.get(provider).map(|p| p.model.clone()))
+        .filter(|s| !s.is_empty()).or_else(|| env_str(env)).unwrap_or_else(|| default.into())
+}
+fn compatible_provider(id: &'static str) -> LlmProvider {
+    let (base, model_env, key_env) = if id == "openai" {
+        ("https://api.openai.com/v1", "OPENAI_MODEL", "OPENAI_API_KEY")
+    } else { ("https://openrouter.ai/api/v1", "OPENROUTER_MODEL", "OPENROUTER_API_KEY") };
+    build(id, base.into(), configured_model(id, model_env, ""), None, key_env)
+}
+
 pub fn gemini_provider() -> LlmProvider {
-    let base = env_str("GEMINI_BASE_URL").unwrap_or_else(|| GEMINI_BASE.to_string());
-    let model = env_str("GEMINI_MODEL").unwrap_or_else(|| DEFAULT_GEMINI_MODEL.to_string());
+    let has_saved_key = crate::ai_settings::load().ok()
+        .and_then(|settings| settings.providers.get("gemini").map(|provider| provider.encrypted_key.is_some()))
+        .unwrap_or(false);
+    let base = env_str("GEMINI_BASE_URL")
+        .filter(|endpoint| !has_saved_key || synthetic_gemini_endpoint(endpoint))
+        .unwrap_or_else(|| GEMINI_BASE.to_string());
+    let model = configured_model("gemini", "GEMINI_MODEL", DEFAULT_GEMINI_MODEL);
     build("gemini", base.trim_end_matches('/').to_string(), model, None, "GEMINI_API_KEY")
+}
+
+fn synthetic_gemini_endpoint(endpoint: &str) -> bool {
+    crate::debugging::enabled()
+        && url::Url::parse(endpoint).ok().is_some_and(|url| {
+            url.scheme() == "http" && url.host_str() == Some("127.0.0.1")
+                && url.username().is_empty() && url.password().is_none()
+        })
 }
 
 pub fn nvidia_provider() -> LlmProvider {
@@ -211,13 +267,18 @@ pub fn cached_preferred_chat_model() -> Option<String> {
 /// Resolve at startup on a worker thread so the first `pab://search` render
 /// never waits on the network.
 pub fn warm_preferred_chat_model() {
+    if std::env::var("HAYDEV_WARM_SEARCH_MODEL").as_deref() != Ok("1") {
+        return;
+    }
     std::thread::spawn(|| {
         let _ = probe_preferred_chat_model();
     });
 }
 
 fn run_model_probe() -> Option<String> {
-    let key = env_key("GEMINI_API_KEY")?;
+    // Preserve the legacy search probe's environment-only opt-in. Saving an agent key
+    // must not introduce automatic provider requests on the next application startup.
+    let key = std::env::var("GEMINI_API_KEY").ok().filter(|s| !s.trim().is_empty())?;
     let base = env_str("GEMINI_BASE_URL")
         .unwrap_or_else(|| GEMINI_BASE.to_string())
         .trim_end_matches('/')
@@ -333,6 +394,20 @@ mod tests {
         clear_env();
     }
 
+    #[test]
+    fn reasoning_policy_keeps_selected_model_and_raises_effort_for_research() {
+        use crate::ai_settings::GeminiReasoning;
+        let mut p=LlmProvider{id:"gemini",base_url:GEMINI_BASE.into(),model:"gemini-3.6-flash".into(),research_model:None,api_key_env:"GEMINI_API_KEY",reasoning:GeminiReasoning::Adaptive,profile:"STANDARD".into()};
+        assert_eq!(p.reasoning_effort(&[]),Some("low"));
+        assert_eq!(p.request_timeout(&[]).as_secs(),20);
+        p.profile="DEEP_RESEARCH".into();
+        assert_eq!(p.reasoning_effort(&[]),Some("medium"));
+        assert_eq!(p.model_for_profile("DEEP_RESEARCH"),"gemini-3.6-flash");
+        p.reasoning=GeminiReasoning::Low; assert_eq!(p.reasoning_effort(&[]),Some("low"));
+        p.reasoning=GeminiReasoning::High; assert_eq!(p.reasoning_effort(&[]),Some("high"));
+        p.reasoning=GeminiReasoning::Default; assert_eq!(p.reasoning_effort(&[]),None);
+        p.id="openai";p.reasoning=GeminiReasoning::High;assert_eq!(p.reasoning_effort(&[]),None);
+    }
     #[test]
     fn public_config_never_carries_the_key() {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());

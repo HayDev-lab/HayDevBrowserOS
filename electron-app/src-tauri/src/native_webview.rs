@@ -14,6 +14,39 @@ unsafe fn string(read: impl FnOnce(*mut PWSTR) -> windows::core::Result<()>) -> 
     let mut value = PWSTR::null(); read(&mut value)?;
     Ok(take_pwstr(value))
 }
+
+pub fn restrict_provider_dashboard(
+    native: &tauri::webview::PlatformWebview,
+    origin: url::Origin,
+) -> AppResult<()> {
+    unsafe {
+        let view = native.controller().CoreWebView2().map_err(failure)?;
+        let settings: ICoreWebView2Settings4 = view.Settings().map_err(failure)?.cast().map_err(failure)?;
+        settings.SetIsPasswordAutosaveEnabled(false).map_err(failure)?;
+        let view: ICoreWebView2_22 = view.cast().map_err(failure)?;
+        view.AddWebResourceRequestedFilterWithRequestSourceKinds(
+            &HSTRING::from("*"),
+            COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+            COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL,
+        ).map_err(failure)?;
+        let env = native.environment();
+        view.add_WebResourceRequested(&WebResourceRequestedEventHandler::create(Box::new(move |_, args| {
+            let Some(args) = args else { return Ok(()); };
+            let request = args.Request()?;
+            let uri = string(|p| request.Uri(p))?;
+            if !url::Url::parse(&uri).is_ok_and(|url| {
+                url.origin() == origin && url.username().is_empty() && url.password().is_none()
+            }) {
+                let response = env.CreateWebResourceResponse(
+                    None, 403, &HSTRING::from("Blocked by HayDevVPN"), &HSTRING::from("Content-Length: 0\r\n"),
+                )?;
+                args.SetResponse(&response)?;
+            }
+            Ok(())
+        })), &mut 0).map_err(failure)?;
+    }
+    Ok(())
+}
 fn emit_downloads(app: &AppHandle<Wry>) {
     if let Ok(items) = crate::core::list_downloads(app) { let _ = app.emit("browser:downloads:changed", &items); }
 }
@@ -44,6 +77,22 @@ pub unsafe fn install(app: &AppHandle<Wry>, native: &tauri::webview::PlatformWeb
     wv.AddHostObjectToScript(&HSTRING::from("haydevRunLease"), &mut host).map_err(failure)?;
     let env = native.environment();
     let shield = app.state::<crate::shield::SharedShield>().inner().clone();
+    let youtube_shield = shield.clone();
+    let view2: ICoreWebView2_2 = wv.cast().map_err(failure)?;
+    view2.add_DOMContentLoaded(&DOMContentLoadedEventHandler::create(Box::new(move |view, _| {
+        let Some(view) = view else { return Ok(()); };
+        let source = string(|p| view.Source(p))?;
+        if let Ok(url) = url::Url::parse(&source) {
+            let host = url.host_str().unwrap_or_default();
+            if crate::youtube::is_site(host) {
+                let script = crate::youtube::script(&youtube_shield, host);
+                view.ExecuteScript(&HSTRING::from(script), &ExecuteScriptCompletedHandler::create(
+                    Box::new(|_, _| Ok(())),
+                ))?;
+            }
+        }
+        Ok(())
+    })), &mut 0).map_err(failure)?;
     let tab = tab_id.to_string(); let handle = app.clone();
     let nav_shield = shield.clone();
     let nav_tab = tab.clone();

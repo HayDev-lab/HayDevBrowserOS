@@ -1,5 +1,5 @@
 /**
- * P07 gate — HayDev Shield: REAL network-level blocking (CDP Fetch domain):
+ * P07 gate — HayDev Shield: real WebView2 request blocking.
  *  1. ON: requests to blocklisted hosts fail at the network level (page
  *     sees errors) and the REAL counters grow;
  *  2. site exception: an allowed host stops being blocked while others still are;
@@ -73,12 +73,17 @@ test('P07: shield blocks on/off/exception with real counters', { timeout: 240_00
   // An exception belongs to the visited site, never to a tracker globally.
   const allow = await invoke(chrome, 'shield_allow_site', { host: '127.0.0.1' });
   assert.equal(allow.accepted, true);
-  const beforeException = status.totalBlocked;
   await loadAdPage(app, chrome, 2);
   status = await invoke(chrome, 'shield_status', {});
-  assert.equal(status.totalBlocked, beforeException);
+  const fixtureCounts = Object.fromEntries(['tracker.example', 'adhost.example', 'ads.example']
+    .map(host => [host, status.byHost.find(item => item.host === host)?.blocked ?? 0]));
+  assert.deepEqual(fixtureCounts, {
+    'tracker.example': before.tracker,
+    'adhost.example': before.adhost,
+    'ads.example': before.ads,
+  }, 'the site exception must allow every fixture resource');
   assert.ok(status.allowlist.includes('127.0.0.1'));
-  const hostOf2 = (h) => status.byHost.find((x) => x.host === h)?.blocked ?? 0;
+  const beforeOff = status.totalBlocked;
 
   // --- 3. OFF: no new blocks at all.
   const off = await invoke(chrome, 'shield_set_enabled', { enabled: false });
@@ -86,8 +91,7 @@ test('P07: shield blocks on/off/exception with real counters', { timeout: 240_00
   await loadAdPage(app, chrome, 3);
   await sleep(3000);
   status = await invoke(chrome, 'shield_status', {});
-  assert.equal(status.totalBlocked, hostOf2('tracker.example') + hostOf2('adhost.example') + hostOf2('ads.example') + 0
-    , 'OFF must not add blocks'); // same total as after step 2
+  assert.equal(status.totalBlocked, beforeOff, 'OFF must not add blocks');
   const totalAfterOff = status.totalBlocked;
 
   // --- 4. ON again: blocking resumes.

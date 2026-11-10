@@ -143,7 +143,7 @@ export const hy: Dict = {
   'agent.placeholderIdle': 'Մուտքագրեք ձեր հաղորդագրությունը…',
   'agent.placeholderHuman': 'Անցեք ԱԳԵՆՏԻ ռեժիմին՝ հաղորդագրություններ ուղարկելու համար…',
   'agent.placeholderRunning': 'Գործակալն աշխատում է… սեղմեք ԿԱՆԳՆԵՑՆԵԼ՝ ընդհատելու համար։',
-  'agent.placeholderNoProvider': 'AI_PROVIDER_NOT_CONFIGURED — նշեք OLLAMA_API_KEY',
+  'agent.placeholderNoProvider': 'Բացեք AI կարգավորումները և նշեք բանալին ու մոդելը',
   'agent.micAria': 'Ձայնային մուտքագրումը դեռ հասանելի չէ',
   'agent.micTip': 'Ձայնային մուտքագրում — դեռ հասանելի չէ',
   'agent.sendAria': 'Ուղարկել հաղորդագրությունը գործակալին',

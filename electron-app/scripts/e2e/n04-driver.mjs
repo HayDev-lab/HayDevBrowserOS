@@ -17,7 +17,8 @@ import { startFixtures, stopFixtures, fixtureServer } from './fixtures/server.mj
 const [exe, evidenceDir] = process.argv.slice(2);
 if (!exe || !evidenceDir) { console.error('usage: n04-driver <exe> <evidenceDir>'); process.exit(1); }
 mkdirSync(evidenceDir, { recursive: true });
-const CORPUS = 'D:\\Projects\\BrowserHayDev\\artifacts\\closure\\20261015-stabilization-r08\\documents';
+const CORPUS = process.env.HAYDEV_DOCUMENT_FIXTURES;
+if (!CORPUS || !path.isAbsolute(CORPUS)) throw Error('Set HAYDEV_DOCUMENT_FIXTURES to the absolute synthetic corpus path');
 const ALL = [
   { id: 'pdf-agent', doc: 'multilingual.pdf', ui: 'agent' },
   { id: 'docx-agent', doc: 'multilingual.docx', ui: 'agent' },
@@ -50,7 +51,7 @@ for (const combo of COMBOS) {
     };
     const appLog = path.join(evidenceDir, 'n04-app.log');
     const appOut = openSync(appLog, 'a');
-    proc = spawn(exe, [], { env, cwd: path.dirname(exe), stdio: ['ignore', appOut, appOut] });
+    proc = spawn(exe, ['--debug'], { env, cwd: path.dirname(exe), stdio: ['ignore', appOut, appOut] });
     await until(async () => { try { browser = await chromium.connectOverCDP('http://127.0.0.1:9220'); return true; } catch { return false; } }, 45000, 'CDP did not come up');
     const ctx = browser.contexts()[0];
     const shell = await until(async () => ctx.pages().find(p => /tauri\.localhost/.test(p.url())), 30000, 'shell not found');

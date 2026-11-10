@@ -20,7 +20,7 @@ impl PublicTarget {
             }).build()
     }
 }
-fn banned(ip: IpAddr) -> bool {
+pub(crate) fn banned(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v) => {
             let o = v.octets();

@@ -7,5 +7,6 @@ fn main() {
         return;
     }
     if app_lib::documents::worker_main() { return; }
+    app_lib::debugging::initialize();
     app_lib::run();
 }

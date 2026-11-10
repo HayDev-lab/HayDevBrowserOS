@@ -143,7 +143,7 @@ export const ru: Dict = {
   'agent.placeholderIdle': 'Введите сообщение…',
   'agent.placeholderHuman': 'Переключитесь в режим АГЕНТА, чтобы отправлять сообщения…',
   'agent.placeholderRunning': 'Агент работает… нажмите СТОП для прерывания.',
-  'agent.placeholderNoProvider': 'AI_PROVIDER_NOT_CONFIGURED — задайте OLLAMA_API_KEY',
+  'agent.placeholderNoProvider': 'Откройте Настройки AI и укажите ключ и модель',
   'agent.micAria': 'Голосовой ввод пока недоступен',
   'agent.micTip': 'Голосовой ввод — пока недоступен',
   'agent.sendAria': 'Отправить сообщение агенту',

@@ -144,7 +144,7 @@ export const en = {
   'agent.placeholderIdle': 'Type your message…',
   'agent.placeholderHuman': 'Switch to AGENT mode to send messages…',
   'agent.placeholderRunning': 'Agent is running… press STOP to abort.',
-  'agent.placeholderNoProvider': 'AI_PROVIDER_NOT_CONFIGURED — set OLLAMA_API_KEY',
+  'agent.placeholderNoProvider': 'Open AI settings and configure a key and model',
   'agent.micAria': 'Voice input is not available yet',
   'agent.micTip': 'Voice input — not available yet',
   'agent.sendAria': 'Send message to agent',
