@@ -318,7 +318,7 @@ fn create_tab_webview(
             std::fs::create_dir_all(&dir)?;
             builder = builder.data_directory(dir).incognito(true)
                 .additional_browser_args(&format!(
-                    "{PRIVACY_ARGS}{proxy_args} --disable-quic --disable-background-networking --dns-prefetch-disable --host-resolver-rules=\"MAP * ~NOTFOUND\""
+                    "{PRIVACY_ARGS}{proxy_args} --disable-quic --disable-background-networking --dns-prefetch-disable --host-resolver-rules=\"MAP * ~NOTFOUND, EXCLUDE 127.0.0.1\""
                 ))
                 .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny);
         }
