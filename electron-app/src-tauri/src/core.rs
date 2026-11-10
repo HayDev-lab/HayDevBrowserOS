@@ -31,6 +31,7 @@ pub struct BrowserState {
     pub target_ids: HashMap<String, String>,
     pub ready_tabs: std::collections::HashSet<String>,
     pub creation_errors: HashMap<String, AppError>,
+    pub search_navigation: HashMap<String, String>,
     pub history: HistoryStore,
     pub bookmarks: BookmarksStore,
     pub session: SessionStore,
@@ -47,6 +48,7 @@ impl BrowserState {
             registry: TabRegistry::new(),
             navstacks: HashMap::new(),
             target_ids: HashMap::new(), ready_tabs: std::collections::HashSet::new(), creation_errors: HashMap::new(),
+            search_navigation: HashMap::new(),
             history: HistoryStore::new(data_dir.join("history.json")),
             bookmarks: BookmarksStore::new(data_dir.join("bookmarks.json")),
             session: SessionStore::new(data_dir.join("session.json")),
@@ -692,6 +694,11 @@ pub fn prepare_open_tab(
             .registry
             .open(&normalized_req)
             .map_err(|e| AppError::new("TAB_OPEN_FAILED", e))?;
+        if req.id.is_none() {
+            if let Some(query) = search_query(&target) {
+                state.search_navigation.insert(tab_id.clone(), query);
+            }
+        }
         let incognito = state
             .registry
             .get(&tab_id)
@@ -805,6 +812,7 @@ pub fn ensure_agent_tab(app: &AppHandle<Wry>, active: &str, lease: &crate::run_g
 
 pub fn close_tab(app: &AppHandle<Wry>, tab_id: &str) -> AppResult<bool> {
     let event = with_state(app, |state| {
+        state.search_navigation.remove(tab_id);
         state.registry.close(tab_id, ActivateAfterClose::Right)
     })?;
     let Some(RegistryEvent::Closed {
@@ -869,6 +877,10 @@ pub fn navigate(app: &AppHandle<Wry>, req: &NavigateRequest) -> AppResult<bool> 
         .ok_or_else(|| AppError::new("TAB_NOT_FOUND", format!("no tab {}", req.tab_id)))?;
 
     with_state(app, |state| {
+        state.search_navigation.remove(&req.tab_id);
+        if let Some(query) = search_query(&target) {
+            state.search_navigation.insert(req.tab_id.clone(), query);
+        }
         if let Some(tab) = state.registry.get_mut(&req.tab_id) {
             tab.pending_url = target.clone();
             tab.load_state = TabLoadState::Loading;
@@ -878,6 +890,12 @@ pub fn navigate(app: &AppHandle<Wry>, req: &NavigateRequest) -> AppResult<bool> 
     wv.navigate(parsed)
         .map_err(|e| AppError::new("NAVIGATE_FAILED", e.to_string()))?;
     Ok(true)
+}
+
+fn search_query(target: &str) -> Option<String> {
+    let url = url::Url::parse(target).ok()?;
+    (url.scheme() == "pab" && url.host_str() == Some("search"))
+        .then(|| url.query().map(str::to_owned)).flatten()
 }
 
 /// Execute a script in the tab's page context.

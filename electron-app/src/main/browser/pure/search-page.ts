@@ -622,7 +622,7 @@ export function buildSearchPageHtml(opts: SearchPageOptions): string {
       // Re-run the current query in the freshly selected mode.
       var cur = (new URLSearchParams(location.search).get('q') || '').trim();
       if (cur) {
-        location.href = pabNav('search', '?q=' + encodeURIComponent(cur) + '&src=' + encodeURIComponent(id));
+        searchNavigate('search', '?q=' + encodeURIComponent(cur) + '&src=' + encodeURIComponent(id));
       }
       return;
     }
@@ -721,8 +721,8 @@ export function buildSearchPageHtml(opts: SearchPageOptions): string {
   if (mode !== 'web') modeNoteMsg(L('note.mode', { mode: mode.toUpperCase() }));
 
   if (q) {
-    if (mode === 'research') input.value = q;
-    else ask(q);
+    if (mode !== 'research' && /*__PAB_SEARCH_AUTORUN__*/false) ask(q);
+    else input.value = q;
   } else input.focus();
 })();
 </script>

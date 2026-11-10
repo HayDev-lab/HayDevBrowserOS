@@ -20,14 +20,15 @@ test('Windows route diagnostics and Tor pre-bootstrap refusal', { timeout: 60_00
     assert.ok(route === null || (Number.isInteger(route.index) && route.index > 0 && route.name.length));
   }
   const before = await invoke('browser_tabs_list');
-  const error = await invoke('tor_open_tab', { url: 'https://example.com/' }).catch(error => error);
-  assert.equal(error.code, 'TOR_TAB_NOT_READY');
+  const code = await app.chromePage().evaluate(() => window.__TAURI_INTERNALS__
+    .invoke('tor_open_tab', { url: 'https://example.com/' }).then(() => null, error => error.code));
+  assert.equal(code, 'TOR_TAB_NOT_READY');
   assert.deepEqual((await invoke('browser_tabs_list')).map(tab => tab.id), before.map(tab => tab.id));
   await app.chromePage().getByRole('button', { name: 'HayDevVPN', exact: true }).click();
   await app.chromePage().getByText('VPN for Windows', { exact: true }).click();
   await app.chromePage().getByRole('button', { name: 'Check Windows routes' }).click();
   await app.chromePage().getByText(/^IPv4 —/).waitFor();
-  console.log(JSON.stringify({ routeTable: routes, torNotReady: error.code }));
+  console.log(JSON.stringify({ routeTable: routes, torNotReady: code }));
 });
 
 test('Bundled Tor exit, loss of service and recovery through the same tab', {

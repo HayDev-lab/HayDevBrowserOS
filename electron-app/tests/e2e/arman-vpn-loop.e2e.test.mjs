@@ -259,9 +259,14 @@ test('Arman VPN WebView2 loop: attach, browse, fail closed, recover, detach and 
   assert.equal(powerRequests, 0);
   assert.equal(tunnelTests, 0);
   systemProxy = 'clear';
+  assert.equal(await rejectedCode('arman_vpn_connect'), 'ARMAN_VPN_ROUTING_POLICY');
+  assert.equal(policyUpdates, 0);
+  assert.equal(routing, true);
+  assert.equal(powerRequests, 0);
+  routing = false;
   await connect.click();
   await panel.getByRole('alert').filter({ hasText: 'Connection check failed' }).waitFor();
-  assert.equal(policyUpdates, 1);
+  assert.equal(policyUpdates, 0);
   assert.equal(routing, false);
   assert.equal(powerRequests, 1);
   assert.equal(tunnelTests, 1);

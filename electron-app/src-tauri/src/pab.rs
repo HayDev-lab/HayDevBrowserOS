@@ -655,9 +655,15 @@ fn serve_search(
                 .filter(|v| !v.is_empty())
         })
         .unwrap_or_else(|| "deepseek-v4-pro:0813".to_string());
+    let run_search = owner.strip_prefix("browser-tab-").is_some_and(|id| {
+        core::with_state(app, |state| {
+            uri.query().is_some_and(|query| state.search_navigation.remove(id).as_deref() == Some(query))
+        }).unwrap_or(false)
+    });
     html = html
         .replace("\"__PAB_PERPLEXICA_URL__\"", &script_string(&endpoint))
-        .replace("\"__PAB_PERPLEXICA_MODEL__\"", &script_string(&model));
+        .replace("\"__PAB_PERPLEXICA_MODEL__\"", &script_string(&model))
+        .replace("/*__PAB_SEARCH_AUTORUN__*/false", if run_search { "true" } else { "false" });
     html_response(html)
 }
 
@@ -737,7 +743,9 @@ pub fn handle_pab(app: &AppHandle<tauri::Wry>, request: &tauri::http::Request<Ve
     let fetch_site = request.headers().get("sec-fetch-site");
     let api = sub_path.trim_start_matches('/').starts_with("api/") || sub_path == "/open"
         || request.method() != http::Method::GET;
-    let same_internal_origin = fetch_site.is_some_and(|value| value == "same-origin")
+    // Legacy WebView2 virtual hosts (pab.darkweb, etc.) do not emit Fetch
+    // Metadata. The browser-controlled Referer is required on every API call.
+    let same_internal_origin = fetch_site.is_none_or(|value| value == "same-origin")
         && referer == Some(page.as_str());
     let external_document = fetch_destination.is_some_and(|value| value == "document")
         && fetch_site.is_some_and(|value| value == "cross-site" || value == "same-site")
@@ -772,7 +780,7 @@ fn internal_page_of(raw_url: &str) -> Option<&'static str> {
     let host = url.host_str()?;
     let page = match (url.scheme(), host) {
         ("pab", "newtab" | "search" | "darkweb") => host,
-        ("http" | "https", "pab.localhost") => url.path().split('/').nth(1)?,
+        ("http" | "https", "pab.localhost") | ("pab", "localhost") => url.path().split('/').nth(1)?,
         ("http" | "https", "pab.newtab" | "pab.search" | "pab.darkweb") => host.strip_prefix("pab.")?,
         _ => return None,
     };

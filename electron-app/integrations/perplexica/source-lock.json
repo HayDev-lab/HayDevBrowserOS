@@ -5,7 +5,7 @@
   "files": {
     "integration.patch": "371c292b129a7de3561df4d380ab20f4e0f442aceadeccdf3c863fe2d9e14e4c",
     "overlay/LICENSE": "d76e1037fdcc8ab04db9e8ffcfe6104effc513cd7530401f8f45e98941822ba6",
-    "overlay/package-lock.json": "6106231367f8da442e3eb677893b927659912ea97b899a55ea33a20b7c13c0b7",
+    "overlay/package-lock.json": "8f8bd66995bf9fb1b77a8f6be7b4e9134476d8cb1da35d5d0a9d832bf4abd051",
     "overlay/src/lib/utils/diag.ts": "33a4565acf2b6b98ef706022de25731ec684b899a05795b159d6adfe5f1b88b0",
     "overlay/src/lib/utils/providerError.ts": "527809b7e7585deca8ecc4bb2dad245c58b2c9f15126be88b362ecacfa6420a1",
     "overlay/package.json": "760618008f61c2b88dff437293b8cb12090deb7b17d5c9015447ec38a79c67df",
