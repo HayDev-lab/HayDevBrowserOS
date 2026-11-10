@@ -65,3 +65,8 @@ server.log
 .cisim/
 .vischeck/
 .dwtest/
+
+# Local browser profiles, generated output and tool plans
+/electron-app/.n04dbg/
+/electron-app/output/
+/.zcode/plans/
