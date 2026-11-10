@@ -117,5 +117,8 @@ const files={};
 function walk(dir){for(const name of readdirSync(dir).sort()){const p=path.join(dir,name);if(statSync(p).isDirectory())walk(p);else if(name!=='runtime-manifest.json') files[path.relative(out,p).replaceAll('\\','/')]=sha(readFileSync(p));}}
 writeFileSync(path.join(out,'THIRD_PARTY_NOTICES.txt'),'Node.js: MIT (node/LICENSE)\nPython: PSF-2.0 (searxng/python/LICENSE.txt)\nSearXNG: AGPL-3.0-or-later (searxng/LICENSE; exact source in source.tar.gz)\nTor: BSD and bundled dependencies (tor/notices)\nPerplexica/Vane: MIT (perplexica/LICENSE)\nPerplexica dependency inventory and notices: perplexica/dependency-inventory.json and perplexica/notices.\nMontserrat font: SIL OFL 1.1 (perplexica/notices/Montserrat-OFL.txt).\nDependency license texts are retained in the respective runtime packages.\n');
 walk(out);
-writeFileSync(path.join(out,'runtime-manifest.json'),JSON.stringify({schema:1,archives:lock.archives,perplexica:JSON.parse(sourceLock),files},null,2));
+writeFileSync(path.join(out,'runtime-manifest.json'),JSON.stringify({
+  schema:1,archives:lock.archives,perplexica:JSON.parse(sourceLock),
+  pythonRequirementsSha256:sha(readFileSync(requirements)),files,
+},null,2));
 console.log(`Verified runtime bundle: ${Object.keys(files).length} files`);

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, renameSync, unlinkSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -39,8 +40,13 @@ function prepareBundle(matches) {
 if (process.platform === 'win32') {
   const lock = readJson('resources/runtime-lock.json');
   assert.equal(`win32-${process.arch}`, lock.platform, 'The Windows runtime bundle is available for x64');
-  const expected = { archives: lock.archives, perplexica: readJson('integrations/perplexica/source-lock.json') };
-  const matches = ({ archives, perplexica }) => isDeepStrictEqual({ archives, perplexica }, expected);
+  const expected = {
+    archives: lock.archives,
+    perplexica: readJson('integrations/perplexica/source-lock.json'),
+    pythonRequirementsSha256: createHash('sha256').update(readFileSync(path.join(root, 'resources/python-requirements.lock'))).digest('hex'),
+  };
+  const matches = ({ archives, perplexica, pythonRequirementsSha256 }) =>
+    isDeepStrictEqual({ archives, perplexica, pythonRequirementsSha256 }, expected);
   const manifestPath = path.join(runtimeDir, 'runtime-manifest.json');
   const existing = existsSync(manifestPath) ? verifyRuntimeBundle(runtimeDir) : null;
   if (!existing || !matches(existing)) {
