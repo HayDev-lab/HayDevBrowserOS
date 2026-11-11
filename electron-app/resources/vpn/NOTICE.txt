@@ -1,9 +1,0 @@
-HayDevVPN provider component
-
-Arman VPN core v1.0.13, GPL-3.0.
-Upstream: https://github.com/armanlife/arman-vpn-client
-Corresponding source: https://github.com/armanlife/arman-vpn-client/tree/v1.0.13
-Binary SHA256: 1927c5ad92f814f0127aa3582ac1e72150c69ce520d95c9aecbe8736c7037b3a
-
-This is an independent project and is not affiliated with Mozilla.
-The core runs as a separate local process. BrowserHayDev supplies no account credentials.

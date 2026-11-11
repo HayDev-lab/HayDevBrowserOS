@@ -830,7 +830,7 @@ describe('ui-logic / web app pins', () => {
   it('keeps private and routed tabs separate from ordinary app pins', () => {
     expect(findWebAppTabId([
       makeTab({ id: 'private', url: whatsapp.url, isIncognito: true }),
-      makeTab({ id: 'vpn', url: whatsapp.url, profile: 'arman-vpn' }),
+      makeTab({ id: 'onion', url: whatsapp.url, profile: 'darkweb' }),
       makeTab({ id: 'ordinary', url: whatsapp.url, profile: 'default' }),
     ], whatsapp)).toBe('ordinary');
   });

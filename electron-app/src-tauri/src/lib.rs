@@ -21,7 +21,6 @@
 
 pub mod agent;
 pub mod ai_settings;
-pub mod arman_vpn;
 pub mod debugging;
 pub mod vision;
 pub mod atomic_store;
@@ -58,7 +57,7 @@ pub mod registry;
 pub mod runtime_manager;
 pub mod shield;
 pub mod site_ua;
-mod tor_tabs;
+mod tor_route;
 mod windows_routes;
 pub mod youtube;
 pub mod socks_http;
@@ -188,16 +187,6 @@ pub fn run() {
             commands::control_take_control,
             commands::control_get_mode,
             commands::privacy_status,
-            arman_vpn::arman_vpn_status,
-            arman_vpn::arman_vpn_prepare,
-            arman_vpn::arman_vpn_set_location,
-            arman_vpn::arman_vpn_pick_folder,
-            arman_vpn::arman_vpn_save_settings,
-            arman_vpn::arman_vpn_open_settings,
-            arman_vpn::arman_vpn_connect,
-            arman_vpn::arman_vpn_open_tab,
-            arman_vpn::arman_vpn_disconnect,
-            tor_tabs::tor_open_tab,
             windows_routes::windows_route_status,
             commands::privacy_set_fingerprint_noise,
             commands::set_locale,
@@ -222,7 +211,7 @@ pub fn run() {
             commands::window_close,
             ];
             move |invoke: tauri::ipc::Invoke<tauri::Wry>| {
-                if arman_vpn::trusted(invoke.message.webview_ref()).is_ok() {
+                if trusted_shell(invoke.message.webview_ref()) {
                     handle(invoke)
                 } else {
                     invoke.resolver.reject("IPC_ORIGIN_FORBIDDEN");
@@ -333,7 +322,6 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app, event| {
             if let RunEvent::ExitRequested { .. } = event {
-                arman_vpn::shutdown();
                 // Persist the open tabs for the next launch (parity with the
                 // Electron runtime's before-quit session save).
                 core::persist_session(app);
@@ -415,6 +403,20 @@ pub fn darkweb_data_dir() -> std::path::PathBuf {
     dir
 }
 
+fn trusted_shell(webview: &tauri::Webview<tauri::Wry>) -> bool {
+    if webview.label() != "main" {
+        return false;
+    }
+    let Ok(url) = webview.url() else {
+        return false;
+    };
+    matches!(
+        (url.scheme(), url.host_str(), url.port()),
+        ("http" | "https", Some("tauri.localhost"), None) | ("tauri", Some("localhost"), None)
+    ) || (cfg!(debug_assertions)
+        && matches!((url.scheme(), url.host_str(), url.port()), ("http", Some("localhost"), Some(5180))))
+}
+
 /// Wipe the isolated Tor webview profile (privacy parity with Electron's
 /// in-memory darkweb partitions — nothing survives a restart). Runs BEFORE
 /// session restore, so no live darkweb tab can exist yet.
@@ -425,8 +427,6 @@ fn wipe_ephemeral_profiles() {
         // PRIVATE hosts an isolated InPrivate environment; wipe guarantees
         // nothing from a previous session survives (privacy.rs contract).
         crate::profiles::ProfileKind::Private,
-        crate::profiles::ProfileKind::ArmanVpn,
-        crate::profiles::ProfileKind::TorProxy,
     ] {
         if let Some(dir) = manager.data_dir(kind) {
             if dir.exists() {

@@ -13,12 +13,12 @@ test('VPN and AI settings occupy their own rail and preserve the agent draft', {
   const input = shell.getByRole('textbox', { name: 'Agent task input', exact: true });
   await input.fill('Keep this unsent draft');
   const agent = shell.getByRole('complementary', { name: 'Agent panel', exact: true });
-  await shell.getByRole('button', { name: 'HayDevVPN', exact: true }).click();
-  const vpn = shell.getByRole('region', { name: 'HayDevVPN', exact: true });
+  await shell.getByRole('button', { name: 'Proton VPN', exact: true }).click();
+  const vpn = shell.getByRole('region', { name: 'Proton VPN', exact: true });
   await vpn.waitFor();
   await agent.waitFor({ state: 'hidden' });
   assert.equal(await shell.getByRole('button', { name: 'Close agent panel', exact: true }).count(), 0);
-  await vpn.getByRole('combobox', { name: 'Country', exact: true }).waitFor();
+  await vpn.getByRole('button', { name: 'Check Windows routes', exact: true }).waitFor();
   assert.equal(await vpn.getByLabel('Provider data folder').count(), 0);
   const layout = await vpn.evaluate(panel => {
     const box = panel.getBoundingClientRect();
@@ -58,7 +58,7 @@ test('VPN and AI settings occupy their own rail and preserve the agent draft', {
     req: { tabId: id, expression: 'innerWidth' },
   }), content);
   const wide = await readWidth();
-  await shell.getByRole('button', { name: 'HayDevVPN', exact: true }).click();
+  await shell.getByRole('button', { name: 'Proton VPN', exact: true }).click();
   await vpn.waitFor();
   await shell.waitForFunction(async ({ id, width }) => {
     const current = await window.__TAURI_INTERNALS__.invoke('browser_evaluate', { req: { tabId: id, expression: 'innerWidth' } });
@@ -68,8 +68,8 @@ test('VPN and AI settings occupy their own rail and preserve the agent draft', {
   await vpn.waitFor({ state: 'hidden' });
   assert.equal(await agent.isVisible(), false);
   await shell.getByRole('button', { name: 'Language', exact: true }).click();
-  await shell.getByRole('button', { name: 'HayDevVPN', exact: true }).click();
-  await vpn.getByRole('combobox', { name: 'Страна', exact: true }).waitFor();
+  await shell.getByRole('button', { name: 'Proton VPN', exact: true }).click();
+  await vpn.getByRole('button', { name: 'Проверить маршруты Windows', exact: true }).waitFor();
   await agent.waitFor({ state: 'hidden' });
   assert.equal(await vpn.evaluate(panel => panel.scrollWidth <= panel.clientWidth), true);
   await shell.screenshot({ path: path.join(app.evidenceDir, 'vpn-rail-ru.png') });

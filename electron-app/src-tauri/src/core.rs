@@ -227,25 +227,13 @@ fn create_tab_webview(
     let tab = with_state(app, |state| state.registry.get(tab_id).cloned())?
         .ok_or_else(|| AppError::new("TAB_NOT_FOUND", "Tab closed before WebView creation"))?;
     use crate::profiles::ProfileKind;
-    let proxy_profile = [ProfileKind::ArmanVpn, ProfileKind::TorProxy]
-        .into_iter()
-        .find(|profile| tab.profile == profile.dir_name());
-
-    let tor_proxy_tab = proxy_profile == Some(ProfileKind::TorProxy);
     let mut builder = tauri::WebviewBuilder::new(label.clone(), WebviewUrl::External(url::Url::parse("about:blank")?))
         .initialization_script(crate::run_host::INIT)
         .on_navigation(move |url| {
             if darkweb {
                 return url.as_str() == "about:blank" || crate::darkweb::is_onion_url(url.as_str());
             }
-            if crate::darkweb::has_onion_host(url) && !tor_proxy_tab {
-                return false;
-            }
-            if proxy_profile.is_some() {
-                crate::arman_vpn::navigation_allowed(url)
-            } else {
-                urlnorm::navigation_allowed(url)
-            }
+            !crate::darkweb::has_onion_host(url) && urlnorm::navigation_allowed(url)
         })
         .on_page_load(move |_wv, payload| {
             on_page_load(&handle_for_load, &tab_for_load, &payload);
@@ -279,9 +267,7 @@ fn create_tab_webview(
     // dedicated persistent user-data folder; DARKWEB → its OWN environment
     // routed through the Tor SOCKS proxy so onion traffic (and ONLY onion
     // tab traffic) enters the Tor network.
-    let profile = if let Some(profile) = proxy_profile {
-        profile
-    } else if darkweb {
+    let profile = if darkweb {
         crate::profiles::ProfileKind::DarkWeb
     } else if incognito {
         crate::profiles::ProfileKind::Private
@@ -294,11 +280,11 @@ fn create_tab_webview(
     // A WebView2 environment has immutable proxy arguments. Resolve exactly
     // once per profile; the displayed route and actual environment share it.
     static ROUTES: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, Option<crate::privacy::SocksEndpoint>>>> = std::sync::OnceLock::new();
-    let route = if proxy_profile.is_some() {
-        let port = tab.egress.strip_prefix("socks5://127.0.0.1:")
-            .and_then(|port| port.parse::<u16>().ok()).filter(|port| *port != 0)
-            .ok_or_else(|| AppError::new("TAB_PROXY_OFF", "Missing local tab proxy"))?;
-        Some(crate::privacy::SocksEndpoint { host: "127.0.0.1".into(), port })
+    let route = if darkweb {
+        crate::tor_route::validate_webview_environment()?;
+        let (host, port) = crate::darkweb::onion_endpoint(app, &crate::darkweb::config_of(app))
+            .ok_or_else(|| AppError::new("EGRESS_UNAVAILABLE", "Tor is not ready for onion browsing"))?;
+        Some(crate::privacy::SocksEndpoint { host, port })
     } else {
         let mut routes = ROUTES.get_or_init(Default::default).lock().unwrap_or_else(|p| p.into_inner());
         if let Some(route) = routes.get(profile.dir_name()) { route.clone() } else {
@@ -306,8 +292,7 @@ fn create_tab_webview(
                 crate::profiles::ProfileKind::Default => crate::privacy::Egress::Direct,
                 crate::profiles::ProfileKind::Agent => privacy_cfg.agent_egress.clone(),
                 crate::profiles::ProfileKind::Private => privacy_cfg.private_egress.clone(),
-                crate::profiles::ProfileKind::DarkWeb => crate::privacy::Egress::TorStrict,
-                ProfileKind::ArmanVpn | ProfileKind::TorProxy => unreachable!("Tab proxy uses its own relay"),
+                ProfileKind::DarkWeb => unreachable!("Onion route was resolved above"),
             };
             let tor = if matches!(egress, crate::privacy::Egress::TorStrict | crate::privacy::Egress::TorIfAvailable) {
                 crate::darkweb::tor_endpoint(app, &crate::darkweb::config_of(app)).map(|(host,port)| crate::privacy::SocksEndpoint {host,port})
@@ -331,16 +316,6 @@ fn create_tab_webview(
     use crate::privacy::PRIVACY_BROWSER_ARGS as PRIVACY_ARGS;
 
     match profile {
-        ProfileKind::ArmanVpn | ProfileKind::TorProxy => {
-            let port = route.as_ref().expect("validated VPN proxy").port;
-            let dir = manager.data_dir(profile).expect("VPN profile directory").join(port.to_string());
-            std::fs::create_dir_all(&dir)?;
-            builder = builder.data_directory(dir).incognito(true)
-                .additional_browser_args(&format!(
-                    "{PRIVACY_ARGS}{proxy_args} --host-resolver-rules=\"MAP * ~NOTFOUND, EXCLUDE 127.0.0.1\""
-                ))
-                .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny);
-        }
         crate::profiles::ProfileKind::Private => {
             manager
                 .ensure(profile)
@@ -375,15 +350,16 @@ fn create_tab_webview(
                 ));
             }
         }
-        crate::profiles::ProfileKind::DarkWeb => {
-            manager
-                .ensure(profile)
-                .map_err(|e| AppError::new("PROFILE_DIR_FAILED", e.to_string()))?;
-            if let Some(dir) = manager.data_dir(profile) {
-                builder = builder.data_directory(dir);
-            }
-            builder = builder.incognito(true)
-                .additional_browser_args(&format!("{PRIVACY_ARGS}{proxy_args}"))
+        ProfileKind::DarkWeb => {
+            let port = route.as_ref().expect("onion route resolved").port;
+            let dir = manager.data_dir(profile)
+                .ok_or_else(|| AppError::new("PROFILE_DIR_FAILED", "Onion profile directory unavailable"))?
+                .join(port.to_string());
+            std::fs::create_dir_all(&dir)?;
+            builder = builder.data_directory(dir).incognito(true)
+                .additional_browser_args(&format!(
+                    "{PRIVACY_ARGS}{proxy_args} --host-resolver-rules=\"MAP * ~NOTFOUND, EXCLUDE 127.0.0.1\""
+                ))
                 .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny);
         }
         kind => {
@@ -424,7 +400,7 @@ fn create_tab_webview(
     let destination = crate::urlnorm::to_webview_display_url(parsed.as_str())?;
     webview.with_webview(move |native| {
         let result = unsafe {
-            crate::native_webview::install(&handle, &native, &id, darkweb, tor_proxy_tab).and_then(|_| {
+            crate::native_webview::install(&handle, &native, &id, darkweb).and_then(|_| {
                 native.controller().CoreWebView2().and_then(|wv| wv.Navigate(&windows::core::HSTRING::from(destination)))
                     .map_err(|_| AppError::new("WEBVIEW_CREATE_FAILED", "Initial navigation failed"))
             })
@@ -774,34 +750,12 @@ pub fn open_tab(app: &AppHandle<Wry>, req: &OpenTabRequest) -> AppResult<String>
     Ok(tab_id)
 }
 
-/// Called by the native SOCKS relay commands on the WebView2 main thread.
-pub(crate) fn open_proxy_tab(
-    app: &AppHandle<Wry>, url: &str, profile: crate::profiles::ProfileKind, port: u16,
-) -> AppResult<String> {
-    let request = OpenTabRequest {
-        url: url.into(), activate: Some(true), incognito: Some(true),
-        darkweb: None, background: None, agent: None, id: None, title: None,
-    };
-    let (id, active, incognito, _, target) = prepare_open_tab(app, &request)?;
-    with_state(app, |state| {
-        if let Some(tab) = state.registry.get_mut(&id) {
-            tab.profile = profile.dir_name().into();
-            tab.egress = format!("socks5://127.0.0.1:{port}");
-        }
-    })?;
-    materialize_open_tab(app, &id, &target, incognito, active)?;
-    Ok(id)
-}
-
 /// A routed agent must use its own WebView environment, never a direct human tab.
 pub fn ensure_agent_tab(app: &AppHandle<Wry>, active: &str, lease: &crate::run_guard::RunGuard) -> AppResult<String> {
     let existing = with_state(app, |s| s.registry.get(active).cloned())?
         .ok_or_else(|| AppError::new("TAB_NOT_FOUND", "Active tab is gone"))?;
-    if existing.profile == crate::arman_vpn::PROFILE {
-        return Err(AppError::new("ARMAN_VPN_MANUAL_TAB", "Arman VPN tabs use manual browsing"));
-    }
-    if existing.profile == crate::profiles::ProfileKind::TorProxy.dir_name() {
-        return Err(AppError::new("TOR_TAB_MANUAL", "Tor tabs use manual browsing"));
+    if existing.is_dark_web.unwrap_or(false) {
+        return Err(AppError::new("TOR_TAB_MANUAL", "Onion tabs use manual browsing"));
     }
     if existing.profile == "agent" || crate::privacy::global().agent_egress == crate::privacy::Egress::Direct {
         return Ok(existing.id);
@@ -885,7 +839,7 @@ pub fn navigate(app: &AppHandle<Wry>, req: &NavigateRequest) -> AppResult<bool> 
     if crate::darkweb::has_onion_host(&parsed) {
         let accepts_onion = with_state(app, |state| {
             state.registry.get(&req.tab_id).is_some_and(|tab| {
-                tab.is_dark_web.unwrap_or(false) || tab.profile == crate::profiles::ProfileKind::TorProxy.dir_name()
+                tab.is_dark_web.unwrap_or(false)
             })
         })?;
         if !accepts_onion {

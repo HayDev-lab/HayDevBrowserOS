@@ -1,23 +1,8 @@
-//! DarkWeb service — Rust port of `browser/darkweb/*` (search + fetch).
-//!
-//! Ported surface (functional parity v1):
-//!   - providers: Ahmia (clearnet HTTPS, or the onion mirror via Tor when
-//!     READY) + Tor66 (onion-only, via the Tor SOCKS gateway);
-//!   - search jobs: parallel providers, per-provider timeout + report,
-//!     normalize → merge(dedup) → weighted rank → bounded availability
-//!     probe, PARTIAL_RESULTS visibility, cache, cancel;
-//!   - fetch/preview: onion-only through Tor, text/metadata modes, size
-//!     caps, untrusted-content marker;
-//!   - config: JSON at userData/darkweb-config.json, clamped patches;
-//!   - history: JSON at userData/darkweb-history.json.
-//!
-//! NOT ported (honest errors, parity report documents them): crawl jobs,
-//! local full-text index, quarantine downloads — they need the Electron
-//! DownloadItem/Session APIs and are answered with NOT_IMPLEMENTED codes.
+//! DarkWeb search, previews and indexing routed through Tor.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use regex::Regex;
@@ -40,13 +25,9 @@ const SEARCH_CACHE_TTL_MS: u64 = 600_000;
 const FETCH_TIMEOUT_MS: u64 = 25_000;
 const FETCH_MAX_BYTES: usize = 2 * 1024 * 1024;
 const JOB_TTL_MS: u64 = 10 * 60 * 1000;
-const TOKEN_TTL_MS: u64 = 600_000;
-
-pub const AHMIA_CLEARNET_BASE: &str = "https://ahmia.fi";
-pub const AHMIA_ONION_BASE: &str =
-    "http://juhanurmihxlp77nkq76byazcldy2hlmovfu2epvl5ankdibsot4csyd.onion";
-pub const TOR66_ONION_BASE: &str =
-    "http://tor66sewebgixwhcqfnp5inzp5x5uohhdy3kvtnyfxc2e5mxiuh34iid.onion";
+const VORMWEB_ID: &str = "vormweb";
+pub(crate) const VORMWEB_HOST: &str = "vormweb.de";
+const VORMWEB_SEARCH_URL: &str = "https://vormweb.de/en/search";
 
 // ---------------------------------------------------------------------------
 // Config (clamped subset; unknown/absent fields keep defaults)
@@ -68,8 +49,7 @@ pub struct DarkWebConfig {
     pub availability_max_urls: usize,
     pub fetch_timeout_ms: u64,
     pub fetch_max_bytes: usize,
-    pub ahmia_enabled: bool,
-    pub tor66_enabled: bool,
+    pub vormweb_enabled: bool,
     pub store_search_history: bool,
     pub store_local_index: bool,
     pub crawler_max_depth: u32,
@@ -98,8 +78,7 @@ impl Default for DarkWebConfig {
             availability_max_urls: AVAILABILITY_MAX_URLS,
             fetch_timeout_ms: FETCH_TIMEOUT_MS,
             fetch_max_bytes: FETCH_MAX_BYTES,
-            ahmia_enabled: true,
-            tor66_enabled: true,
+            vormweb_enabled: true,
             store_search_history: true,
             store_local_index: true,
             crawler_max_depth: 1,
@@ -143,8 +122,7 @@ impl DarkWebConfig {
             },
             "fetch": { "timeoutMs": self.fetch_timeout_ms, "maxBytes": self.fetch_max_bytes },
             "providers": {
-                "ahmia": { "enabled": self.ahmia_enabled },
-                "tor66": { "enabled": self.tor66_enabled },
+                VORMWEB_ID: { "enabled": self.vormweb_enabled },
             },
             "storeSearchHistory": self.store_search_history,
             "storeLocalIndex": self.store_local_index,
@@ -193,11 +171,8 @@ impl DarkWebConfig {
             c.fetch_max_bytes = clamp(f.get("maxBytes").and_then(get_u64), 4_096, 10_485_760, c.fetch_max_bytes as u64) as usize;
         }
         if let Some(p) = raw.get("providers") {
-            if let Some(a) = p.get("ahmia") {
-                c.ahmia_enabled = a.get("enabled").and_then(get_bool).unwrap_or(c.ahmia_enabled);
-            }
-            if let Some(t) = p.get("tor66") {
-                c.tor66_enabled = t.get("enabled").and_then(get_bool).unwrap_or(c.tor66_enabled);
+            if let Some(provider) = p.get(VORMWEB_ID) {
+                c.vormweb_enabled = provider.get("enabled").and_then(get_bool).unwrap_or(c.vormweb_enabled);
             }
         }
         c.apply_index_settings(raw);
@@ -269,11 +244,8 @@ impl DarkWebConfig {
             self.fetch_max_bytes = clamp(f.get("maxBytes").and_then(Value::as_u64), 4_096, 10_485_760, self.fetch_max_bytes as u64) as usize;
         }
         if let Some(p) = patch.get("providers") {
-            if let Some(a) = p.get("ahmia").and_then(|v| v.get("enabled")).and_then(Value::as_bool) {
-                self.ahmia_enabled = a;
-            }
-            if let Some(t) = p.get("tor66").and_then(|v| v.get("enabled")).and_then(Value::as_bool) {
-                self.tor66_enabled = t;
+            if let Some(enabled) = p.get(VORMWEB_ID).and_then(|v| v.get("enabled")).and_then(Value::as_bool) {
+                self.vormweb_enabled = enabled;
             }
         }
         if let Some(r) = patch.get("ranking") {
@@ -300,8 +272,7 @@ impl DarkWebConfig {
             },
             "fetch": { "timeoutMs": self.fetch_timeout_ms, "maxBytes": self.fetch_max_bytes },
             "providers": {
-                "ahmia": { "enabled": self.ahmia_enabled },
-                "tor66": { "enabled": self.tor66_enabled },
+                VORMWEB_ID: { "enabled": self.vormweb_enabled },
             },
             "storeSearchHistory": self.store_search_history,
             "storeLocalIndex": self.store_local_index,
@@ -394,7 +365,7 @@ impl ProviderHealth {
 }
 
 // ---------------------------------------------------------------------------
-// Parsers (ports of ahmia-parser.ts / tor66-parser.ts)
+// VormWeb response parsing
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
@@ -435,118 +406,55 @@ pub fn collapse_ws(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-/// Extract the hidden anti-bot token from the Ahmia homepage.
-pub fn parse_ahmia_token(homepage_html: &str) -> Option<(String, String)> {
-    let tag_re = Regex::new(r#"(?i)<input[^>]*type\s*=\s*("hidden"|'hidden'|hidden)[^>]*>"#).ok()?;
-    let name_re = Regex::new(r#"(?i)\sname\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))"#).ok()?;
-    let value_re = Regex::new(r#"(?i)\svalue\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))"#).ok()?;
-    let tag = tag_re.captures(homepage_html)?.get(0)?.as_str();
-    let grab = |re: &Regex| -> String {
-        re.captures(tag)
-            .map(|c| {
-                c.get(2)
-                    .or_else(|| c.get(3))
-                    .or_else(|| c.get(4))
-                    .map(|m| m.as_str().trim().to_string())
-                    .unwrap_or_default()
+fn parse_vormweb_results(html: &str, limit: usize) -> Result<Vec<RawProviderResult>, &'static str> {
+    static COUNT: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?is)<b>\s*<u>([0-9]+)</u>\s*</b>\s*Search results for\b").unwrap()
+    });
+    static CARD: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"(?is)<div\s+class\s*=\s*["']query-box["'][^>]*>(.*?)</div\s*>"#).unwrap()
+    });
+    static ANCHOR: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?is)<a\b([^>]*)>(.*?)</a\s*>").unwrap());
+    static RESULT_ID: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"(?i)\sid\s*=\s*(?:"urllink"|'urllink')(?:\s|$)"#).unwrap()
+    });
+    static HREF: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"(?i)\shref\s*=\s*(?:"([^"]+)"|'([^']+)')"#).unwrap()
+    });
+    static SNIPPET: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?is)<li>\s*<i>(.*?)</i>\s*</li\s*>").unwrap());
+
+    let count = COUNT.captures(html)
+        .and_then(|capture| capture[1].parse::<usize>().ok())
+        .ok_or("PROVIDER_RESPONSE_INVALID")?;
+    if count == 0 {
+        return Ok(Vec::new());
+    }
+    let results: Vec<_> = CARD.captures_iter(html)
+        .filter_map(|card| {
+            let body = card.get(1)?.as_str();
+            let anchor = ANCHOR.captures_iter(body).find(|anchor| RESULT_ID.is_match(&anchor[1]))?;
+            let href = HREF.captures(&anchor[1])?;
+            let url = unescape_html(href.get(1).or_else(|| href.get(2))?.as_str());
+            let parsed = url::Url::parse(&url).ok()?;
+            if !is_onion_url(&url) || !parsed.host_str().is_some_and(is_v3_onion_host) {
+                return None;
+            }
+            Some(RawProviderResult {
+                title: unescape_html(&anchor[2]).chars().take(300).collect(),
+                url: parsed.into(),
+                snippet: SNIPPET.captures(body)
+                    .map(|text| unescape_html(&text[1]).chars().take(2000).collect())
+                    .unwrap_or_default(),
+                last_seen: None,
             })
-            .unwrap_or_default()
-    };
-    let name = grab(&name_re);
-    if name.is_empty() {
-        return None;
+        })
+        .take(limit)
+        .collect();
+    if results.is_empty() {
+        return Err("PROVIDER_RESPONSE_INVALID");
     }
-    Some((name, grab(&value_re)))
-}
-
-/// Parse an Ahmia results page (CAPTCHA pages parse to zero results).
-pub fn parse_ahmia_results(html: &str) -> Vec<RawProviderResult> {
-    let li_re = Regex::new(r#"(?is)<li\b[^>]*class\s*=\s*("[^"]*result[^"]*"|'[^']*result[^']*')[^>]*>(.*?)</li\s*>"#).unwrap();
-    let inner_re = |tag: &str, block: &str| -> String {
-        let re = Regex::new(&format!(r"(?is)<{tag}[^>]*>(.*?)</{tag}\s*>")).unwrap();
-        re.captures(block)
-            .and_then(|c| c.get(1))
-            .map(|m| m.as_str().to_string())
-            .unwrap_or_default()
-    };
-    let seen_re = Regex::new(r#"(?is)<span[^>]*class\s*=\s*("[^"]*lastSeen[^"]*"|'[^']*lastSeen[^']*')[^>]*>(.*?)</span\s*>"#).unwrap();
-    let ts_re = Regex::new(r#"(?i)data-timestamp\s*=\s*("([^"]*)"|'([^']*)')"#).unwrap();
-
-    let mut out = Vec::new();
-    for cap in li_re.captures_iter(html) {
-        let block = cap.get(2).map(|m| m.as_str()).unwrap_or("");
-        let url = unescape_html(&inner_re("cite", block));
-        if url.is_empty() {
-            continue;
-        }
-        let last_seen = seen_re
-            .captures(block)
-            .and_then(|m| ts_re.captures(m.get(0).map(|x| x.as_str()).unwrap_or("")))
-            .and_then(|ts| {
-                ts.get(2)
-                    .or_else(|| ts.get(3))
-                    .and_then(|v| v.as_str().parse::<u64>().ok())
-            })
-            .map(|ts| if ts < 10_000_000_000 { ts * 1000 } else { ts });
-        out.push(RawProviderResult {
-            title: unescape_html(&inner_re("h4", block)).chars().take(300).collect(),
-            url,
-            snippet: unescape_html(&inner_re("p", block)).chars().take(2000).collect(),
-            last_seen,
-        });
-    }
-    out
-}
-
-/// Internal-navigation paths on the engine host itself (compiled once).
-fn nav_path_re() -> &'static Regex {
-    static RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?i)/(search|category|submit|about)").unwrap())
-}
-
-/// Parse a Tor66 results page (anchors referencing 56-char onion hosts).
-pub fn parse_tor66_results(html: &str) -> Vec<RawProviderResult> {
-    let a_re = Regex::new(r#"(?is)<a\b[^>]*?\shref\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))[^>]*>(.*?)</a\s*>"#).unwrap();
-    let onion_re = Regex::new(r"(?i)(?:https?://)?([a-z2-7]{56}\.onion)").unwrap();
-    let mut out = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    for cap in a_re.captures_iter(html) {
-        let href = cap
-            .get(2)
-            .or_else(|| cap.get(3))
-            .or_else(|| cap.get(4))
-            .map(|m| m.as_str().trim().to_string())
-            .unwrap_or_default();
-        if href.is_empty() {
-            continue;
-        }
-        let Some(host) = onion_re.captures(&href).and_then(|c| c.get(1)) else {
-            continue;
-        };
-        let host = host.as_str().to_lowercase();
-        if href.to_lowercase().starts_with("http") && nav_path_re().is_match(&href) {
-            continue;
-        }
-        let url = if href.to_lowercase().starts_with("http") {
-            href
-        } else {
-            format!("http://{host}")
-        };
-        if !seen.insert(url.clone()) {
-            continue;
-        }
-        let title = strip_tags(cap.get(5).map(|m| m.as_str()).unwrap_or(""));
-        out.push(RawProviderResult {
-            title: if title.is_empty() { host.clone() } else { title }
-                .chars()
-                .take(300)
-                .collect(),
-            url,
-            snippet: String::new(),
-            last_seen: None,
-        });
-    }
-    out
+    Ok(results)
 }
 
 // ---------------------------------------------------------------------------
@@ -569,7 +477,7 @@ pub fn normalize_provider_result(raw: RawProviderResult, provider: &str) -> Opti
     if url.is_empty() || url.len() > 2048 {
         return None;
     }
-    // Ahmia's cite field carries a bare onion address without a scheme.
+    // Accept bare onion addresses from historical index entries and fixtures.
     let has_scheme = {
         let lower = url.to_lowercase();
         lower.contains("://")
@@ -788,27 +696,55 @@ fn coverage(terms: &[String], text: &str) -> f64 {
 // Tor gateway resolution
 // ---------------------------------------------------------------------------
 
-/// The managed Tor endpoint wins (runtime_manager READY state); the config
-/// host:port is the manual fallback.
+/// Existing Tor endpoint used by configurable private and agent profiles.
 pub fn tor_endpoint(app: &tauri::AppHandle<tauri::Wry>, config: &DarkWebConfig) -> Option<(String, u16)> {
-    if std::env::var("HAYDEV_NO_ENGINES").is_ok_and(|v| v.trim() == "1") { return None; }
-    if let Some(ep) = crate::runtime_manager::with_manager(app, |s| s.tor_socks_endpoint()).flatten() {
-        if let Some((h, p)) = parse_socks_endpoint(&ep) {
-            return Some((h, p));
+    resolve_tor_endpoint(app, config, false)
+}
+
+/// DarkWeb uses the owner-checked local relay when the app manages Tor.
+pub fn onion_endpoint(app: &tauri::AppHandle<tauri::Wry>, config: &DarkWebConfig) -> Option<(String, u16)> {
+    if !config.enabled {
+        return None;
+    }
+    resolve_tor_endpoint(app, config, true)
+}
+
+fn resolve_tor_endpoint(
+    app: &tauri::AppHandle<tauri::Wry>,
+    config: &DarkWebConfig,
+    onion_only: bool,
+) -> Option<(String, u16)> {
+    if std::env::var("HAYDEV_NO_ENGINES").is_ok_and(|v| v.trim() == "1") {
+        return None;
+    }
+    let (endpoint, owned) = crate::runtime_manager::with_manager(app, |s| {
+        (s.tor_socks_endpoint(), s.managed_tor_proxy().is_some())
+    }).unwrap_or_default();
+    if let Some(ep) = endpoint {
+        if onion_only && owned {
+            return crate::tor_route::managed_endpoint(app).ok();
+        }
+        if let Some((host, port)) = parse_socks_endpoint(&ep) {
+            return Some((host, port));
         }
     }
-    if socks_probe(&config.socks_host, config.socks_port) {
-        return Some((config.socks_host.clone(), config.socks_port));
+    // Default DarkWeb uses the managed process. A configured external Tor
+    // client must be selected explicitly and listen on loopback.
+    let manual_host = if onion_only {
+        match (config.tor_spawn_if_available, config.socks_host.as_str()) {
+            (false, "127.0.0.1" | "localhost") => Some("127.0.0.1"),
+            _ => None,
+        }
+    } else {
+        Some(config.socks_host.as_str())
+    };
+    if let Some(host) = manual_host.filter(|host| socks_probe(host, config.socks_port)) {
+        return Some((host.to_string(), config.socks_port));
     }
-    // Electron parity (tor.spawnIfAvailable): kick a rate-limited on-demand
-    // managed start when Tor is offline. THIS call still resolves None —
-    // the endpoint becomes usable on a later poll once tor bootstraps
-    // (fail-closed in the meantime, never a clearnet fallback).
     if config.tor_spawn_if_available {
         use tauri::Manager;
-        if let Some(m) = app.try_state::<crate::runtime_manager::SharedRuntimeManager>() {
-            let m = m.inner().clone();
-            crate::runtime_manager::request_tor_start(&m);
+        if let Some(manager) = app.try_state::<crate::runtime_manager::SharedRuntimeManager>() {
+            crate::runtime_manager::request_tor_start(manager.inner());
         }
     }
     None
@@ -847,6 +783,25 @@ impl ToSocketAddrsFirst for String {
 
 pub fn has_onion_host(url: &url::Url) -> bool {
     url.host_str().is_some_and(|host| host.trim_end_matches('.').ends_with(".onion"))
+}
+
+pub(crate) fn is_v3_onion_host(host: &str) -> bool {
+    let Some(name) = host.trim_end_matches('.').strip_suffix(".onion") else {
+        return false;
+    };
+    let Some(service) = name.rsplit('.').next() else {
+        return false;
+    };
+    host.len() <= 253
+        && service.len() == 56
+        && service.bytes().all(|byte| byte.is_ascii_lowercase() || (b'2'..=b'7').contains(&byte))
+        && name.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
 }
 
 pub fn is_onion_url(url: &str) -> bool {
@@ -905,7 +860,7 @@ pub fn fetch_preview_html(
     if !is_onion_url(url) {
         return Err("ONION_ONLY".to_string());
     }
-    let Some((host, port)) = tor_endpoint(app, config) else {
+    let Some((host, port)) = onion_endpoint(app, config) else {
         return Err("TOR_UNAVAILABLE".to_string());
     };
     let resp = socks_http::get_via_socks5(&host, port, url, config.fetch_timeout_ms, config.fetch_max_bytes)
@@ -930,7 +885,7 @@ pub fn fetch_page(
     if !is_onion_url(url) {
         return Err("ONION_ONLY".to_string());
     }
-    let Some((host, port)) = tor_endpoint(app, config) else {
+    let Some((host, port)) = onion_endpoint(app, config) else {
         return Err("TOR_UNAVAILABLE".to_string());
     };
     let started = now_ms();
@@ -962,7 +917,7 @@ pub fn check_reachable(
     if !is_onion_url(url) {
         return ("unknown", None);
     }
-    let Some((host, port)) = tor_endpoint(app, config) else {
+    let Some((host, port)) = onion_endpoint(app, config) else {
         return ("unknown", None);
     };
     match socks_http::get_via_socks5(&host, port, url, AVAILABILITY_TIMEOUT_MS, 1024) {
@@ -1028,13 +983,6 @@ pub struct DarkWebService {
     pub health: Mutex<HashMap<String, ProviderHealth>>,
     pub jobs: Mutex<HashMap<String, Arc<Mutex<SearchJob>>>>,
     pub cache: Mutex<HashMap<String, (Value, u64)>>,
-    pub ahmia_token: Mutex<Option<(String, String, u64)>>,
-    /// Circuit breaker for the flaky ahmia onion mirror: when a probe fails,
-    /// skip the mirror entirely for this window and go straight to the
-    /// clearnet base OVER THE SAME Tor SOCKS (which native-tls/Schannel
-    /// serves reliably). Probing a dead mirror every fetch burns 6s per
-    /// request twice (token + search) for nothing.
-    pub ahmia_mirror_bad_until: Mutex<u64>,
     pub history: Mutex<Vec<Value>>,
     pub job_seq: AtomicU64,
 }
@@ -1061,8 +1009,6 @@ impl DarkWebService {
             health: Mutex::new(HashMap::new()),
             jobs: Mutex::new(HashMap::new()),
             cache: Mutex::new(HashMap::new()),
-            ahmia_token: Mutex::new(None),
-            ahmia_mirror_bad_until: Mutex::new(0),
             history: Mutex::new(history),
             job_seq: AtomicU64::new(1),
         }
@@ -1089,11 +1035,14 @@ impl DarkWebService {
         if query.is_empty() {
             return Err("EMPTY_QUERY".to_string());
         }
+        if query.chars().count() < 3 {
+            return Err("QUERY_TOO_SHORT".to_string());
+        }
         if query.len() > 512 {
             return Err("QUERY_TOO_LONG".to_string());
         }
 
-        let selected: Vec<&str> = [("ahmia", config.ahmia_enabled), ("tor66", config.tor66_enabled)]
+        let selected: Vec<&str> = [(VORMWEB_ID, config.vormweb_enabled)]
             .into_iter()
             .filter(|(id, enabled)| {
                 *enabled && providers_filter.as_ref().is_none_or(|filter| filter.iter().any(|p| p == id))
@@ -1104,8 +1053,8 @@ impl DarkWebService {
             return Err("NO_PROVIDERS_ENABLED".to_string());
         }
 
-        // Both upstreams use this endpoint for the lifetime of the search.
-        let tor = tor_endpoint(app, &config).ok_or("TOR_UNAVAILABLE")?;
+        // The provider request is tied to the Tor route resolved here.
+        let tor = onion_endpoint(app, &config).ok_or("TOR_UNAVAILABLE")?;
         let now = now_ms();
         let cache_key = format!("{}|{}", query.to_lowercase(), selected.join(","));
         if config.cache_ttl_ms > 0 {
@@ -1163,9 +1112,9 @@ impl DarkWebService {
         if runnable.is_empty() {
             {
                 let mut j = job.lock().unwrap_or_else(|p| p.into_inner());
-                j.state = "DONE";
+                j.state = "ERROR";
                 j.ended_at = Some(now);
-                j.error_code = Some("NO_PROVIDERS_ENABLED".to_string());
+                j.error_code = Some("EXTERNAL_PROVIDER_UNAVAILABLE".to_string());
             }
             return Ok(job.lock().unwrap_or_else(|p| p.into_inner()).snapshot(now));
         }
@@ -1182,11 +1131,7 @@ impl DarkWebService {
             let provider_id = id.to_string();
             std::thread::spawn(move || {
                 let started = now_ms();
-                let result: Result<Vec<RawProviderResult>, String> = match provider_id.as_str() {
-                    "ahmia" => service.ahmia_search(&tor, &cfg_w, &query_w),
-                    "tor66" => service.tor66_search(&tor, &cfg_w, &query_w),
-                    _ => Err("UNKNOWN_PROVIDER".to_string()),
-                };
+                let result = vormweb_search(&tor, &cfg_w, &query_w);
                 let duration = now_ms().saturating_sub(started);
                 // Budget: provider work beyond providerTimeoutMs abandons its
                 // results (the thread may still be blocked in the socket read;
@@ -1331,6 +1276,14 @@ impl DarkWebService {
                 j.ended_at = Some(now);
                 return;
             }
+            if !j.providers.values().any(|provider| provider["status"] == "ok") {
+                j.state = "ERROR";
+                j.ended_at = Some(now);
+                j.error_code = j.providers.values()
+                    .find_map(|provider| provider["errorCode"].as_str().map(str::to_owned))
+                    .or_else(|| Some("EXTERNAL_PROVIDER_UNAVAILABLE".to_string()));
+                return;
+            }
             let merged = merge_results(j.take_raw());
             (merged, j.query.clone(), j.id.clone(), j.cache_key.clone())
         };
@@ -1430,104 +1383,13 @@ impl DarkWebService {
         true
     }
 
-    // -- providers -----------------------------------------------------------
-
-    fn ensure_ahmia_token(&self, tor: &(String, u16), config: &DarkWebConfig) -> Option<(String, String)> {
-        let now = now_ms();
-        {
-            let tok = self.ahmia_token.lock().unwrap_or_else(|p| p.into_inner());
-            if let Some((name, value, at)) = tok.as_ref() {
-                if now.saturating_sub(*at) < TOKEN_TTL_MS {
-                    return Some((name.clone(), value.clone()));
-                }
-            }
-        }
-        let home = self.ahmia_fetch(tor, config, "/").ok()?;
-        let token = parse_ahmia_token(&home.text);
-        if let Some((name, value)) = &token {
-            *self.ahmia_token.lock().unwrap_or_else(|p| p.into_inner()) =
-                Some((name.clone(), value.clone(), now));
-        }
-        token
-    }
-
-    /// One ahmia GET with an in-Tor mirror fallback: the onion mirror first
-    /// under a SHORT probe window (a healthy mirror answers in ~4s; the
-    /// search job's per-provider budget is 15s, so a hanging mirror must not
-    /// eat it), then the same path on the clearnet base ROUTED THROUGH THE
-    /// SAME Tor SOCKS (remote DNS, TLS over the tunnel). Not a direct
-    /// fallback — the egress stays Tor-only.
-    fn ahmia_fetch(&self, tor: &(String, u16), config: &DarkWebConfig, path: &str) -> Result<socks_http::SimpleResponse, FetchError> {
-        let (host, port) = (&tor.0, tor.1);
-        const ONION_PROBE_MS: u64 = 6_000;
-        // Circuit breaker: while the mirror is known-bad, go straight to the
-        // clearnet base over the same Tor SOCKS (no 6s burn per fetch).
-        // Short window: the mirror is intermittently healthy (~50%), so it
-        // must be retried regularly rather than blackholed for minutes.
-        const MIRROR_BAD_WINDOW_MS: u64 = 90_000;
-        let mirror_bad = {
-            let until = self.ahmia_mirror_bad_until.lock().unwrap_or_else(|p| p.into_inner());
-            now_ms() < *until
-        };
-        let onion = if mirror_bad {
-            Err(FetchError::Unreachable("mirror circuit open".into()))
-        } else {
-            socks_http::get_via_socks5(host, port, &format!("{AHMIA_ONION_BASE}{path}"), ONION_PROBE_MS.min(config.fetch_timeout_ms), config.fetch_max_bytes)
-        };
-        match onion {
-            Ok(resp) => {
-                *self.ahmia_mirror_bad_until.lock().unwrap_or_else(|p| p.into_inner()) = 0;
-                Ok(resp)
-            }
-            Err(e) => {
-                if !mirror_bad {
-                    *self.ahmia_mirror_bad_until.lock().unwrap_or_else(|p| p.into_inner()) = now_ms() + MIRROR_BAD_WINDOW_MS;
-                }
-                log::warn!("[DARKWEB] ahmia onion mirror unreachable ({}) — retrying via clearnet base through the same Tor SOCKS", e.code());
-                // Full provider budget for the fallback: TLS handshake over
-                // Tor needs several RTTs; curl over the same SOCKS answers
-                // in ~1-3s but short windows (4-5s) die at the OS level.
-                let clear_url = format!("{AHMIA_CLEARNET_BASE}{path}");
-                socks_http::get_https_via_socks5(host, port, &clear_url, config.provider_timeout_ms.max(10_000), config.fetch_max_bytes)
-                    .map_err(|e2| {
-                        log::warn!("[DARKWEB] ahmia clearnet-via-Tor fallback failed: {} ({})", e2.code(), e2);
-                        e2
-                    })
-            }
-        }
-    }
-
-    fn ahmia_search(&self, tor: &(String, u16), config: &DarkWebConfig, query: &str) -> Result<Vec<RawProviderResult>, String> {
-        let token = self.ensure_ahmia_token(tor, config);
-        let mut path = format!("/search?q={}", urlencode_query(query));
-        if let Some((name, value)) = &token {
-            path.push_str(&format!("&{}={}", urlencode_query(name), urlencode_query(value)));
-        }
-        let resp = self.ahmia_fetch(tor, config, &path).map_err(|e: FetchError| e.code().to_string())?;
-        if resp.status >= 400 {
-            return Err("EXTERNAL_PROVIDER_UNAVAILABLE".to_string());
-        }
-        Ok(parse_ahmia_results(&resp.text).into_iter().take(config.max_results).collect())
-    }
-
-    fn tor66_search(&self, tor: &(String, u16), config: &DarkWebConfig, query: &str) -> Result<Vec<RawProviderResult>, String> {
-        let (host, port) = (&tor.0, tor.1);
-        let url = format!("{TOR66_ONION_BASE}/search?q={}", urlencode_query(query));
-        let resp = socks_http::get_via_socks5(host, port, &url, config.provider_timeout_ms, config.fetch_max_bytes)
-            .map_err(|e: FetchError| e.code().to_string())?;
-        if resp.status >= 400 {
-            return Err("EXTERNAL_PROVIDER_UNAVAILABLE".to_string());
-        }
-        Ok(parse_tor66_results(&resp.text).into_iter().take(config.max_results).collect())
-    }
-
     // -- history --------------------------------------------------------------
 
     fn history_add(&self, query: &str) {
         let mut history = self.history.lock().unwrap_or_else(|p| p.into_inner());
         history.insert(
             0,
-            json!({ "query": query, "providers": ["ahmia", "tor66"], "at": now_ms() }),
+            json!({ "query": query, "providers": [VORMWEB_ID], "at": now_ms() }),
         );
         history.truncate(MAX_HISTORY);
         let doc = json!({ "entries": history.clone() });
@@ -1542,16 +1404,19 @@ impl DarkWebService {
     pub fn ui_status(&self, app: &tauri::AppHandle<tauri::Wry>) -> Value {
         let config = self.config();
         let now = now_ms();
-        let tor_state = crate::runtime_manager::with_manager(app, |s| s.service_state("tor")).flatten();
-        let (tor_label, endpoint) = match tor_state {
-            Some(crate::runtime_manager::ServiceState::Ready) => {
-                let ep = crate::runtime_manager::with_manager(app, |s| s.tor_socks_endpoint()).flatten();
-                ("READY", ep)
-            }
+        let (tor_state, endpoint, progress) = crate::runtime_manager::with_manager(app, |manager| {
+            (
+                manager.service_state("tor"),
+                manager.tor_socks_endpoint(),
+                manager.status_json()["tor"]["progress"].as_u64(),
+            )
+        }).unwrap_or_default();
+        let tor_label = match tor_state {
+            Some(crate::runtime_manager::ServiceState::Ready) => "READY",
             Some(crate::runtime_manager::ServiceState::Starting)
-            | Some(crate::runtime_manager::ServiceState::Bootstrapping) => ("STARTING", None),
-            Some(crate::runtime_manager::ServiceState::Failed) => ("FAILED", None),
-            _ => ("STOPPED", None),
+            | Some(crate::runtime_manager::ServiceState::Bootstrapping) => "STARTING",
+            Some(crate::runtime_manager::ServiceState::Failed) => "FAILED",
+            _ => "STOPPED",
         };
         let socks_port = endpoint
             .as_ref()
@@ -1589,6 +1454,7 @@ impl DarkWebService {
             "enabled": config.enabled,
             "tor": {
                 "state": tor_label,
+                "progress": progress,
                 "socksHost": config.socks_host,
                 "socksPort": socks_port,
                 "detail": endpoint,
@@ -1596,8 +1462,7 @@ impl DarkWebService {
                 "lastCheckAt": now,
             },
             "providers": [
-                provider_status("ahmia", "Ahmia", config.ahmia_enabled, true),
-                provider_status("tor66", "Tor66", config.tor66_enabled, true),
+                provider_status(VORMWEB_ID, "VormWeb", config.vormweb_enabled, true),
             ],
             "historyCount": history_count,
             "indexCount": index_count,
@@ -1633,8 +1498,22 @@ pub fn config_of(app: &tauri::AppHandle<tauri::Wry>) -> DarkWebConfig {
         .unwrap_or_default()
 }
 
-fn urlencode_query(s: &str) -> String {
-    urlencode(s)
+fn vormweb_search(
+    tor: &(String, u16),
+    config: &DarkWebConfig,
+    query: &str,
+) -> Result<Vec<RawProviderResult>, String> {
+    let mut url = url::Url::parse(VORMWEB_SEARCH_URL).expect("static VormWeb search URL");
+    url.query_pairs_mut().append_pair("q", query);
+    let response = socks_http::get_https_via_socks5(
+        &tor.0, tor.1, url.as_str(), config.provider_timeout_ms, config.fetch_max_bytes,
+    ).map_err(|issue| issue.code().to_string())?;
+    if response.status != 200 || !response.content_type.as_deref()
+        .is_some_and(|content_type| content_type.to_ascii_lowercase().starts_with("text/html"))
+    {
+        return Err("EXTERNAL_PROVIDER_UNAVAILABLE".to_string());
+    }
+    parse_vormweb_results(&response.text, config.max_results).map_err(str::to_owned)
 }
 
 // ---------------------------------------------------------------------------
@@ -1679,54 +1558,29 @@ mod tests {
     }
 
     #[test]
-    fn ahmia_token_extraction() {
-        let html = r#"<form><input type="hidden" name="gqfxw" value="7f3a"><input type="text" name="q"></form>"#;
-        let token = parse_ahmia_token(html).unwrap();
-        assert_eq!(token.0, "gqfxw");
-        assert_eq!(token.1, "7f3a");
-        assert!(parse_ahmia_token("<form><input type=\"text\" name=\"q\"></form>").is_none());
+    fn vormweb_parses_only_onion_result_cards() {
+        let host = format!("{}.onion", "a".repeat(56));
+        let html = format!(r#"
+            <p><b><u>3</u></b> Search results for "example" found!</p>
+            <a id="urllink" href="http://{host}/nav">Header link</a>
+            <div class="query-box"><a href="http://{host}/a?one=1&amp;two=2" id="urllink">A &amp; <b>B</b></a>
+            <li><i>Plain &lt;text&gt;</i></li></div>
+            <div class="query-box"><a id='urllink' href='https://example.com/'>External</a></div>
+            <div class="query-box"><a id="urllink" href="http://user:pass@{host}/">Credentials</a></div>
+        "#);
+        let rows = parse_vormweb_results(&html, 20).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].url, format!("http://{host}/a?one=1&two=2"));
+        assert_eq!(rows[0].title, "A & B");
+        assert_eq!(rows[0].snippet, "Plain <text>");
     }
 
     #[test]
-    fn ahmia_results_parsing() {
-        let html = r#"
-        <li class="result">
-          <h4>Torch <b>Search</b></h4>
-          <p>Search &amp; explore the darknet</p>
-          <cite>xmh57jzhnwlpyoah.onion</cite>
-          <span class="lastSeen" data-timestamp="1700000000">2d</span>
-        </li>
-        <li class="result">
-          <h4>Onionland</h4>
-          <p>Another engine</p>
-          <cite>http://onionlandmyf6bl2whtf6zhmahdam6d34h7gs4sirzemafpwmsitd.onion/</cite>
-        </li>"#;
-        let results = parse_ahmia_results(html);
-        assert_eq!(results.len(), 2);
-        assert_eq!(results[0].url, "xmh57jzhnwlpyoah.onion");
-        assert_eq!(results[0].title, "Torch Search");
-        assert_eq!(results[0].snippet, "Search & explore the darknet");
-        assert_eq!(results[0].last_seen, Some(1_700_000_000_000));
-    }
-
-    #[test]
-    fn tor66_results_parsing() {
-        // 56-char base32 hosts (v3 onion length matters: the regex gates on it).
-        let h1 = "abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrstuvwx";
-        let h2 = "zyxwvutsrqponmlkjihgfedcbazyxwvutsrqponmlkjihgfedcba2345";
-        assert_eq!(h1.len(), 56);
-        assert_eq!(h2.len(), 56);
-        let html = format!(
-            r#"
-        <a href="http://{h1}.onion/wiki">The Hidden <i>Wiki</i></a>
-        <a href="{h2}.onion">Plain host link</a>
-        <a href="/search?q=next">Internal nav</a>
-        <a href="http://tor66sewebgixwhcqfnp5inzp5x5uohhyl3qcyyeiafkliegvfiogiijd.onion/about">About</a>"#
-        );
-        let results = parse_tor66_results(&html);
-        assert_eq!(results.len(), 2);
-        assert_eq!(results[0].title, "The Hidden Wiki");
-        assert_eq!(results[1].url, format!("http://{h2}.onion"));
+    fn vormweb_distinguishes_empty_results_and_unexpected_html() {
+        assert!(parse_vormweb_results("<b><u>0</u></b> Search results for test found!", 20)
+            .unwrap().is_empty());
+        assert!(parse_vormweb_results("<h1>Just a moment</h1>", 20).is_err());
+        assert!(parse_vormweb_results("<b><u>1</u></b> Search results for test found!", 20).is_err());
     }
 
     #[test]
@@ -1737,19 +1591,19 @@ mod tests {
             snippet: "s".to_string(),
             last_seen: None,
         };
-        let n = normalize_provider_result(raw, "ahmia").unwrap();
+        let n = normalize_provider_result(raw, "fixture-a").unwrap();
         assert_eq!(n.url, "http://abc.onion/");
         assert_eq!(n.title, "Wiki Title");
         // Non-onion rejected.
         let bad = normalize_provider_result(
             RawProviderResult { title: "t".into(), url: "http://example.com/".into(), snippet: String::new(), last_seen: None },
-            "ahmia",
+            "fixture-a",
         );
         assert!(bad.is_none());
         // Credentials stripped.
         let creds = normalize_provider_result(
             RawProviderResult { title: "t".into(), url: "http://u:p@abc.onion/x".into(), snippet: String::new(), last_seen: None },
-            "tor66",
+            "fixture-b",
         )
         .unwrap();
         assert!(!creds.url.contains("u:p@"));
@@ -1759,17 +1613,17 @@ mod tests {
     fn merge_unifies_providers_and_keeps_longest_text() {
         let a = normalize_provider_result(
             RawProviderResult { title: "Short".into(), url: "http://abc.onion/".into(), snippet: "hi".into(), last_seen: None },
-            "ahmia",
+            "fixture-a",
         )
         .unwrap();
         let b = normalize_provider_result(
             RawProviderResult { title: "The Longer Title".into(), url: "abc.onion".into(), snippet: "longer snippet".into(), last_seen: Some(5) },
-            "tor66",
+            "fixture-b",
         )
         .unwrap();
         let merged = merge_results(vec![a, b]);
         assert_eq!(merged.len(), 1);
-        assert_eq!(merged[0].providers, vec!["ahmia", "tor66"]);
+        assert_eq!(merged[0].providers, vec!["fixture-a", "fixture-b"]);
         assert_eq!(merged[0].title, "The Longer Title");
         assert_eq!(merged[0].snippet, "longer snippet");
         assert_eq!(merged[0].last_seen, Some(5));
@@ -1817,25 +1671,25 @@ mod tests {
             "enabled": false,
             "search": { "maxResults": 99_999, "cacheTtlMs": -5 },
             "tor": { "socksPort": 99_999 },
-            "providers": { "tor66": { "enabled": false } },
+            "providers": { "vormweb": { "enabled": false } },
         }));
         assert!(!c.enabled);
         assert_eq!(c.max_results, 200);
         assert_eq!(c.socks_port, 65_535);
-        assert!(!c.tor66_enabled);
+        assert!(!c.vormweb_enabled);
         let tmp = std::env::temp_dir().join(format!("hd-dw-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&tmp).unwrap();
         c.save(&tmp);
         let loaded = DarkWebConfig::load(&tmp);
         assert_eq!(loaded.max_results, 200);
-        assert!(!loaded.tor66_enabled);
+        assert!(!loaded.vormweb_enabled);
         std::fs::remove_dir_all(&tmp).ok();
     }
 
     #[test]
     fn onion_url_validation() {
         assert!(is_onion_url("http://abcxyz56charonionaddress0000000000000000000000000000000.onion/x"));
-        assert!(!is_onion_url("https://ahmia.fi/search"));
+        assert!(!is_onion_url("https://vormweb.de/en/search"));
         assert!(!is_onion_url("notaurl"));
     }
 

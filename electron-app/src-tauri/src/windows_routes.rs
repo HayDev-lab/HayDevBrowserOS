@@ -108,8 +108,7 @@ mod tests {
 /// A local routing-table lookup. It makes no connections and does not
 /// establish that WFP permits the route or that a tunnel is protecting it.
 #[tauri::command]
-pub fn windows_route_status(webview: tauri::Webview<tauri::Wry>) -> crate::error::AppResult<WindowsRoutes> {
-    crate::arman_vpn::trusted(&webview)?;
+pub fn windows_route_status() -> crate::error::AppResult<WindowsRoutes> {
     #[cfg(windows)]
     return Ok(WindowsRoutes {
         ipv4: selected_route(std::net::Ipv4Addr::new(1, 1, 1, 1).into()),

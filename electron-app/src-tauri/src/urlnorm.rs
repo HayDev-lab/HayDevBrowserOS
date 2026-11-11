@@ -145,7 +145,10 @@ pub fn normalize_address_bar_input(raw: &str) -> NormalizedUrl {
 
     // Step 3 — bare hostname upgrade.
     let upgraded = format!("https://{trimmed}");
-    if let Ok(u) = Url::parse(&upgraded) {
+    if let Ok(mut u) = Url::parse(&upgraded) {
+        if u.host_str().is_some_and(|host| host.trim_end_matches('.').ends_with(".onion")) {
+            let _ = u.set_scheme("http");
+        }
         if ALLOWED_PROTOCOLS.contains(&protocol_of(&u).as_str()) {
             return NormalizedUrl {
                 url: Some(u.to_string()),

@@ -81,7 +81,6 @@ impl ServiceStatus {
 struct Svc {
     status: Option<ServiceStatus>,
     child_pid: Option<u32>,
-    bundled_tor: bool,
     #[cfg(windows)]
     job: Option<Arc<RuntimeJob>>,
     restarts: u32,
@@ -129,6 +128,7 @@ impl RuntimeManagerState {
 
     /// Managed Tor SOCKS endpoint (socks5://host:port) when READY/adopted.
     pub fn tor_socks_endpoint(&self) -> Option<String> {
+        if self.stopping { return None; }
         self.svcs
             .get("tor")
             .and_then(|s| s.status.as_ref())
@@ -136,11 +136,11 @@ impl RuntimeManagerState {
             .and_then(|s| s.endpoint.clone())
     }
 
-    /// The regular-web Tor tabs only use the browser-owned Tor process.
+    /// Loopback endpoint and owning PID for a Tor process managed by this app.
     pub(crate) fn managed_tor_proxy(&self) -> Option<(std::net::SocketAddrV4, u32)> {
         let service = self.svcs.get("tor")?;
         let status = service.status.as_ref()?;
-        if self.stopping || status.state != ServiceState::Ready || !service.bundled_tor {
+        if self.stopping || status.state != ServiceState::Ready {
             return None;
         }
         let address: std::net::SocketAddrV4 =
@@ -1006,7 +1006,11 @@ fn start_tor(m: SharedRuntimeManager) {
         log::info!("[PROCESS] tor binary resolved: {provenance} ({})", tor_exe.display());
         let tor_cwd = tor_exe.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
         let socks_port = find_free_port(PREFERRED_TOR_SOCKS);
-        let control_port = find_free_port(PREFERRED_TOR_CONTROL);
+        let control_port = find_free_port(PREFERRED_TOR_CONTROL.max(socks_port.saturating_add(1)));
+        if control_port == socks_port {
+            set_status(&m, "tor", |s| *s = fail("TOR_PORTS_UNAVAILABLE"));
+            return;
+        }
         let data_dir = app_data_dir().join("runtime").join("tor").join("data");
         let _ = std::fs::create_dir_all(&data_dir);
 
@@ -1040,18 +1044,12 @@ fn start_tor(m: SharedRuntimeManager) {
             Ok(child) => {
                 let pid = child.id();
                 let _lease = ServiceLease { manager: m.clone(), key: "tor", pid };
-                if let Some(service) = m.lock().unwrap_or_else(|p| p.into_inner()).svcs.get_mut("tor") {
-                    service.bundled_tor = provenance == "bundled";
-                }
                 set_status(&m, "tor", |s| s.pid = Some(pid));
                 log::info!(
                     "[PROCESS] tor spawned pid={pid} socks={socks_port} control={control_port}"
                 );
-                // Bootstrap percent via the control port (best-effort; the
-                // SOCKS probe below remains the READY source of truth).
-                follow_tor_bootstrap(m.clone(), control_port, data_dir.clone());
-                // Tor READY = end-to-end SOCKS5 CONNECT through the proxy
-                // (remote DNS) — the port accepting alone is NOT enough.
+                // Read bootstrap state from the owned Tor process. The local
+                // SOCKS handshake confirms that the proxy also accepts clients.
                 let endpoint = format!("socks5://127.0.0.1:{socks_port}");
                 let started = Instant::now();
                 let deadline = started + TOR_START_TIMEOUT;
@@ -1063,14 +1061,18 @@ fn start_tor(m: SharedRuntimeManager) {
                         set_status(&m, "tor", |s| *s = fail("TOR_EXITED_DURING_BOOTSTRAP"));
                         return;
                     }
-                    if socks_probe("127.0.0.1", socks_port) {
+                    let progress = tor_bootstrap_progress(control_port, pid, &data_dir);
+                    if let Some(progress) = progress {
+                        set_status(&m, "tor", |s| s.progress = Some(progress));
+                    }
+                    if progress == Some(100) && socks_probe("127.0.0.1", socks_port) {
                         set_status(&m, "tor", |s| {
                             s.state = ServiceState::Ready;
                             s.endpoint = Some(endpoint.clone());
                             s.error_code = None;
                             s.progress = Some(100);
                         });
-                        log::info!("[PROCESS] tor READY (SOCKS end-to-end probe ok)");
+                        log::info!("[PROCESS] tor READY (authenticated bootstrap and SOCKS handshake)");
                         loop {
                             if stopping(&m) { let _ = child.kill(); let _ = child.wait(); return; }
                             match child.try_wait() {
@@ -1165,75 +1167,37 @@ fn read_control_line(stream: &mut TcpStream, buf: &mut String) -> Option<String>
     }
 }
 
-/// Control-port bootstrap follower (Electron followBootstrap parity):
-/// cookie AUTHENTICATE + SETEVENTS STATUS_CLIENT, surface PROGRESS=n.
-/// Strictly best-effort — every failure simply stops updating the percent
-/// (the SOCKS end-to-end probe remains the source of truth for READY).
-fn follow_tor_bootstrap(m: SharedRuntimeManager, control_port: u16, data_dir: PathBuf) {
-    let Some(worker) = begin_worker(&m) else { return };
-    std::thread::spawn(move || {
-        let _worker = worker;
-        let Ok(addr) = format!("127.0.0.1:{control_port}").parse::<std::net::SocketAddr>() else {
-            return;
-        };
-        // The control port appears a moment after spawn — retry briefly.
-        let mut stream = None;
-        for _ in 0..10 {
-            if stopping(&m) { return; }
-            if let Ok(s) = TcpStream::connect_timeout(&addr, Duration::from_secs(1)) {
-                stream = Some(s);
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(500));
-        }
-        let Some(mut stream) = stream else { return };
-        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-        let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
-        let mut buf = String::new();
-        // Greeting must be a 250 line.
-        if !matches!(read_control_line(&mut stream, &mut buf), Some(l) if l.starts_with("250")) {
-            return;
-        }
-        // Cookie auth (hex); a control port without a cookie still accepts a
-        // bare AUTHENTICATE — parity with the Electron fallback.
-        let auth = match std::fs::read(data_dir.join("control_cookie")) {
-            Ok(cookie) => format!(
-                "AUTHENTICATE {}\r\n",
-                cookie.iter().map(|b| format!("{b:02x}")).collect::<String>()
-            ),
-            Err(_) => "AUTHENTICATE\r\n".to_string(),
-        };
-        if stream.write_all(auth.as_bytes()).is_err() {
-            return;
-        }
-        if !matches!(read_control_line(&mut stream, &mut buf), Some(l) if l.starts_with("250")) {
-            return;
-        }
-        if stream.write_all(b"SETEVENTS STATUS_CLIENT\r\n").is_err() {
-            return;
-        }
-        if !matches!(read_control_line(&mut stream, &mut buf), Some(l) if l.starts_with("250")) {
-            return;
-        }
-        // Event lines look like: 650 STATUS_CLIENT NOTICE BOOTSTRAP PROGRESS=45 ...
-        let deadline = Instant::now() + Duration::from_secs(120);
-        while !stopping(&m) && Instant::now() < deadline {
-            match read_control_line(&mut stream, &mut buf) {
-                Some(line) => {
-                    let Some(idx) = line.find("PROGRESS=") else { continue };
-                    let tail = &line[idx + "PROGRESS=".len()..];
-                    let digits: String = tail.chars().take_while(|c| c.is_ascii_digit()).collect();
-                    if let Ok(pct) = digits.parse::<u32>() {
-                        set_status(&m, "tor", |s| s.progress = Some(pct.min(100)));
-                        if pct >= 100 {
-                            return;
-                        }
-                    }
-                }
-                None => return,
-            }
-        }
-    });
+/// Read the current bootstrap phase over Tor's authenticated control port.
+fn tor_bootstrap_progress(port: u16, pid: u32, data_dir: &Path) -> Option<u32> {
+    let cookie = std::fs::read(data_dir.join("control_auth_cookie")).ok()?;
+    if cookie.len() != 32 {
+        return None;
+    }
+    let address = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    let timeout = Duration::from_secs(2);
+    let mut stream = TcpStream::connect_timeout(&address, timeout).ok()?;
+    if !crate::windows_routes::tcp_peer_is_owned(&stream, pid) {
+        return None;
+    }
+    stream.set_read_timeout(Some(timeout)).ok()?;
+    stream.set_write_timeout(Some(timeout)).ok()?;
+
+    let cookie_hex: String = cookie.iter().map(|byte| format!("{byte:02x}")).collect();
+    write!(stream, "AUTHENTICATE {cookie_hex}\r\n").ok()?;
+    let mut buffer = String::new();
+    if read_control_line(&mut stream, &mut buffer)?.as_str() != "250 OK" {
+        return None;
+    }
+    stream.write_all(b"GETINFO status/bootstrap-phase\r\n").ok()?;
+    let reply = read_control_line(&mut stream, &mut buffer)?;
+    let value = reply.strip_prefix("250-status/bootstrap-phase=")?;
+    if read_control_line(&mut stream, &mut buffer)?.as_str() != "250 OK" {
+        return None;
+    }
+    value.split_whitespace()
+        .find_map(|field| field.strip_prefix("PROGRESS="))
+        .and_then(|field| field.parse().ok())
+        .filter(|progress| *progress <= 100)
 }
 
 /// On-demand Tor start (Electron `tor.spawnIfAvailable` parity). Rate-
@@ -1259,38 +1223,23 @@ pub fn request_tor_start(m: &SharedRuntimeManager) {
     start_tor(m.clone());
 }
 
-/// Minimal SOCKS5 client: greeting (no-auth) + CONNECT with a DOMAIN-name
-/// target (forces remote DNS through Tor — spec §39/§46 semantics).
+/// Confirm the local SOCKS listener accepts unauthenticated SOCKS5 streams.
 fn socks_probe(host: &str, port: u16) -> bool {
     let Ok(addr) = format!("{host}:{port}").parse::<std::net::SocketAddr>() else {
         return false;
     };
-    let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_secs(3)) else {
+    let timeout = Duration::from_secs(2);
+    let Ok(mut stream) = TcpStream::connect_timeout(&addr, timeout) else {
         return false;
     };
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(8)));
-    let _ = stream.set_write_timeout(Some(Duration::from_secs(8)));
-    // Greeting: VER=5, 1 method, NO AUTH.
-    if stream.write_all(&[0x05, 0x01, 0x00]).is_err() {
+    if stream.set_read_timeout(Some(timeout)).is_err()
+        || stream.set_write_timeout(Some(timeout)).is_err()
+        || stream.write_all(&[5, 1, 0]).is_err()
+    {
         return false;
     }
-    let mut buf = [0u8; 2];
-    if stream.read_exact(&mut buf).is_err() || buf[0] != 0x05 {
-        return false;
-    }
-    // CONNECT www.google.com:80 (domain address → remote DNS).
-    let target = b"www.google.com";
-    let mut req = vec![0x05, 0x01, 0x00, 0x03, target.len() as u8];
-    req.extend_from_slice(target);
-    req.extend_from_slice(&80u16.to_be_bytes());
-    if stream.write_all(&req).is_err() {
-        return false;
-    }
-    let mut head = [0u8; 4];
-    if stream.read_exact(&mut head).is_err() {
-        return false;
-    }
-    head[1] == 0x00 // REP 0 = succeeded
+    let mut reply = [0; 2];
+    stream.read_exact(&mut reply).is_ok() && reply == [5, 0]
 }
 
 // ---------------------------------------------------------------------------

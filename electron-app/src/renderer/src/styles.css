@@ -2389,8 +2389,6 @@ input {
 }
 .media-cleaner__option button:disabled { cursor: default; opacity: .55; }
 .vpn-fields { display: grid; gap: 10px; }
-.vpn-status { font-weight: 600; color: var(--nc-text-secondary); }
-.vpn-status[data-state="ready"] { color: var(--nc-accent); }
 .vpn-alert { padding: 9px 11px; border: 1px solid var(--nc-border); border-radius: 6px; }
 .vpn-button {
   padding: 8px 12px;

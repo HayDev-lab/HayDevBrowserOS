@@ -47,7 +47,7 @@ const STRINGS: Record<AppLocale, Record<string, string>> = {
     'tor.statusUnavailable': 'Tor: status unavailable',
     'dw.title': 'Dark Web Search',
     'dw.disabled': 'disabled',
-    'search.placeholder': 'Search the dark web…',
+    'search.placeholder': 'Search VormWeb or enter a .onion address',
     'search.ariaLabel': 'Dark web search query',
     'search.button': 'Search',
     'providers.label': 'Providers:',
@@ -135,7 +135,10 @@ const STRINGS: Record<AppLocale, Record<string, string>> = {
     'act.addIndex': 'Add to index',
     'act.indexed': 'Index entry saved',
     'error.torUnavailable': 'Tor is unavailable. Wait for it to connect, then try again.',
-    'error.noProviders': 'Select an available provider.',
+    'error.noProviders': 'Select VormWeb to search.',
+    'error.shortQuery': 'Enter at least three characters.',
+    'error.providerUnavailable': 'VormWeb is unavailable through Tor. Try again in a moment.',
+    'error.onionOpen': 'Could not open this onion page.',
   },
   ru: {
     'page.title': 'Поиск в даркнете',
@@ -148,7 +151,7 @@ const STRINGS: Record<AppLocale, Record<string, string>> = {
     'tor.statusUnavailable': 'Tor: статус недоступен',
     'dw.title': 'Поиск в даркнете',
     'dw.disabled': 'отключено',
-    'search.placeholder': 'Искать в даркнете…',
+    'search.placeholder': 'Поиск VormWeb или адрес .onion',
     'search.ariaLabel': 'Поисковый запрос (даркнет)',
     'search.button': 'Поиск',
     'providers.label': 'Провайдеры:',
@@ -236,7 +239,10 @@ const STRINGS: Record<AppLocale, Record<string, string>> = {
     'act.addIndex': 'Добавить в индекс',
     'act.indexed': 'Запись добавлена в индекс',
     'error.torUnavailable': 'Tor недоступен. Дождитесь подключения и повторите поиск.',
-    'error.noProviders': 'Выберите доступный источник.',
+    'error.noProviders': 'Выберите VormWeb для поиска.',
+    'error.shortQuery': 'Введите не менее трёх символов.',
+    'error.providerUnavailable': 'VormWeb недоступен через Tor. Повторите попытку чуть позже.',
+    'error.onionOpen': 'Не удалось открыть эту onion-страницу.',
   },
   hy: {
     'page.title': 'Որոնում Dark Web-ում',
@@ -249,7 +255,7 @@ const STRINGS: Record<AppLocale, Record<string, string>> = {
     'tor.statusUnavailable': 'Tor՝ կարգավիճակը հասանելի չէ',
     'dw.title': 'Որոնում Dark Web-ում',
     'dw.disabled': 'անջատված',
-    'search.placeholder': 'Որոնել dark web-ում…',
+    'search.placeholder': 'Որոնել VormWeb-ում կամ մուտքագրել .onion հասցե',
     'search.ariaLabel': 'Որոնման հարցում՝ Dark Web',
     'search.button': 'Որոնում',
     'providers.label': 'Պրովայդերներ՝',
@@ -337,7 +343,10 @@ const STRINGS: Record<AppLocale, Record<string, string>> = {
     'act.addIndex': 'Ավելացնել ինդեքսում',
     'act.indexed': 'Գրառումն ավելացվել է',
     'error.torUnavailable': 'Tor-ը հասանելի չէ։ Սպասեք միացմանը և նորից փորձեք։',
-    'error.noProviders': 'Ընտրեք հասանելի աղբյուր։',
+    'error.noProviders': 'Որոնման համար ընտրեք VormWeb-ը։',
+    'error.shortQuery': 'Մուտքագրեք առնվազն երեք նիշ։',
+    'error.providerUnavailable': 'VormWeb-ը հասանելի չէ Tor-ով։ Փորձեք ավելի ուշ։',
+    'error.onionOpen': 'Չհաջողվեց բացել այս onion էջը։',
   },
 };
 
@@ -576,6 +585,7 @@ export function buildDarkWebPageHtml(logoDataUrl?: string, opts?: DarkWebPageOpt
       var pill = $('tor-pill');
       pill.className = 'pill ' + (torReady ? 'tor-ready' : (t.state === 'STARTING' ? 'tor-starting' : 'tor-offline'));
       var label = 'Tor: ' + (t.state === 'READY' ? tr('tor.online') : t.state === 'STARTING' ? tr('tor.starting') : tr('tor.offline'));
+      if (t.state === 'STARTING' && t.progress != null) label += ' ' + t.progress + '%';
       if (t.socksHost) label += ' · ' + t.socksHost + ':' + t.socksPort;
       if (torReady && t.latencyMs != null) label += ' · ' + t.latencyMs + ' ' + tr('unit.ms');
       if (t.lastCheckAt) label += ' · ' + tr('tor.checked', { t: relTime(t.lastCheckAt) });
@@ -616,6 +626,11 @@ export function buildDarkWebPageHtml(logoDataUrl?: string, opts?: DarkWebPageOpt
     e.preventDefault();
     var q = input.value.trim();
     if (!q || submitting || currentSearchId) return;
+    var target = onionAddress(q);
+    if (target) {
+      openOnion(target);
+      return;
+    }
     submitting = true;
     go.disabled = true;
     var ids = Object.keys(providerEls);
@@ -630,6 +645,7 @@ export function buildDarkWebPageHtml(logoDataUrl?: string, opts?: DarkWebPageOpt
       currentSearchId = r.body.searchId;
       lastResults = [];
       renderProgress(r.body);
+      if (r.body.errorCode) { showError(r.body.errorCode); return; }
       renderResults(r.body);
       if (r.body.state === 'SEARCHING' || r.body.state === 'PARTIAL_RESULTS') {
         pollTimer = setInterval(function () { pollSearch(currentSearchId); }, 700);
@@ -644,6 +660,7 @@ export function buildDarkWebPageHtml(logoDataUrl?: string, opts?: DarkWebPageOpt
     api('search/' + id).then(function (r) {
       if (r.body.error === 'NOT_FOUND') { stopPolling('GONE'); return; }
       renderProgress(r.body);
+      if (r.body.errorCode) { showError(r.body.errorCode); return; }
       renderResults(r.body);
       if (r.body.state === 'DONE' || r.body.state === 'ERROR' || r.body.state === 'CANCELLED') {
         stopPolling(r.body.state);
@@ -665,8 +682,11 @@ export function buildDarkWebPageHtml(logoDataUrl?: string, opts?: DarkWebPageOpt
 
   function showError(msg) {
     results.textContent = '';
-    if (msg === 'TOR_UNAVAILABLE') msg = tr('error.torUnavailable');
+    if (msg === 'TOR_UNAVAILABLE' || msg === 'EGRESS_UNAVAILABLE') msg = tr('error.torUnavailable');
     if (msg === 'NO_PROVIDERS_ENABLED') msg = tr('error.noProviders');
+    if (msg === 'QUERY_TOO_SHORT') msg = tr('error.shortQuery');
+    if (['EXTERNAL_PROVIDER_UNAVAILABLE', 'PROVIDER_RESPONSE_INVALID', 'ONION_UNREACHABLE',
+      'PROVIDER_TIMEOUT', 'GLOBAL_TIMEOUT'].includes(msg)) msg = tr('error.providerUnavailable');
     results.appendChild(el('div', 'error', tr('error.prefix', { m: msg })));
     stopPolling('ERROR');
   }
@@ -682,6 +702,36 @@ export function buildDarkWebPageHtml(logoDataUrl?: string, opts?: DarkWebPageOpt
     go.disabled = resp.state === 'SEARCHING' || resp.state === 'PARTIAL_RESULTS';
     statebar.style.display = go.disabled ? 'flex' : 'none';
     stateLabel.textContent = stateText(resp.state) + (resp.durationMs ? ' · ' + Math.round(resp.durationMs / 100) / 10 + tr('unit.s') : '');
+  }
+
+  function onionAddress(value) {
+    if (/\\s/.test(value)) return null;
+    try {
+      var url = new URL(value.indexOf('://') === -1 ? 'http://' + value : value);
+      if ((url.protocol === 'http:' || url.protocol === 'https:')
+        && url.hostname.toLowerCase().endsWith('.onion') && !url.username && !url.password) {
+        return url.href;
+      }
+    } catch (e) { /* Search text need not be an address. */ }
+    return null;
+  }
+
+  function openOnion(url) {
+    if (submitting) return;
+    submitting = true;
+    go.disabled = true;
+    return api('open', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ url: url })
+    }).then(function (r) {
+      if (r.body.error) showError(r.body.error);
+    }).catch(function () {
+      showError(tr('error.onionOpen'));
+    }).finally(function () {
+      submitting = false;
+      if (!currentSearchId) go.disabled = false;
+    });
   }
 
   // ---- result cards -------------------------------------------------------
@@ -713,6 +763,7 @@ export function buildDarkWebPageHtml(logoDataUrl?: string, opts?: DarkWebPageOpt
     var t = el('div', 't');
     var openLink = document.createElement('a');
     openLink.href = '/open?url=' + encodeURIComponent(r.url);
+    openLink.addEventListener('click', function (event) { event.preventDefault(); openOnion(r.url); });
     openLink.textContent = r.title || r.url;
     t.appendChild(openLink);
     c.appendChild(t);
@@ -735,7 +786,7 @@ export function buildDarkWebPageHtml(logoDataUrl?: string, opts?: DarkWebPageOpt
       b.addEventListener('click', fn);
       return b;
     };
-    acts.appendChild(Object.assign(document.createElement('a'), { href: '/open?url=' + encodeURIComponent(r.url), textContent: tr('act.open') }));
+    acts.appendChild(mk(tr('act.open'), function () { openOnion(r.url); }));
     acts.appendChild(mk(tr('act.preview'), function () { preview(r.url); }));
     acts.appendChild(mk(tr('act.copyUrl'), function () { navigator.clipboard.writeText(r.url).catch(function () {}); }));
     acts.appendChild(mk(tr('act.crawl'), function () { crawl(r.url); }));

@@ -15,38 +15,6 @@ unsafe fn string(read: impl FnOnce(*mut PWSTR) -> windows::core::Result<()>) -> 
     Ok(take_pwstr(value))
 }
 
-pub fn restrict_provider_dashboard(
-    native: &tauri::webview::PlatformWebview,
-    origin: url::Origin,
-) -> AppResult<()> {
-    unsafe {
-        let view = native.controller().CoreWebView2().map_err(failure)?;
-        let settings: ICoreWebView2Settings4 = view.Settings().map_err(failure)?.cast().map_err(failure)?;
-        settings.SetIsPasswordAutosaveEnabled(false).map_err(failure)?;
-        let view: ICoreWebView2_22 = view.cast().map_err(failure)?;
-        view.AddWebResourceRequestedFilterWithRequestSourceKinds(
-            &HSTRING::from("*"),
-            COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
-            COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL,
-        ).map_err(failure)?;
-        let env = native.environment();
-        view.add_WebResourceRequested(&WebResourceRequestedEventHandler::create(Box::new(move |_, args| {
-            let Some(args) = args else { return Ok(()); };
-            let request = args.Request()?;
-            let uri = string(|p| request.Uri(p))?;
-            if !url::Url::parse(&uri).is_ok_and(|url| {
-                url.origin() == origin && url.username().is_empty() && url.password().is_none()
-            }) {
-                let response = env.CreateWebResourceResponse(
-                    None, 403, &HSTRING::from("Blocked by HayDevVPN"), &HSTRING::from("Content-Length: 0\r\n"),
-                )?;
-                args.SetResponse(&response)?;
-            }
-            Ok(())
-        })), &mut 0).map_err(failure)?;
-    }
-    Ok(())
-}
 fn emit_downloads(app: &AppHandle<Wry>) {
     if let Ok(items) = crate::core::list_downloads(app) { let _ = app.emit("browser:downloads:changed", &items); }
 }
@@ -68,7 +36,7 @@ unsafe fn progress(
 
 /// Called on the UI thread. No protected target is loaded before this succeeds.
 pub unsafe fn install(
-    app: &AppHandle<Wry>, native: &tauri::webview::PlatformWebview, tab_id: &str, darkweb: bool, tor_proxy_tab: bool,
+    app: &AppHandle<Wry>, native: &tauri::webview::PlatformWebview, tab_id: &str, darkweb: bool,
 ) -> AppResult<()> {
     let wv = native.controller().CoreWebView2().map_err(failure)?;
     let settings = wv.Settings().map_err(failure)?;
@@ -113,16 +81,31 @@ pub unsafe fn install(
         nav_shield.attached.lock().unwrap_or_else(|p| p.into_inner()).insert(nav_tab.clone());
         Ok(())
     })), &mut 0).map_err(failure)?;
-    wv.AddWebResourceRequestedFilter(&HSTRING::from("*"), COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL).map_err(failure)?;
+    if darkweb {
+        let view: ICoreWebView2_22 = wv.cast().map_err(failure)?;
+        view.AddWebResourceRequestedFilterWithRequestSourceKinds(
+            &HSTRING::from("*"),
+            COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL,
+            COREWEBVIEW2_WEB_RESOURCE_REQUEST_SOURCE_KINDS_ALL,
+        ).map_err(failure)?;
+    } else {
+        wv.AddWebResourceRequestedFilter(&HSTRING::from("*"), COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL).map_err(failure)?;
+    }
     wv.add_WebResourceRequested(&WebResourceRequestedEventHandler::create(Box::new(move |sender, args| {
         let (Some(sender), Some(args)) = (sender, args) else { return Ok(()); };
         let request = args.Request()?;
         let request_url = string(|p| request.Uri(p))?;
-        if !darkweb && !tor_proxy_tab
-            && url::Url::parse(&request_url).is_ok_and(|uri| crate::darkweb::has_onion_host(&uri))
-        {
+        let blocked_route = url::Url::parse(&request_url).is_ok_and(|url| {
+            if darkweb {
+                matches!(url.scheme(), "http" | "https" | "ws" | "wss")
+                    && !crate::darkweb::has_onion_host(&url)
+            } else {
+                crate::darkweb::has_onion_host(&url)
+            }
+        });
+        if blocked_route {
             let response = env.CreateWebResourceResponse(
-                None, 403, &HSTRING::from("Tor tab required"), &HSTRING::from("Content-Length: 0\r\n"),
+                None, 403, &HSTRING::from("Blocked by onion routing policy"), &HSTRING::from("Content-Length: 0\r\n"),
             )?;
             args.SetResponse(&response)?;
             return Ok(());

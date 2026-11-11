@@ -364,10 +364,7 @@ fn resolve_redirect(current: &str, location: &str) -> String {
 }
 
 /// HTTPS GET for a CLEARNET host routed through the Tor SOCKS5 gateway.
-/// TLS-over-SOCKS via ureq's socks support: the CONNECT carries the raw
-/// hostname, so DNS resolves on the Tor side (same anonymity as an onion
-/// fetch — this is NOT a direct fallback). Used when an onion mirror
-/// (e.g. ahmia's) is flaky while the Tor circuit itself is healthy.
+/// The SOCKS CONNECT carries the destination hostname for resolution by Tor.
 pub fn get_https_via_socks5(
     socks_host: &str,
     socks_port: u16,
@@ -379,6 +376,7 @@ pub fn get_https_via_socks5(
         .map_err(|e| FetchError::Unreachable(e.to_string()))?;
     let agent = ureq::AgentBuilder::new()
         .proxy(proxy)
+        .redirects(0)
         .timeout(Duration::from_millis(timeout_ms))
         .build();
     let resp = agent
@@ -410,11 +408,11 @@ mod tests {
         assert_eq!(p.port, 80);
         assert_eq!(p.path, "/search?q=%s");
 
-        let p = parse_http_url("http://tor66sewebgixwhcqfnp5inzp5x5uohhyl3qcyyeiafkliegvfiogiijd.onion").unwrap();
+        let p = parse_http_url("http://example.onion").unwrap();
         assert_eq!(p.path, "/");
         assert_eq!(p.port, 80);
 
-        assert!(parse_http_url("https://ahmia.fi/search").is_none()); // TLS not here
+        assert!(parse_http_url("https://vormweb.de/en/search").is_none()); // TLS not here
         assert!(parse_http_url("ftp://x/").is_none());
         let creds = parse_http_url("http://user:pass@evil.onion/").unwrap();
         assert_eq!(creds.host, "evil.onion"); // creds stripped, never sent

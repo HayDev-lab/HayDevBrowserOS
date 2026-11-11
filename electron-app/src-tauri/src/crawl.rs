@@ -435,7 +435,7 @@ fn fetch_and_store(
     depth: u32,
     seed_host: &str,
 ) {
-    let Some((host, port)) = crate::darkweb::tor_endpoint(app, config) else {
+    let Some((host, port)) = crate::darkweb::onion_endpoint(app, config) else {
         job.lock().unwrap_or_else(|p| p.into_inner()).record_failure("TOR_UNAVAILABLE");
         return;
     };

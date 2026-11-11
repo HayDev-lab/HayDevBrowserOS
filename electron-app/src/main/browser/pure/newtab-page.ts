@@ -16,7 +16,7 @@ import { attachmentErrorStrings } from '../../../shared/attachment-errors';
  * Engine routing is REAL:
  *   - HayDev Search      → pab://search?q=…   (Perplexica runtime)
  *   - Perplexity Search  → pab://search?q=…   (same engine, alt branding)
- *   - Deep/Dark Web      → pab://darkweb?q=…  (Tor-gated Ahmia/Tor66)
+ *   - Deep/Dark Web      → pab://darkweb?q=…  (VormWeb through Tor)
  *   - attachments        → always the agent pipeline (only engine that can
  *                          consume files/images); Deep Research runs there.
  *

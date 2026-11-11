@@ -774,13 +774,12 @@ pub fn handle_pab(app: &AppHandle<tauri::Wry>, request: &tauri::http::Request<Ve
     let external_document = fetch_destination.is_some_and(|value| value == "document")
         && fetch_site.is_some_and(|value| value == "cross-site" || value == "same-site")
         && referer.is_none();
-    let proxy_tab = owner.strip_prefix("browser-tab-").is_some_and(|id| {
-        core::with_state(app, |state| state.registry.get(id).is_some_and(|tab| {
-            [crate::profiles::ProfileKind::ArmanVpn, crate::profiles::ProfileKind::TorProxy]
-                .iter().any(|profile| profile.dir_name() == tab.profile)
-        })).unwrap_or(true)
+    let onion_tab = owner.strip_prefix("browser-tab-").is_some_and(|id| {
+        core::with_state(app, |state| {
+            state.registry.get(id).is_some_and(|tab| tab.is_dark_web.unwrap_or(false))
+        }).unwrap_or(true)
     });
-    if proxy_tab || external_document || fetch_destination.is_some_and(|value| value == "iframe" || value == "frame")
+    if onion_tab || external_document || fetch_destination.is_some_and(|value| value == "iframe" || value == "frame")
         || (api && !same_internal_origin) {
         let mut response = json_response(r#"{"error":"PAB_ORIGIN_FORBIDDEN"}"#.to_string());
         *response.status_mut() = http::StatusCode::FORBIDDEN;
@@ -823,13 +822,13 @@ fn internal_page_of(raw_url: &str) -> Option<&'static str> {
 // honestly NOT_IMPLEMENTED).
 // ---------------------------------------------------------------------------
 
-fn open_onion_document(app: &AppHandle<tauri::Wry>, uri: &Uri) -> http::Response<Vec<u8>> {
-    let target = uri.query()
-        .and_then(|query| query.split('&').find_map(|param| param.strip_prefix("url=")))
-        .map(urldecode)
-        .unwrap_or_default();
-    let opened = crate::darkweb::is_onion_url(&target) && tauri::async_runtime::block_on(
-        crate::commands::browser_tabs_open(app.clone(), crate::types::OpenTabRequest {
+fn open_onion_tab(app: &AppHandle<tauri::Wry>, target: String) -> crate::error::AppResult<String> {
+    if !crate::darkweb::is_onion_url(&target) {
+        return Err(crate::error::AppError::new("ONION_ONLY", "Enter a .onion address"));
+    }
+    tauri::async_runtime::block_on(crate::commands::browser_tabs_open(
+        app.clone(),
+        crate::types::OpenTabRequest {
             url: target,
             activate: Some(true),
             incognito: None,
@@ -838,8 +837,16 @@ fn open_onion_document(app: &AppHandle<tauri::Wry>, uri: &Uri) -> http::Response
             agent: None,
             id: None,
             title: None,
-        }),
-    ).is_ok();
+        },
+    ))
+}
+
+fn open_onion_document(app: &AppHandle<tauri::Wry>, uri: &Uri) -> http::Response<Vec<u8>> {
+    let target = uri.query()
+        .and_then(|query| query.split('&').find_map(|param| param.strip_prefix("url=")))
+        .map(urldecode)
+        .unwrap_or_default();
+    let opened = open_onion_tab(app, target).is_ok();
     let message = if opened {
         "Opened in an isolated Tor tab."
     } else {
@@ -871,8 +878,9 @@ fn serve_darkweb(
         serde_json::Value::Null
     };
 
-    // GET / → the generated page.
+    // Start Tor when the user opens DarkWeb so search can show bootstrap status.
     if (path.is_empty() || path == "/") && method == "GET" {
+        let _ = crate::darkweb::onion_endpoint(app, &service.config());
         return match read_internal_page_localed("darkweb.html") {
             Some(html) => html_response(html),
             None => not_found("pab://darkweb (run npm run build:internal-pages)"),
@@ -927,6 +935,15 @@ fn serve_darkweb(
         (_, "POST") if api.ends_with("/cancel") && api.starts_with("api/search/") => {
             let id = api.trim_start_matches("api/search/").trim_end_matches("/cancel");
             respond(serde_json::json!({ "ok": service.cancel_search(id) }), 200)
+        }
+        ("api/open", "POST") => {
+            let Some(url) = body.get("url").and_then(|value| value.as_str()) else {
+                return respond(serde_json::json!({ "error": "invalid_json" }), 400);
+            };
+            match open_onion_tab(app, url.to_owned()) {
+                Ok(id) => respond(serde_json::json!({ "tabId": id }), 200),
+                Err(issue) => respond(serde_json::json!({ "error": issue.code }), 400),
+            }
         }
         ("api/preview", "POST") => {
             let Some(url) = body.get("url").and_then(|v| v.as_str()) else {

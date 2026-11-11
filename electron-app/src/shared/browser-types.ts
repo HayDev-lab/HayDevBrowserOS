@@ -33,7 +33,7 @@ export interface TabState {
   canGoForward: boolean;
   /** True if the tab belongs to an Incognito session. */
   isIncognito: boolean;
-  profile?: "default" | "agent" | "private" | "darkweb" | "arman-vpn";
+  profile?: "default" | "agent" | "private" | "darkweb";
   egress?: string;
   ownerRun?: number | null;
   /**

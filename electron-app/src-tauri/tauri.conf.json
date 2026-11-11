@@ -1,13 +1,13 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "HayDevBrowser",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "identifier": "com.haydev.browser",
   "build": {
     "frontendDist": "../.vite/build/renderer",
     "devUrl": "http://localhost:5180",
     "beforeDevCommand": "npm run build:internal-pages && npm run dev:vite",
-    "beforeBuildCommand": "node scripts/verify-vpn-component.mjs && npm run prepare:windows-runtimes && npm run build:internal-pages && npm run build:vite"
+    "beforeBuildCommand": "npm run prepare:windows-runtimes && npm run build:internal-pages && npm run build:vite"
   },
   "app": {
     "windows": [],
@@ -21,10 +21,6 @@
       "nsis"
     ],
     "resources": {
-      "../resources/vpn/arman-vpn-core.exe": "resources/vpn/arman-vpn-core.exe",
-      "../resources/vpn/LICENSE.txt": "resources/vpn/LICENSE.txt",
-      "../resources/vpn/NOTICE.txt": "resources/vpn/NOTICE.txt",
-      "../resources/vpn/source-lock.json": "resources/vpn/source-lock.json",
       "../.vite/build/internal/": "internal/",
       "../resources/packaged-runtimes/": "resources/runtimes/"
     },

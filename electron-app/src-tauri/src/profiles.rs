@@ -27,8 +27,6 @@ pub enum ProfileKind {
     /// Isolated Tor environment: dedicated user-data folder + SOCKS proxy,
     /// wiped at startup (Electron parity: memory:darkweb- partitions).
     DarkWeb,
-    ArmanVpn,
-    TorProxy,
 }
 
 impl ProfileKind {
@@ -38,13 +36,11 @@ impl ProfileKind {
             ProfileKind::Agent => "agent",
             ProfileKind::Private => "private",
             ProfileKind::DarkWeb => "darkweb",
-            ProfileKind::ArmanVpn => crate::arman_vpn::PROFILE,
-            ProfileKind::TorProxy => "tor-proxy",
         }
     }
 
     pub fn is_persistent(self) -> bool {
-        !matches!(self, ProfileKind::Private | ProfileKind::ArmanVpn | ProfileKind::TorProxy)
+        !matches!(self, ProfileKind::Private | ProfileKind::DarkWeb)
     }
 }
 

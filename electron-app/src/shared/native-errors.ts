@@ -5,7 +5,7 @@ import { attachmentErrorMessage } from './attachment-errors';
 export function nativeErrorCode(error: unknown): string {
   const item = error && typeof error === 'object' ? error as { code?: unknown; message?: unknown } : null;
   const text = item ? `${String(item.code ?? '')} ${String(item.message ?? '')}` : String(error ?? '');
-  return text.match(/(?:VAULT|STORE|DOCUMENT|ATTACHMENT|EGRESS|TAB|WEBVIEW|AGENT|CONTROL|RESEARCH|MEDIA)_[A-Z_]+/)?.[0] ?? 'OPERATION_FAILED';
+  return text.match(/(?:VAULT|STORE|DOCUMENT|ATTACHMENT|EGRESS|TAB|WEBVIEW|AGENT|CONTROL|RESEARCH|MEDIA|ONION|TOR)_[A-Z_]+/)?.[0] ?? 'OPERATION_FAILED';
 }
 const messages: Record<string, readonly [string, string, string]> = {
   OPERATION_FAILED: ['The operation failed. Please try again.', 'Не удалось выполнить действие. Повторите попытку.', 'Գործողությունը չհաջողվեց։ Փորձեք կրկին։'],
@@ -15,6 +15,7 @@ const messages: Record<string, readonly [string, string, string]> = {
   VAULT_NO_LOGIN_FIELDS: ['No login fields were found on this page.', 'На странице не найдены поля входа.', 'Այս էջում մուտքի դաշտեր չեն գտնվել։'],
   STORE_CORRUPT: ['The local store is damaged. The original file was preserved.', 'Локальное хранилище повреждено. Исходный файл сохранён.', 'Տեղային պահոցը վնասված է։ Սկզբնական ֆայլը պահպանվել է։'],
   EGRESS_UNAVAILABLE: ['The required network route is unavailable.', 'Требуемый сетевой маршрут недоступен.', 'Պահանջվող ցանցային երթուղին հասանելի չէ։'],
+  TOR_WEBVIEW_OVERRIDE: ['WebView2 overrides prevent opening an onion tab.', 'Переопределённые параметры WebView2 мешают открыть onion-вкладку.', 'WebView2-ի վերասահմանված կարգավորումները խանգարում են բացել onion ներդիրը։'],
   RESEARCH_PROXY_UNSUPPORTED: ['Research fetching is unavailable for this proxy route.', 'Получение источников Research недоступно для этого прокси-маршрута.', 'Research աղբյուրների ստացումը հասանելի չէ այս պրոքսի երթուղու համար։'],
 };
 export function nativeErrorMessage(error: unknown, lang: AppLocale): string {

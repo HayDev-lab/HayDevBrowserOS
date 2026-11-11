@@ -330,10 +330,10 @@ fn tool_registry() -> Vec<Value> {
         }),
         json!({
             "name": "darkweb_search",
-            "description": "Search the dark web across enabled providers (Ahmia, Tor66) through the Tor gateway. Returns NORMALIZED, deduplicated metadata results (title, onion url, snippet, providers, reachability). Metadata only — no page is opened or fetched. Waits for completion (bounded by the global search timeout).",
+            "description": "Search VormWeb's onion index through Tor. Returns NORMALIZED, deduplicated metadata results (title, onion url, snippet, providers, reachability). Metadata only — no page is opened or fetched. Waits for completion (bounded by the global search timeout).",
             "inputSchema": schema(json!({
                 "query": { "type": "string", "description": "Required. Search query (max 512 characters)." },
-                "providers": { "type": "string", "description": "Optional comma-separated provider ids to restrict the search (e.g. \"ahmia,tor66\")." },
+                "providers": { "type": "string", "description": "Optional comma-separated provider ids to restrict the search (e.g. \"vormweb\")." },
                 "limit": { "type": "number", "description": "Optional max results (default and hard cap from config)." },
             }), &["query"]),
         }),

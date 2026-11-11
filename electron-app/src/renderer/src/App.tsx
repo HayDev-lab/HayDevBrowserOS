@@ -12,7 +12,7 @@ import { BookmarksPanel } from './components/panels/BookmarksPanel';
 import { DownloadsPanel } from './components/panels/DownloadsPanel';
 import { VaultPanel } from './components/panels/VaultPanel';
 import { AiSettingsPanel } from './components/panels/AiSettingsPanel';
-import { HayDevVpnPanel } from './components/panels/HayDevVpnPanel';
+import { ProtonVpnPanel } from './components/panels/ProtonVpnPanel';
 import { MediaCleanerPanel } from './components/panels/MediaCleanerPanel';
 import { pickLayoutKind, getLayoutModifier, findWebAppTabId, type PanelKind } from './store/ui-logic';
 import { useI18n } from './i18n';
@@ -159,10 +159,20 @@ export function App() {
 
   const handleNavigate = useCallback(
     async (tabId: string, url: string) => {
-      await actions.navigate(tabId, url);
-      await ui.refreshTabs();
+      setActionError(null);
+      try {
+        try {
+          await actions.navigate(tabId, url);
+        } catch (error) {
+          if (nativeErrorCode(error) !== 'ONION_REQUIRES_TOR_TAB') throw error;
+          await actions.openTab({ url, activate: true, darkweb: true });
+        }
+        await ui.refreshTabs();
+      } catch (error) {
+        reportActionError(error);
+      }
     },
-    [actions, ui]
+    [actions, ui, reportActionError]
   );
 
   const handleBack = useCallback(
@@ -400,7 +410,7 @@ export function App() {
       />
       {activePanel === 'mediaCleaner' && <MediaCleanerPanel onClose={() => setActivePanel(null)} />}
       {activePanel === 'settings' && <AiSettingsPanel onClose={() => setActivePanel(null)} agentRunning={agentRunning} />}
-      {activePanel === 'vpn' && <HayDevVpnPanel onClose={() => setActivePanel(null)} onTabsChanged={ui.refreshTabs} />}
+      {activePanel === 'vpn' && <ProtonVpnPanel onClose={() => setActivePanel(null)} onTabsChanged={ui.refreshTabs} />}
 
       <footer className="app__footer" role="contentinfo">
         <div className="app__footer-left">

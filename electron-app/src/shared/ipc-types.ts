@@ -280,7 +280,7 @@ export interface MediaCleanerApi {
 export interface ExposedApi {
   mediaCleaner?: MediaCleanerApi;
   aiSettings?: import('./ai-settings').AiSettingsApi;
-  haydevVpn?: HayDevVpnApi;
+  windowsRoutes?(): Promise<WindowsRoutes>;
   // Foundation
   getVersion(): Promise<AppVersionInfo>;
   ping(payload: FoundationPingPayload): Promise<FoundationPingResult>;
@@ -321,31 +321,7 @@ export interface ExposedApi {
   on(channel: string, listener: (data: unknown) => void): () => void;
 }
 
-export const HAYDEV_VPN_NAME = 'HayDevVPN';
-
-export interface HayDevVpnStatus {
-  state: 'off' | 'ready' | 'blocked';
-  dataDir: string | null;
-  issue: string | null;
-  selection: string;
-  locations: Array<{ code: string; name: string }>;
-  locationsIssue: string | null;
-  exitCountry: string | null;
-}
-
-export interface HayDevVpnApi {
-  status(): Promise<HayDevVpnStatus>;
-  prepare(): Promise<HayDevVpnStatus>;
-  setLocation(country: string): Promise<HayDevVpnStatus>;
-  pickFolder(): Promise<string | null>;
-  saveSettings(dataDir: string): Promise<HayDevVpnStatus>;
-  openSettings(): Promise<void>;
-  connect(): Promise<HayDevVpnStatus>;
-  openTab(url: string): Promise<string>;
-  openTorTab(url: string): Promise<string>;
-  windowsRoutes(): Promise<WindowsRoutes>;
-  disconnect(): Promise<HayDevVpnStatus>;
-}
+export const PROTON_VPN_NAME = 'Proton VPN';
 
 export interface WindowsRoutes {
   ipv4: { index: number; name: string } | null;

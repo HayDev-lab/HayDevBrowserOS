@@ -26,7 +26,7 @@ test('YouTube opens immediately and its Shield respects playback and site except
   await shell.waitForSelector('.commandbar__input');
   await shell.evaluate(() => localStorage.setItem('haydev.invidious.origin', 'https://obsolete.invalid/'));
   await app.chrome.contexts()[0].route('https://www.youtube.com/**', route => route.fulfill({ contentType: 'text/html', body: fixture }));
-  assert.equal(await shell.getByRole('button', { name: 'HayDevVPN', exact: true }).count(), 1);
+  assert.equal(await shell.getByRole('button', { name: 'Proton VPN', exact: true }).count(), 1);
   assert.equal(await shell.getByRole('button', { name: /HDRezka|Invidious/i }).count(), 0);
   const pin = shell.getByRole('button', { name: 'Open YouTube', exact: true });
   await pin.evaluate(button => { for (let i = 0; i < 10; i += 1) button.click(); });
@@ -82,7 +82,7 @@ test('YouTube opens immediately and its Shield respects playback and site except
     realWebView2: true, fixture: true, noConfiguration: true, singleTab: true,
     repeatedClicks: 10, singleVisibleEntry: true, closeAndReopen: true,
     normalPlaybackPreserved: true, adSkipped: true, shieldToggleRespected: true,
-    siteExceptionRespected: true, vpnName: 'HayDevVPN',
+    siteExceptionRespected: true, vpnName: 'Proton VPN',
   }, null, 2));
 });
 

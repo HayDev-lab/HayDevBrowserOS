@@ -3,7 +3,7 @@ import { AI_SETTINGS_TITLE } from './panels/AiSettingsPanel';
 import { MEDIA_CLEANER_TITLE } from './panels/MediaCleanerPanel';
 import { useEffect, useState } from 'react';
 import { platformApi } from '../platform';
-import { HAYDEV_VPN_NAME, type ShieldStatus } from '@shared/ipc-types';
+import { PROTON_VPN_NAME, type ShieldStatus } from '@shared/ipc-types';
 /**
  * TopBar — cohesive top browser surface (Matrix concept, 3 rows):
  *   row 0  title bar: brand + status + window controls (frameless)
@@ -128,8 +128,8 @@ export function TopBar(props: TopBarProps) {
         />
         <div className="topbar__actions">
           <ActionToggle glyph="⚙" label={AI_SETTINGS_TITLE[lang]} title={AI_SETTINGS_TITLE[lang]} active={props.activePanel === 'settings'} onClick={() => props.onTogglePanel('settings')} iconOnly />
-          {platformApi.haydevVpn && <ActionToggle glyph="" label={HAYDEV_VPN_NAME} title={HAYDEV_VPN_NAME} active={props.activePanel === 'vpn'} onClick={() => props.onTogglePanel('vpn')} />}
-          {props.activeTab?.profile !== 'arman-vpn' && <IncognitoBadge state={incognito} />}
+          {platformApi.windowsRoutes && <ActionToggle glyph="" label={PROTON_VPN_NAME} title={PROTON_VPN_NAME} active={props.activePanel === 'vpn'} onClick={() => props.onTogglePanel('vpn')} />}
+          <IncognitoBadge state={incognito} />
           {props.activeTab?.isDarkWeb && <OnionBadge />}
           <ActionToggle
             glyph="★"

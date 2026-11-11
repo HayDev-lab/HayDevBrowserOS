@@ -58,7 +58,6 @@ jobs:
         run: node scripts/closure-evidence.mjs $env:HAYDEV_EVIDENCE_RUN run integration-tests npm run test:integration
       - name: Verified bundled runtimes
         run: |
-          node scripts/verify-vpn-component.mjs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node scripts/closure-evidence.mjs $env:HAYDEV_EVIDENCE_RUN run runtimes npm run bundle:runtimes
       - name: Internal pages and renderer

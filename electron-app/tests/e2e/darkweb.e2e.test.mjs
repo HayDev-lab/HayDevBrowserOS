@@ -11,6 +11,7 @@ const onionPage = 'http://' + onionHost + '/welcome';
 async function createOnionFixture() {
   const clients = new Set();
   const requests = [];
+  const connections = [];
   const server = net.createServer(socket => {
     clients.add(socket);
     socket.on('error', () => {});
@@ -35,8 +36,14 @@ async function createOnionFixture() {
         const end = 5 + pending[4];
         if (pending.length < end + 2) return;
         host = pending.subarray(5, end).toString();
+        connections.push({ host, port: pending.readUInt16BE(end) });
         pending = pending.subarray(end + 2);
         socket.write(Buffer.from([5, 0, 0, 1, 127, 0, 0, 1, 0, 0]));
+        if (host === 'vormweb.de') {
+          state = 'done';
+          socket.end();
+          return;
+        }
         state = 'http';
       }
       if (state !== 'http' || !pending.includes('\r\n\r\n')) return;
@@ -51,6 +58,7 @@ async function createOnionFixture() {
         : 'Content-Type: text/html; charset=utf-8\r\n';
       const html = '<html><head><title>Fixture onion page</title></head><body>'
         + '<a id="download" href="/download">Download fixture</a>Армения Երևան '
+        + '<img src="http://blocked-onion-subresource.invalid/tracker">'
         + '<script>document.documentElement.dataset.proof = "page-script-ran"; /* should-not-index */</script>'
         + '</body></html>';
       const body = Buffer.from(download ? 'synthetic quarantine proof'
@@ -66,6 +74,7 @@ async function createOnionFixture() {
   return {
     port: server.address().port,
     requests,
+    connections,
     release() {
       for (const client of clients) client.destroy();
     },
@@ -125,8 +134,8 @@ test('DarkWeb search, index settings, Tor refusal and crawler lifecycle', { time
     tor: { socksHost: '127.0.0.1', socksPort: 1, spawnIfAvailable: false },
     search: { availability: { enabled: false } },
   })).status, 200);
-  await t.test('search requires Tor before contacting either upstream', async () => {
-    const response = await api('search', { query: 'synthetic network guard', providers: ['ahmia'] });
+  await t.test('VormWeb requires Tor before contacting the upstream', async () => {
+    const response = await api('search', { query: 'synthetic network guard', providers: ['vormweb'] });
     assert.equal(response.body.error, 'TOR_UNAVAILABLE',
       'An upstream job started without Tor: ' + JSON.stringify(response));
   });
@@ -137,16 +146,26 @@ test('DarkWeb search, index settings, Tor refusal and crawler lifecycle', { time
     storeLocalIndex: true,
   })).status, 200);
 
+  await t.test('VormWeb HTTPS targets a hostname through SOCKS and fails closed', async () => {
+    const job = (await api('search', { query: 'synthetic blocked TLS', providers: ['vormweb'] })).body;
+    assert.ok(job.searchId);
+    await waitUntil(() => fixture.connections, connections =>
+      connections.some(connection => connection.host === 'vormweb.de' && connection.port === 443),
+    'Provider did not use SOCKS5 hostname routing');
+    const finished = await waitUntil(() => api('search/' + job.searchId),
+      response => response.body.state === 'ERROR', 'Failed TLS did not produce a provider error');
+    assert.equal(finished.body.providers.vormweb.status, 'error');
+    assert.deepEqual(finished.body.results, []);
+  });
+
   await t.test('UI indexes real multilingual page text and reports disabled storage', async () => {
     const settings = (await api('settings')).body;
     assert.equal(settings.storeLocalIndex, true);
     assert.deepEqual(settings.crawler, { maxDepth: 2, maxPages: 8 });
 
-    await page.locator('#prov-checks input').last().waitFor();
-    await page.locator('#prov-checks input').first().uncheck();
-    await page.locator('#input').fill('synthetic onion result');
-    await page.locator('#go').click();
-    await page.getByRole('button', { name: 'Add to index', exact: true }).click();
+    await page.getByText('VormWeb (Tor)', { exact: true }).waitFor();
+    assert.deepEqual((await api('providers')).body.map(provider => provider.id), ['vormweb']);
+    assert.equal((await api('index/add', { url: onionPage })).body.added, true);
     await waitUntil(() => api('index/search?q=' + encodeURIComponent('Երևան')),
       response => response.body.hits?.length === 1, 'Index did not store the actual page text');
     assert.ok(fixture.requests.some(request => request.host === onionHost && request.path === '/welcome'));
@@ -240,6 +259,7 @@ test('Onion pages require Tor, disable website scripts and quarantine downloads'
   assert.equal(tab.isDarkWeb, true);
   assert.match(tab.egress, /^socks5:\/\/127\.0\.0\.1:/);
   assert.equal(await evalTab('document.documentElement.dataset.proof === "page-script-ran"'), false);
+  assert.ok(fixture.connections.every(connection => connection.host === onionHost));
 
   assert.equal(await evalTab('(document.querySelector("#download").click(), true)'), true);
   const response = await waitUntil(() => api('downloads'),
@@ -265,6 +285,16 @@ test('Onion pages require Tor, disable website scripts and quarantine downloads'
   assert.match(openResult, /Opened in an isolated Tor tab/);
   const routed = (await invoke('browser_tabs_list')).filter(candidate => candidate.isDarkWeb);
   assert.equal(routed.length, 2);
+
+  await invoke('browser_tabs_activate', { req: { tabId: controlTabId } });
+  const addressBar = chrome.locator('.commandbar__input');
+  await addressBar.fill(onionHost + '/from-address-bar');
+  await addressBar.press('Enter');
+  const pasted = await waitUntil(() => invoke('browser_tabs_list'),
+    tabs => tabs.some(tab => tab.isDarkWeb && tab.url?.endsWith('/from-address-bar')),
+    'Address bar did not open a new isolated onion tab');
+  assert.equal(pasted.filter(tab => tab.isDarkWeb).length, 3);
+  assert.ok(fixture.requests.some(request => request.host === onionHost && request.path === '/from-address-bar'));
 
   console.log(JSON.stringify({ preview: 'sanitized', noTor: 'refused', pageScripts: 'blocked',
     onionDownload: 'quarantined', expectedBytes: true, discarded: true, inlineSearchOpen: 'Tor' }));
