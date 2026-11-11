@@ -225,7 +225,7 @@ export interface RuntimeStatus {
    * 'starting' (engine booting — not an outage), 'offline'. Optional so the
    * Electron runtime (which does not send it) keeps working unchanged.
    */
-  state?: 'ready' | 'starting' | 'offline';
+  state?: 'ready' | 'starting' | 'standby' | 'offline';
 }
 
 // ---------------------------------------------------------------------------

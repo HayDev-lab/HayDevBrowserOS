@@ -237,6 +237,7 @@ export const ru: Dict = {
   'app.runtimeDownTip': 'Поисковый рантайм не отвечает по адресу {endpoint}',
   'app.runtimeOk': 'Все системы работают',
   'app.runtimeStarting': 'Поисковый рантайм запускается…',
+  'app.runtimeStandby': 'Поиск запускается по запросу',
   'app.runtimeOffline': 'Поисковый рантайм недоступен',
 
   // Relative time

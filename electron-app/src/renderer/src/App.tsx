@@ -408,11 +408,13 @@ export function App() {
             title={
               runtime?.reachable
                 ? t('app.runtimeOkTip', { endpoint: runtime.endpoint })
-                : t('app.runtimeDownTip', { endpoint: runtime?.endpoint ?? '127.0.0.1:3000' })
+                : runtime?.state === 'standby'
+                  ? t('app.runtimeStandby')
+                  : t('app.runtimeDownTip', { endpoint: runtime?.endpoint || 'localhost' })
             }
           >
             <span className="app__footer-dot" aria-hidden />
-            {runtime?.endpoint?.replace(/^https?:\/\//, '') ?? '127.0.0.1:3000'}
+            {runtime?.endpoint?.replace(/^https?:\/\//, '')}
           </span>
           <span className="app__footer-sep">|</span>
           <span className="app__footer-state">
@@ -420,7 +422,9 @@ export function App() {
               ? t('app.runtimeOk')
               : runtime?.state === 'starting'
                 ? t('app.runtimeStarting')
-                : t('app.runtimeOffline')}
+                : runtime?.state === 'standby'
+                  ? t('app.runtimeStandby')
+                  : t('app.runtimeOffline')}
           </span>
         </div>
       </footer>

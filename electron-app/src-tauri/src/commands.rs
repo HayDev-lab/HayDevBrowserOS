@@ -54,19 +54,23 @@ pub async fn app_runtime_status(app: AppHandle<tauri::Wry>) -> AppResult<types::
     let perplexica_state =
         crate::runtime_manager::with_manager(&app, |s| s.service_state("perplexica")).flatten();
     let managed = crate::runtime_manager::with_manager(&app, |s| s.perplexica_endpoint()).flatten();
-    let endpoint = managed
-        .or_else(|| {
-            std::env::var("PAB_PERPLEXICA_URL")
-                .ok()
-                .filter(|v| !v.trim().is_empty())
-        })
-        .unwrap_or_else(|| "http://127.0.0.1:3000".to_string());
+    use crate::runtime_manager::ServiceState;
+    let endpoint = managed.or_else(|| {
+        std::env::var("PAB_PERPLEXICA_URL").ok().filter(|v| !v.trim().is_empty())
+    });
+    let Some(endpoint) = endpoint else {
+        let state = match perplexica_state {
+            Some(ServiceState::Starting | ServiceState::Bootstrapping) => "starting",
+            Some(ServiceState::Failed) => "offline",
+            _ => "standby",
+        };
+        return Ok(types::RuntimeStatus { endpoint: String::new(), reachable: false, state: state.into() });
+    };
     let endpoint_for_probe = endpoint.clone();
     let reachable =
         tauri::async_runtime::spawn_blocking(move || probe_http_endpoint(&endpoint_for_probe))
             .await
             .map_err(|e| AppError::new("RUNTIME_PROBE_FAILED", e.to_string()))?;
-    use crate::runtime_manager::ServiceState;
     let state = match perplexica_state {
         Some(ServiceState::Ready) if reachable => "ready",
         Some(ServiceState::Starting) | Some(ServiceState::Bootstrapping) => "starting",
@@ -98,9 +102,7 @@ pub fn runtime_manager_start(app: AppHandle<tauri::Wry>) -> AppResult<bool> {
     let manager = app
         .try_state::<crate::runtime_manager::SharedRuntimeManager>()
         .ok_or_else(|| AppError::new("STATE_NOT_INITIALIZED", "runtime manager missing"))?;
-    let manager = manager.inner().clone();
-    std::thread::spawn(move || crate::runtime_manager::start_all(&manager));
-    Ok(true)
+    Ok(crate::runtime_manager::start_all(manager.inner()))
 }
 
 /// Stop managed engines (tree-kill); adopted external endpoints untouched.

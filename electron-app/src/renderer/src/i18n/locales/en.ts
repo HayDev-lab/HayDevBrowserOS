@@ -238,6 +238,7 @@ export const en = {
   'app.runtimeDownTip': 'Search runtime not responding at {endpoint}',
   'app.runtimeOk': 'All Systems Operational',
   'app.runtimeStarting': 'Search Runtime Starting…',
+  'app.runtimeStandby': 'Search Starts on Demand',
   'app.runtimeOffline': 'Search Runtime Offline',
 
   // Relative time (ui-logic formatRelativeTime)

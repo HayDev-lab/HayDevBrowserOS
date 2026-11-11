@@ -256,7 +256,7 @@ pub struct AppVersionInfo {
 pub struct RuntimeStatus {
     pub endpoint: String,
     pub reachable: bool,
-    /// Managed-engine phase: "ready" | "starting" | "offline" (footer chip).
+    /// Managed-engine phase for the footer chip.
     pub state: String,
 }
 

@@ -322,22 +322,6 @@ pub fn run() {
             crate::llm::warm_preferred_chat_model();
             // Login capture poller (bridge-based; prompts push to the chrome).
             vault_capture::start_poller(handle.clone());
-            // Managed backend engines (Perplexica/SearXNG/Tor) start ASYNC —
-            // the window never waits for backends (parity with the Electron
-            // runtime's runtimeManager.start()). Stale children from a hard-
-            // killed previous run are swept first so they never hold ports.
-            let manager = handle
-                .state::<runtime_manager::SharedRuntimeManager>()
-                .inner()
-                .clone();
-            if std::env::var("HAYDEV_NO_ENGINES").is_ok_and(|v| v.trim() == "1") {
-                // QA/E2E isolation: no bundled engines spawn at all (the
-                // suite drives its own local fixtures). Never set by the
-                // app itself; production always starts engines.
-                log::info!("[TAURI] HAYDEV_NO_ENGINES=1 — managed engines skipped (QA)");
-            } else {
-                std::thread::spawn(move || runtime_manager::start_all(&manager));
-            }
             log::info!("[TAURI] browser core ready");
             Ok(())
         })
@@ -352,7 +336,7 @@ pub fn run() {
                 // Tree-kill managed engines FIRST — no orphan tor/python/node
                 // children survive HayDevBrowser (parity: engines→sweep order).
             if let Some(manager) = app.try_state::<runtime_manager::SharedRuntimeManager>() {
-                runtime_manager::stop_all(manager.inner());
+                runtime_manager::shutdown(manager.inner());
             }
             // Quarantine wipe (Electron parity): nothing from an onion tab
             // survives the exit unless explicitly saved.

@@ -358,7 +358,7 @@ fn research_search_endpoint(app: &AppHandle<Wry>) -> Option<String> {
             return Some(trimmed);
         }
     }
-    crate::runtime_manager::with_manager(app, |s| s.searxng_endpoint()).flatten()
+    crate::runtime_manager::wait_for_search_service(app, "searxng", || crate::run_guard::check().is_err())
 }
 
 /// Execute one tool call against the app. Returns the JSON result string
@@ -471,6 +471,7 @@ fn execute_tool(
                 ("format", "json"),
             ])
             .map_err(|e| format!("SEARCH_BAD_ENDPOINT: {e}"))?;
+            crate::run_guard::check().map_err(|e| e.code)?;
             let fetcher = ureq::AgentBuilder::new().timeout(Duration::from_secs(10)).build();
             let resp = fetcher
                 .get(url.as_str())

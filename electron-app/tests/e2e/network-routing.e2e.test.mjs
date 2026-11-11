@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { AppHandle } from '../../scripts/e2e/harness.mjs';
+import { fixtureServer, startFixtures } from '../../scripts/e2e/fixtures/server.mjs';
 
 async function invokeOn(app) {
   const shell = app.chromePage();
@@ -30,6 +31,55 @@ test('Windows route diagnostics and Tor pre-bootstrap refusal', { timeout: 60_00
   await app.chromePage().getByText(/^IPv4 —/).waitFor();
   console.log(JSON.stringify({ routeTable: routes, torNotReady: code }));
 });
+
+test('Managed runtime can start again after a stop and a later stop cancels startup', {
+  timeout: 45000,
+}, async t => {
+  const app = new AppHandle();
+  t.after(() => app.stop());
+  await startFixtures();
+  await app.launch({ envOverrides: {
+    HAYDEV_NO_ENGINES: '0',
+    PAB_TOR_MODE: 'external',
+    PAB_TOR_SOCKS_PORT: '1',
+    PAB_SEARXNG_URL: fixtureServer.url('/searxng'),
+    PAB_PERPLEXICA_URL: fixtureServer.url(''),
+  } });
+  const invoke = await invokeOn(app);
+  async function ready() {
+    const deadline = Date.now() + 10000;
+    let status;
+    do {
+      status = await invoke('runtime_manager_status');
+      if (status.searxng.state === 'READY' && status.perplexica.state === 'READY') return status;
+      await new Promise(resolve => setTimeout(resolve, 200));
+    } while (Date.now() < deadline);
+    assert.fail('Managed endpoints did not return to READY: ' + JSON.stringify(status));
+  }
+  async function stopped() {
+    const status = await invoke('runtime_manager_status');
+    assert.equal(status.searxng.state, 'STOPPED');
+    assert.equal(status.perplexica.state, 'STOPPED');
+  }
+  await stopped();
+  assert.equal(await invoke('runtime_manager_start'), true);
+  await ready();
+  assert.equal(await invoke('runtime_manager_stop'), true);
+  await stopped();
+  assert.equal(await invoke('runtime_manager_start'), true);
+  const restarted = await ready();
+  assert.equal(restarted.searxng.source, 'external');
+  assert.equal(restarted.perplexica.source, 'external');
+
+  await invoke('runtime_manager_stop');
+  await invoke('runtime_manager_start');
+  await invoke('runtime_manager_stop');
+  await new Promise(resolve => setTimeout(resolve, 700));
+  await stopped();
+  assert.equal(await invoke('runtime_manager_start'), true);
+  await ready();
+});
+
 
 test('Bundled Tor exit, loss of service and recovery through the same tab', {
   skip: process.env.HAYDEV_LIVE_TOR !== '1' ? 'live bundled Tor check is opt-in' : false,
@@ -66,8 +116,13 @@ test('Bundled Tor exit, loss of service and recovery through the same tab', {
     }
     assert.fail('Tor exit was not confirmed by check.torproject.org');
   }
-  await untilReady();
   const endpoint = 'https://check.torproject.org/api/ip';
+  await app.chromePage().evaluate(url => window.__TAURI_INTERNALS__
+    .invoke('tor_open_tab', { url }).then(
+      () => { throw new Error('Unexpected cold Tor tab'); },
+      error => { if (error.code !== 'TOR_TAB_NOT_READY') throw error; },
+    ), endpoint);
+  await untilReady();
   const tabId = await invoke('tor_open_tab', { url: endpoint });
   await waitForTorExit(tabId);
   assert.ok((await invoke('browser_tabs_list')).some(tab => tab.id === tabId && tab.isIncognito && tab.profile === 'tor-proxy'));

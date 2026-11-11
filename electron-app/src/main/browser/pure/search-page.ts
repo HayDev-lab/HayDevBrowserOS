@@ -50,6 +50,7 @@ const STRINGS: Record<AppLocale, Record<string, string>> = {
     'search.placeholder': 'Спроси что угодно — поиск с ИИ-ответом…',
     'input.aria': 'HayDev Search query',
     'modes.aria': 'Search mode',
+    'status.starting': 'Starting local search…',
     'status.searching': 'Searching the web and generating an answer…',
     'answer.empty': '(empty answer)',
     'error.aiUnavailable': 'AI search is unavailable. Web search instead: ',
@@ -88,6 +89,7 @@ const STRINGS: Record<AppLocale, Record<string, string>> = {
     'search.placeholder': 'Спроси что угодно — поиск с ИИ-ответом…',
     'input.aria': 'Поисковый запрос HayDev Search',
     'modes.aria': 'Режим поиска',
+    'status.starting': 'Запускаю локальный поиск…',
     'status.searching': 'Ищу в интернете и формирую ответ…',
     'answer.empty': '(пустой ответ)',
     'error.aiUnavailable': 'ИИ-поиск недоступен. Поиск в интернете вместо него: ',
@@ -126,6 +128,7 @@ const STRINGS: Record<AppLocale, Record<string, string>> = {
     'search.placeholder': 'Հարցրեք ցանկացած բան — որոնում ԱԻ-պատասխանով…',
     'input.aria': 'HayDev Search հարցում',
     'modes.aria': 'Որոնման ռեժիմ',
+    'status.starting': 'Գործարկում եմ տեղական որոնումը…',
     'status.searching': 'Որոնում եմ համացանցում և պատասխան եմ կազմում…',
     'answer.empty': '(դատարկ պատասխան)',
     'error.aiUnavailable': 'ԱԻ որոնումը հասանելի չէ։ Փոխարենը որոնել համացանցում՝ ',
@@ -319,6 +322,7 @@ export function buildSearchPageHtml(opts: SearchPageOptions): string {
   window.__PAB_STRINGS__ = ${stringsJson};
 (function () {
   var API = ${apiBase};
+  var MANAGED_SEARCH = /*__PAB_MANAGED_SEARCH__*/false;
   var MODEL = ${modelKey};
   var PROVIDERS_TIMEOUT = ${providersTimeout};
   var SEARCH_TIMEOUT = ${searchTimeout};
@@ -480,9 +484,18 @@ export function buildSearchPageHtml(opts: SearchPageOptions): string {
     var st = addStatus();
     scroll();
     try {
-      if (!providersCache) {
-        providersCache = await fetchTimeout(API + '/api/providers', null, PROVIDERS_TIMEOUT)
+      var api = API;
+      if (MANAGED_SEARCH) {
+        st.textContent = L('status.starting');
+        var runtime = await fetchTimeout('/api/search-runtime', { method: 'POST' }, 50000);
+        if (!runtime.ok) throw new Error(L('error.searchFailed'));
+        api = (await runtime.json()).endpoint;
+        st.textContent = L('status.searching');
+      }
+      if (!providersCache || providersCache.endpoint !== api) {
+        providersCache = await fetchTimeout(api + '/api/providers', null, PROVIDERS_TIMEOUT)
           .then(function (r) { return r.json(); });
+        providersCache.endpoint = api;
       }
       var providers = providersCache.providers || [];
       var candidates = pickChatCandidates(providers);
@@ -510,7 +523,7 @@ export function buildSearchPageHtml(opts: SearchPageOptions): string {
             : { providerId: cand.providerId, key: cand.key },
         };
         try {
-          var j = await fetchTimeout(API + '/api/search', {
+          var j = await fetchTimeout(api + '/api/search', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify(body),

@@ -621,6 +621,28 @@ fn serve_search(
     // newtab page. Requests reach this handler attributed to page=search —
     // serve the bridge routes before the page itself.
     let method = request.method().as_str();
+    if method == "POST" && uri.path() == "/api/search-runtime" {
+        let direct = owner.strip_prefix("browser-tab-").is_some_and(|id| {
+            core::with_state(app, |state| {
+                state.registry.get(id).is_some_and(|tab| tab.egress == "direct")
+            }).unwrap_or(false)
+        });
+        let (status, body) = if direct {
+            let endpoint = std::env::var("PAB_PERPLEXICA_URL").ok()
+                .map(|url| url.trim().trim_end_matches('/').to_string())
+                .filter(|url| !url.is_empty())
+                .or_else(|| crate::runtime_manager::wait_for_search_service(app, "perplexica", || false));
+            match endpoint {
+                Some(endpoint) => (http::StatusCode::OK, serde_json::json!({ "endpoint": endpoint })),
+                None => (http::StatusCode::SERVICE_UNAVAILABLE, serde_json::json!({ "error": "SEARCH_RUNTIME_UNAVAILABLE" })),
+            }
+        } else {
+            (http::StatusCode::FORBIDDEN, serde_json::json!({ "error": "SEARCH_PROXY_UNSUPPORTED" }))
+        };
+        let mut response = json_response(body.to_string());
+        *response.status_mut() = status;
+        return response;
+    }
     if method == "POST" {
         let body: serde_json::Value =
             serde_json::from_slice(request.body()).unwrap_or(serde_json::Value::Null);
@@ -663,6 +685,7 @@ fn serve_search(
     html = html
         .replace("\"__PAB_PERPLEXICA_URL__\"", &script_string(&endpoint))
         .replace("\"__PAB_PERPLEXICA_MODEL__\"", &script_string(&model))
+        .replace("/*__PAB_MANAGED_SEARCH__*/false", "true")
         .replace("/*__PAB_SEARCH_AUTORUN__*/false", if run_search { "true" } else { "false" });
     html_response(html)
 }

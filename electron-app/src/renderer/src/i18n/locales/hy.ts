@@ -237,6 +237,7 @@ export const hy: Dict = {
   'app.runtimeDownTip': 'Որոնման ռանթայմը չի պատասխանում {endpoint} հասցեում',
   'app.runtimeOk': 'Բոլոր համակարգերն աշխատում են',
   'app.runtimeStarting': 'Որոնման ռանթայմը գործարկվում է…',
+  'app.runtimeStandby': 'Որոնումը գործարկվում է ըստ հարցման',
   'app.runtimeOffline': 'Որոնման ռանթայմն անհասանելի է',
 
   // Relative time

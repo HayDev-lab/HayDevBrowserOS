@@ -17,7 +17,7 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 
 use std::time::{Duration, Instant};
 use tauri::Manager;
@@ -92,6 +92,12 @@ pub struct RuntimeManagerState {
     svcs: HashMap<&'static str, Svc>,
     started_at: Option<u64>,
     stopping: bool,
+    closed: bool,
+    active_workers: usize,
+    workers_changed: Arc<Condvar>,
+    next_start: u64,
+    start_request: Option<u64>,
+    start_with_tor: bool,
 }
 
 impl RuntimeManagerState {
@@ -117,14 +123,7 @@ impl RuntimeManagerState {
         self.svcs
             .get("perplexica")
             .and_then(|s| s.status.as_ref())
-            .and_then(|s| s.endpoint.clone())
-    }
-
-    /// Managed SearXNG endpoint (http://127.0.0.1:PORT) when READY/adopted.
-    pub fn searxng_endpoint(&self) -> Option<String> {
-        self.svcs
-            .get("searxng")
-            .and_then(|s| s.status.as_ref())
+            .filter(|s| s.state == ServiceState::Ready)
             .and_then(|s| s.endpoint.clone())
     }
 
@@ -303,6 +302,33 @@ fn stopping(m: &SharedRuntimeManager) -> bool {
     engines_disabled() || m.lock().unwrap_or_else(|p| p.into_inner()).stopping
 }
 
+struct RuntimeWorker {
+    manager: SharedRuntimeManager,
+    start_request: Option<u64>,
+}
+
+impl Drop for RuntimeWorker {
+    fn drop(&mut self) {
+        let mut guard = self.manager.lock().unwrap_or_else(|p| p.into_inner());
+        if self.start_request.is_some() && self.start_request == guard.start_request {
+            guard.start_request = None;
+        }
+        guard.active_workers -= 1;
+        if guard.active_workers == 0 {
+            guard.workers_changed.notify_all();
+        }
+    }
+}
+
+fn begin_worker(manager: &SharedRuntimeManager) -> Option<RuntimeWorker> {
+    let mut guard = manager.lock().unwrap_or_else(|p| p.into_inner());
+    if guard.stopping || engines_disabled() {
+        return None;
+    }
+    guard.active_workers += 1;
+    Some(RuntimeWorker { manager: manager.clone(), start_request: None })
+}
+
 struct ServiceLease { manager: SharedRuntimeManager, key: &'static str, pid: u32 }
 impl Drop for ServiceLease {
     fn drop(&mut self) {
@@ -388,7 +414,10 @@ fn set_status(m: &SharedRuntimeManager, key: &'static str, f: impl FnOnce(&mut S
 /// SearXNG managed spawn — portable Python + runner, generated settings.yml
 /// (same engine policy as the TS service: keep_only bing/google, JSON on).
 fn start_searxng(m: SharedRuntimeManager, external_url: Option<String>) {
+    let Some(worker) = begin_worker(&m) else { return };
+    set_status(&m, "searxng", |s| s.state = ServiceState::Starting);
     std::thread::spawn(move || {
+        let _worker = worker;
         if stopping(&m) { return; }
         // External adopt (env-configured, healthy) — never spawn, never kill.
         if let Some(url) = external_url {
@@ -657,7 +686,10 @@ fn start_perplexica(
     external_url: Option<String>,
     searxng_url: Option<String>,
 ) {
+    let Some(worker) = begin_worker(&m) else { return };
+    set_status(&m, "perplexica", |s| s.state = ServiceState::Starting);
     std::thread::spawn(move || {
+        let _worker = worker;
         if stopping(&m) { return; }
         if let Some(url) = external_url {
             if probe_http_ok(&format!("{url}/")) {
@@ -912,7 +944,7 @@ fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
 static TOR_SPAWNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn start_tor(m: SharedRuntimeManager) {
-    if stopping(&m) { return; }
+    let Some(worker) = begin_worker(&m) else { return };
     if TOR_SPAWNING.swap(true, std::sync::atomic::Ordering::SeqCst) {
         log::info!("[PROCESS] tor spawn already in flight — skipping duplicate start");
         return;
@@ -925,7 +957,8 @@ fn start_tor(m: SharedRuntimeManager) {
     }
     let _gate = SpawnGate;
     std::thread::spawn(move || {
-        // The gate lives for the whole supervisor lifetime; move it in.
+        let _worker = worker;
+        // Release the Tor spawn gate before signalling the worker has exited.
         let _gate = _gate;
         if stopping(&m) { return; }
         if std::env::var("PAB_TOR_MODE").ok().as_deref() == Some("external") {
@@ -1120,13 +1153,16 @@ fn read_control_line(stream: &mut TcpStream, buf: &mut String) -> Option<String>
 /// Strictly best-effort — every failure simply stops updating the percent
 /// (the SOCKS end-to-end probe remains the source of truth for READY).
 fn follow_tor_bootstrap(m: SharedRuntimeManager, control_port: u16, data_dir: PathBuf) {
+    let Some(worker) = begin_worker(&m) else { return };
     std::thread::spawn(move || {
+        let _worker = worker;
         let Ok(addr) = format!("127.0.0.1:{control_port}").parse::<std::net::SocketAddr>() else {
             return;
         };
         // The control port appears a moment after spawn — retry briefly.
         let mut stream = None;
         for _ in 0..10 {
+            if stopping(&m) { return; }
             if let Ok(s) = TcpStream::connect_timeout(&addr, Duration::from_secs(1)) {
                 stream = Some(s);
                 break;
@@ -1164,7 +1200,7 @@ fn follow_tor_bootstrap(m: SharedRuntimeManager, control_port: u16, data_dir: Pa
         }
         // Event lines look like: 650 STATUS_CLIENT NOTICE BOOTSTRAP PROGRESS=45 ...
         let deadline = Instant::now() + Duration::from_secs(120);
-        while Instant::now() < deadline {
+        while !stopping(&m) && Instant::now() < deadline {
             match read_control_line(&mut stream, &mut buf) {
                 Some(line) => {
                     let Some(idx) = line.find("PROGRESS=") else { continue };
@@ -1258,10 +1294,91 @@ fn is_active(m: &SharedRuntimeManager, key: &str) -> bool {
         })
 }
 
-pub fn start_all(m: &SharedRuntimeManager) {
-    if stopping(m) { return; }
+/// Schedule startup. A manual restart waits for old workers to release
+/// their process handles and data directories. A later stop cancels the request.
+pub fn start_all(m: &SharedRuntimeManager) -> bool {
+    schedule_start(m, true)
+}
+
+fn schedule_start(m: &SharedRuntimeManager, with_tor: bool) -> bool {
+    let request = {
+        let mut guard = m.lock().unwrap_or_else(|p| p.into_inner());
+        if guard.closed || engines_disabled() || (guard.stopping && !with_tor) {
+            return false;
+        }
+        if guard.start_request.is_some() {
+            guard.start_with_tor |= with_tor;
+            drop(guard);
+            if with_tor && !is_active(m, "tor") {
+                start_tor(m.clone());
+            }
+            return true;
+        }
+        guard.start_with_tor = with_tor;
+        guard.next_start = guard.next_start.wrapping_add(1);
+        let request = guard.next_start;
+        guard.start_request = Some(request);
+        request
+    };
+    let manager = m.clone();
+    std::thread::spawn(move || {
+        let (_worker, with_tor) = {
+            let guard = manager.lock().unwrap_or_else(|p| p.into_inner());
+            let changed = guard.workers_changed.clone();
+            let mut guard = changed.wait_while(guard, |state| {
+                state.start_request == Some(request) && state.stopping && state.active_workers > 0
+            }).unwrap_or_else(|p| p.into_inner());
+            if guard.start_request != Some(request) {
+                return;
+            }
+            if guard.stopping {
+                guard.svcs.clear();
+                guard.stopping = false;
+            }
+            guard.active_workers += 1;
+            let worker = RuntimeWorker { manager: manager.clone(), start_request: Some(request) };
+            (worker, guard.start_with_tor)
+        };
+        run_start_all(&manager, with_tor);
+    });
+    true
+}
+
+/// Start search runtimes on demand within the managed startup budget.
+pub(crate) fn wait_for_search_service(
+    app: &tauri::AppHandle<tauri::Wry>,
+    key: &'static str,
+    cancelled: impl Fn() -> bool,
+) -> Option<String> {
+    let manager = app.try_state::<SharedRuntimeManager>()?;
+    let manager = manager.inner();
+    if cancelled() || !schedule_start(manager, false) {
+        return None;
+    }
+    let deadline = Instant::now() + Duration::from_secs(50);
+    while !cancelled() && Instant::now() < deadline {
+        {
+            let guard = manager.lock().unwrap_or_else(|p| p.into_inner());
+            if guard.stopping {
+                return None;
+            }
+            if let Some(status) = guard.svcs.get(key).and_then(|service| service.status.as_ref()) {
+                match status.state {
+                    ServiceState::Ready => return status.endpoint.clone(),
+                    ServiceState::Failed if guard.start_request.is_none() => return None,
+                    _ => {}
+                }
+            }
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    None
+}
+
+fn run_start_all(m: &SharedRuntimeManager, with_tor: bool) {
     {
         let mut guard = m.lock().unwrap_or_else(|p| p.into_inner());
+        if guard.stopping { return; }
         guard.started_at = Some(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -1278,11 +1395,7 @@ pub fn start_all(m: &SharedRuntimeManager) {
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty());
 
-    // Idempotent re-kick: engines already up/coming up are left alone.
-    // Tor in parallel (independent).
-    if is_active(m, "tor") {
-        log::info!("[PROCESS] tor already active — skip");
-    } else {
+    if with_tor && !is_active(m, "tor") {
         start_tor(m.clone());
     }
 
@@ -1319,11 +1432,23 @@ pub fn start_all(m: &SharedRuntimeManager) {
     }
 }
 
-/// Stop every MANAGED child (tree-kill); adopted external endpoints are
-/// never touched. Called on app exit.
+/// Stop every managed child. An explicit start can resume the services.
 pub fn stop_all(m: &SharedRuntimeManager) {
+    stop_runtime(m, false);
+}
+
+/// Close the manager on application exit, including pending restarts.
+pub fn shutdown(m: &SharedRuntimeManager) {
+    stop_runtime(m, true);
+}
+
+fn stop_runtime(m: &SharedRuntimeManager, closing: bool) {
     let mut guard = m.lock().unwrap_or_else(|p| p.into_inner());
+    guard.closed |= closing;
+    guard.start_request = None;
+    guard.started_at = None;
     guard.stopping = true; // Same lock as spawn + registration: no late children.
+    guard.workers_changed.notify_all();
     for svc in guard.svcs.values_mut() {
         #[cfg(windows)] if let Some(job) = svc.job.take() { job.terminate(); }
         #[cfg(not(windows))] if let Some(pid) = svc.child_pid { let _ = Command::new("kill").args(["-9", &pid.to_string()]).status(); }
