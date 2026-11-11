@@ -159,6 +159,20 @@ pub fn global() -> &'static PrivacyConfig {
 /// off (wry default).
 pub const PRIVACY_BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --force-webrtc-ip-handling-policy=disable_non_proxied_udp --disable-component-update --disable-domain-reliability --disable-breakpad";
 
+/// SOCKS only transports TCP in WebView2. The current Chromium policy
+/// switch and the document guard cover peer-to-peer APIs in routed views.
+pub(crate) const ROUTED_BROWSER_ARGS: &str = " --webrtc-ip-handling-policy=disable_non_proxied_udp --disable-quic --disable-background-networking --dns-prefetch-disable";
+
+pub(crate) const ROUTED_DOCUMENT_INIT: &str = r#"
+(() => {
+    for (const key of ["RTCPeerConnection", "webkitRTCPeerConnection", "RTCIceGatherer", "WebTransport"]) {
+        Object.defineProperty(globalThis, key, {
+            value: undefined, configurable: false, writable: false,
+        });
+    }
+})();
+"#;
+
 /// The FULL additional_browser_args string for a PRIVATE tab.
 ///
 /// Contract (PROMPT 02): the egress proxy RIDES IN the args string because
@@ -172,7 +186,7 @@ pub fn private_browser_args(
 ) -> Result<String, &'static str> {
     match resolve_egress(egress, tor) {
         Ok(Some(ep)) => Ok(format!(
-            "{PRIVACY_BROWSER_ARGS} --proxy-server=socks5://{}:{} --proxy-bypass-list=<-loopback>",
+            "{PRIVACY_BROWSER_ARGS} --proxy-server=socks5://{}:{} --proxy-bypass-list=<-loopback>{ROUTED_BROWSER_ARGS}",
             ep.host, ep.port
         )),
         Ok(None) => Ok(PRIVACY_BROWSER_ARGS.to_string()),

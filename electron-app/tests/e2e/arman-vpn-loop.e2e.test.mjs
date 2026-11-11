@@ -5,6 +5,7 @@ import { once } from 'node:events';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
+import dgram from 'node:dgram';
 import path from 'node:path';
 import { AppHandle } from '../../scripts/e2e/harness.mjs';
 
@@ -58,6 +59,15 @@ test('Arman VPN WebView2 loop: attach, browse, fail closed, recover, detach and 
     res.end(`<title>${via}</title><h1 id="route">${via}</h1>`);
   });
   const sitePort = await listen(site);
+  const stun = dgram.createSocket('udp4');
+  stun.bind(0, '127.0.0.1');
+  await once(stun, 'listening');
+  const stunPort = stun.address().port;
+  const listenerReady = once(stun, 'message');
+  stun.send(Buffer.from('loopback control'), stunPort, '127.0.0.1');
+  await listenerReady;
+  let stunPackets = 0;
+  stun.on('message', () => { stunPackets += 1; });
 
   function newProxy() {
     return net.createServer(socket => {
@@ -166,6 +176,7 @@ test('Arman VPN WebView2 loop: attach, browse, fail closed, recover, detach and 
   const dashboardPort = await listen(dashboard);
   t.after(async () => {
     await app.stop();
+    stun.close();
     for (const socket of proxySockets) socket.destroy();
     dashboard.closeAllConnections();
     site.closeAllConnections();
@@ -200,7 +211,7 @@ test('Arman VPN WebView2 loop: attach, browse, fail closed, recover, detach and 
   }, `tab ${tabId} did not show the ${expected} route`);
   async function openProtected(name) {
     await panel.getByRole('textbox', { name: 'Site address', exact: true }).fill(url(name));
-    await panel.getByRole('button', { name: 'Open VPN tab' }).click();
+    await panel.getByRole('button', { name: 'Open VPN tab' }).press('Enter');
     const tab = await poll(async () => (await tabs()).find(tab => tab.profile === 'arman-vpn' && tab.pendingUrl === url(name)), 'VPN tab was not created');
     assert.equal(tab.isIncognito, true);
     assert.match(tab.egress, /^socks5:\/\/127\.0\.0\.1:\d+$/);
@@ -246,7 +257,7 @@ test('Arman VPN WebView2 loop: attach, browse, fail closed, recover, detach and 
   assert.ok(saved.dataDir.endsWith(companionDir));
   assert.equal(await rejectedCode('arman_vpn_connect'), 'ARMAN_VPN_ACCOUNT_REQUIRED');
   assert.equal(powerRequests, 0);
-  await panel.getByRole('button', { name: 'Sign in to Mozilla', exact: true }).click();
+  await panel.getByRole('button', { name: 'Sign in to Mozilla', exact: true }).press('Enter');
   await poll(() => dashboardSession, () => `provider dashboard session was not verified: ${dashboardPages.join(', ')}`);
   assert.equal(requests.some(req => req.url === '/dashboard-cross-origin'), false);
   accountCount = 1;
@@ -277,6 +288,36 @@ test('Arman VPN WebView2 loop: attach, browse, fail closed, recover, detach and 
   await connect.click();
   await state('ready');
   const first = await openProtected('first');
+  const evaluateProtected = expression => invoke('browser_evaluate', { req: { tabId: first.id, expression } });
+  await evaluateProtected('(' + function probeStun(port) {
+    const state = window.__qaStun = { done: false, mainBlocked: false, childBlocked: false };
+    const peers = [];
+    function tryStun(scope) {
+      if (typeof scope?.RTCPeerConnection !== 'function') return;
+      const peer = new scope.RTCPeerConnection({ iceServers: [{ urls: 'stun:127.0.0.1:' + port }] });
+      peers.push(peer);
+      peer.createDataChannel('loopback');
+      peer.createOffer().then(offer => peer.setLocalDescription(offer)).catch(() => {});
+    }
+    state.mainBlocked = typeof window.RTCPeerConnection === 'undefined' && typeof window.WebTransport === 'undefined';
+    tryStun(window);
+    const frame = document.createElement('iframe');
+    frame.onload = () => {
+      state.childBlocked = typeof frame.contentWindow.RTCPeerConnection === 'undefined';
+      tryStun(frame.contentWindow);
+    };
+    frame.srcdoc = '<!doctype html><title>STUN fixture</title>';
+    document.body.append(frame);
+    tryStun(frame.contentWindow);
+    setTimeout(() => { for (const peer of peers) peer.close(); state.done = true; }, 3000);
+    return true;
+  }.toString() + ')(' + stunPort + ')');
+  await poll(async () => (await evaluateProtected('window.__qaStun')).done, 'STUN probe did not settle');
+  const stunResult = await evaluateProtected('window.__qaStun');
+  assert.equal(stunPackets, 0, 'The protected tab sent direct UDP packets');
+  assert.equal(stunResult.mainBlocked, true);
+  assert.equal(stunResult.childBlocked, true);
+  console.log(JSON.stringify({ gate: 'protected WebView2 WebRTC', stunPackets, childFrameBlocked: true }));
   await rejectNavigation(first.id, url('private-destination', '127.0.0.1'));
   running = false;
   for (const socket of proxySockets) socket.destroy();

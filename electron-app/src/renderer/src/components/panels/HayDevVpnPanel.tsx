@@ -8,7 +8,7 @@ const copy = {
     close: 'Close', country: 'Country', recommended: 'Automatic · recommended', fastest: 'Fastest server',
     connect: 'Connect', disconnect: 'Disconnect VPN', login: 'Sign in to Mozilla', account: 'Mozilla account',
     preparing: 'Preparing VPN…', retry: 'Retry', off: 'Disconnected', ready: 'Connected', blocked: 'Connection interrupted',
-    scope: 'The Arman proxy routes only tabs opened here. Other tabs, search, the agent and Windows apps keep their own routes.', first: 'Sign in to your Mozilla account once to connect.',
+    scope: 'The Arman proxy routes TCP for tabs opened here. WebRTC and QUIC are unavailable in these tabs. Other tabs, search, the agent and Windows apps keep their own routes.', first: 'Sign in to your Mozilla account once to connect.',
     switch: 'Disconnect to change country. VPN tabs close when disconnected.', url: 'Site address', open: 'Open VPN tab', exit: 'Exit country',
     unavailable: 'VPN could not start. Retry to prepare the connection automatically.',
     core: 'The VPN component is missing or could not start. Retry or reinstall this browser build.',
@@ -24,7 +24,7 @@ const copy = {
     close: 'Закрыть', country: 'Страна', recommended: 'Автоматически · рекомендованный сервер', fastest: 'Самый быстрый сервер',
     connect: 'Подключить', disconnect: 'Отключить VPN', login: 'Войти в Mozilla', account: 'Аккаунт Mozilla',
     preparing: 'Подготавливаем VPN…', retry: 'Повторить', off: 'Отключено', ready: 'Подключено', blocked: 'Связь прервана',
-    scope: 'Прокси Arman действует на открытые здесь вкладки. У остальных вкладок, поиска, агента и приложений Windows свои маршруты.', first: 'Для первого подключения войдите в свой аккаунт Mozilla.',
+    scope: 'Прокси Arman передаёт TCP открытых здесь вкладок. WebRTC и QUIC в этих вкладках недоступны. У остальных вкладок, поиска, агента и приложений Windows свои маршруты.', first: 'Для первого подключения войдите в свой аккаунт Mozilla.',
     switch: 'Чтобы сменить страну, отключите VPN. При отключении VPN-вкладки закроются.', url: 'Адрес сайта', open: 'Открыть VPN-вкладку', exit: 'Страна выхода',
     unavailable: 'Не удалось запустить VPN. Нажмите «Повторить» для автоматической подготовки.',
     core: 'Компонент VPN отсутствует или не запускается. Повторите запуск или переустановите эту сборку браузера.',
@@ -40,7 +40,7 @@ const copy = {
     close: 'Փակել', country: 'Երկիր', recommended: 'Ավտոմատ · առաջարկվող սերվեր', fastest: 'Ամենաարագ սերվեր',
     connect: 'Միացնել', disconnect: 'Անջատել VPN-ը', login: 'Մուտք գործել Mozilla', account: 'Mozilla հաշիվ',
     preparing: 'VPN-ի պատրաստում…', retry: 'Կրկնել', off: 'Անջատված է', ready: 'Միացված է', blocked: 'Կապն ընդհատվել է',
-    scope: 'Arman պրոքսին գործում է այստեղ բացված ներդիրների համար։ Մյուս ներդիրները, որոնումը, գործակալը և Windows-ի ծրագրերն ունեն իրենց երթուղիները։', first: 'Միանալու համար մեկ անգամ մուտք գործեք Mozilla հաշիվ։',
+    scope: 'Arman պրոքսին փոխանցում է այստեղ բացված ներդիրների TCP տրաֆիկը։ WebRTC-ն ու QUIC-ն հասանելի չեն։ Մյուս ներդիրները, որոնումը, գործակալը և Windows-ի ծրագրերն ունեն իրենց երթուղիները։', first: 'Միանալու համար մեկ անգամ մուտք գործեք Mozilla հաշիվ։',
     switch: 'Երկիրը փոխելու համար անջատեք VPN-ը։ VPN ներդիրները կփակվեն։', url: 'Կայքի հասցե', open: 'Բացել VPN ներդիր', exit: 'Ելքի երկիր',
     unavailable: 'VPN-ը չի գործարկվել։ Կրկնեք ավտոմատ պատրաստումը։',
     core: 'VPN բաղադրիչը բացակայում է կամ չի գործարկվում։ Կրկնեք կամ վերատեղադրեք զննարկիչը։',
@@ -56,7 +56,7 @@ const copy = {
 
 const routingCopy = {
   en: {
-    tor: 'Tor tabs', torScope: 'Free TCP proxy for tabs opened here. DNS for site addresses goes through Tor. UDP and QUIC are blocked in these tabs.',
+    tor: 'Tor tabs', torScope: 'Free TCP proxy for tabs opened here. DNS for site addresses goes through Tor. WebRTC and QUIC are unavailable in these tabs.',
     torOpen: 'Open Tor tab', torWait: 'Opening Tor tab…', torOffline: 'The bundled Tor proxy is still starting or unavailable. Try again when Tor is ready.',
     windows: 'VPN for Windows', setup: 'Install the official Proton VPN client, sign in to Proton Free, and enable Advanced kill switch before connecting. Keep split tunneling off.',
     restore: 'To restore normal connectivity, disable Advanced kill switch and disconnect in Proton VPN.',
@@ -65,7 +65,7 @@ const routingCopy = {
     missing: 'No interface found', routeError: 'Could not read the Windows routes.',
   },
   ru: {
-    tor: 'Tor-вкладки', torScope: 'Бесплатный TCP-прокси для открытых здесь вкладок. DNS для адресов сайтов проходит через Tor. UDP и QUIC в этих вкладках заблокированы.',
+    tor: 'Tor-вкладки', torScope: 'Бесплатный TCP-прокси для открытых здесь вкладок. DNS для адресов сайтов проходит через Tor. WebRTC и QUIC в этих вкладках недоступны.',
     torOpen: 'Открыть Tor-вкладку', torWait: 'Открываем Tor-вкладку…', torOffline: 'Встроенный Tor запускается или недоступен. Повторите, когда Tor будет готов.',
     windows: 'VPN для Windows', setup: 'Установите официальный Proton VPN, войдите в Proton Free и включите Advanced kill switch перед подключением. Оставьте раздельное туннелирование выключенным.',
     restore: 'Для возврата к обычному подключению выключите Advanced kill switch и отключитесь в Proton VPN.',
@@ -74,7 +74,7 @@ const routingCopy = {
     missing: 'Интерфейс не найден', routeError: 'Не удалось прочитать маршруты Windows.',
   },
   hy: {
-    tor: 'Tor ներդիրներ', torScope: 'Անվճար TCP պրոքսի՝ այստեղ բացված ներդիրների համար։ Կայքերի DNS հարցումներն անցնում են Tor-ով։ Այս ներդիրներում UDP-ն ու QUIC-ն արգելափակված են։',
+    tor: 'Tor ներդիրներ', torScope: 'Անվճար TCP պրոքսի՝ այստեղ բացված ներդիրների համար։ Կայքերի DNS հարցումներն անցնում են Tor-ով։ Այս ներդիրներում WebRTC-ն ու QUIC-ն հասանելի չեն։',
     torOpen: 'Բացել Tor ներդիր', torWait: 'Բացվում է Tor ներդիրը…', torOffline: 'Ներկառուցված Tor-ը դեռ գործարկվում է կամ հասանելի չէ։ Կրկնեք, երբ Tor-ը պատրաստ լինի։',
     windows: 'VPN Windows-ի համար', setup: 'Տեղադրեք պաշտոնական Proton VPN-ը, մուտք գործեք Proton Free և միանալուց առաջ միացրեք Advanced kill switch-ը։ Split tunneling-ը թողեք անջատված։',
     restore: 'Սովորական կապը վերականգնելու համար Proton VPN-ում անջատեք Advanced kill switch-ը և անջատվեք VPN-ից։',

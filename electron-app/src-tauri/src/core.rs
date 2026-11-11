@@ -303,7 +303,13 @@ fn create_tab_webview(
             routes.insert(profile.dir_name().into(), route.clone()); route
         }
     };
-    let proxy_args = route.as_ref().map(|ep| format!(" --proxy-server=socks5://{}:{} --proxy-bypass-list=<-loopback>",ep.host,ep.port)).unwrap_or_default();
+    let proxy_args = route.as_ref().map(|ep| format!(
+        " --proxy-server=socks5://{}:{} --proxy-bypass-list=<-loopback>{}",
+        ep.host, ep.port, crate::privacy::ROUTED_BROWSER_ARGS,
+    )).unwrap_or_default();
+    if route.is_some() {
+        builder = builder.initialization_script_for_all_frames(crate::privacy::ROUTED_DOCUMENT_INIT);
+    }
     let manager = crate::profiles::BrowserProfileManager::new(&crate::lib_app_data_dir());
 
     // Anonymity hardening (privacy.rs): WebRTC must never bypass proxies
@@ -318,7 +324,7 @@ fn create_tab_webview(
             std::fs::create_dir_all(&dir)?;
             builder = builder.data_directory(dir).incognito(true)
                 .additional_browser_args(&format!(
-                    "{PRIVACY_ARGS}{proxy_args} --disable-quic --disable-background-networking --dns-prefetch-disable --host-resolver-rules=\"MAP * ~NOTFOUND, EXCLUDE 127.0.0.1\""
+                    "{PRIVACY_ARGS}{proxy_args} --host-resolver-rules=\"MAP * ~NOTFOUND, EXCLUDE 127.0.0.1\""
                 ))
                 .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny);
         }
@@ -344,7 +350,7 @@ fn create_tab_webview(
             builder = builder.additional_browser_args(&args);
             // Fingerprint-noise layer: stable for the profile lifetime.
             // Toggleable (privacy_set_fingerprint_noise): applies to newly
-            // created webviews — an OFF switch means no init script at all.
+            // created webviews — the toggle applies to fingerprint noise only.
             if crate::privacy::fingerprint_noise_enabled() {
                 let seed = u64::from_le_bytes(
                     uuid::Uuid::new_v4().into_bytes()[..8].try_into().unwrap(),
