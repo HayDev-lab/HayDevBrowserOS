@@ -174,7 +174,7 @@ test('P16: the bookmark button saves the native page that just committed', { tim
   await tab.waitForSelector('#fixture-marker');
   await until(async () => (await invoke(shell, 'browser_tabs_list')).some(item =>
     item.id === tabId && item.url === url && item.loadState === 'committed'), 'The native page did not commit');
-  await shell.getByRole('button', { name: 'Bookmark', exact: true }).press('Enter');
+  await shell.getByRole('button', { name: 'Bookmark', exact: true }).click();
   await until(async () => (await invoke(shell, 'browser_bookmarks_list')).length === 1,
     'The bookmark click did not create a saved entry');
   const bookmarks = await invoke(shell, 'browser_bookmarks_list');

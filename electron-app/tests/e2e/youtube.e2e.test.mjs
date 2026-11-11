@@ -110,21 +110,22 @@ test('YouTube public video plays in WebView2', {
   await page.goto('https://www.youtube.com/watch?v=aqz-KE-bpKQ', { waitUntil: 'domcontentloaded', timeout: 60_000 });
   const reject = page.getByRole('button', { name: /Reject all|Отклонить все/i }).first();
   if (await reject.waitFor({ state: 'visible', timeout: 5000 }).then(() => true).catch(() => false)) await reject.click();
-  await page.locator('video').waitFor({ state: 'attached', timeout: 45_000 });
+  const mainVideo = page.locator('#movie_player video.html5-main-video');
+  await mainVideo.waitFor({ state: 'attached', timeout: 45_000 });
   await page.waitForFunction(() => {
-    const video = document.querySelector('video');
+    const video = document.querySelector('#movie_player video.html5-main-video');
     return video && video.readyState >= 2 && !video.error;
   }, undefined, { timeout: 45_000 });
-  if (await page.locator('video').evaluate(video => video.paused)) {
-    await page.locator('.ytp-play-button').click();
+  if (await mainVideo.evaluate(video => video.paused)) {
+    await page.locator('#movie_player .ytp-play-button').click();
   }
-  const before = await page.locator('video').evaluate(video => video.currentTime);
+  const before = await mainVideo.evaluate(video => video.currentTime);
   await page.waitForFunction(start => {
-    const video = document.querySelector('video');
+    const video = document.querySelector('#movie_player video.html5-main-video');
     return video && !video.paused && video.currentTime > start + 2 &&
       !document.querySelector('#movie_player')?.classList.contains('ad-showing');
   }, before, { timeout: 45_000 });
-  const playback = await page.locator('video').evaluate(video => ({
+  const playback = await mainVideo.evaluate(video => ({
     currentTime: video.currentTime, readyState: video.readyState, width: video.videoWidth,
   }));
   writeFileSync(path.join(app.evidenceDir, 'youtube-live.json'), JSON.stringify({
