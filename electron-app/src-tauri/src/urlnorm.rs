@@ -218,16 +218,21 @@ pub fn should_persist_history(url: &str) -> bool {
     if url.starts_with("pab:") {
         return false;
     }
-    if let Ok(u) = Url::parse(url) {
-        if u.scheme() == "http" || u.scheme() == "https" {
-            if let Some(host) = u.host_str() {
-                if host == "127.0.0.1" || host == "localhost" {
-                    return false;
-                }
-            }
-        }
+    let Ok(url) = Url::parse(url) else { return true };
+    if !matches!(url.scheme(), "http" | "https") {
+        return true;
     }
-    true
+    match url.host() {
+        Some(url::Host::Ipv4(address)) => !address.is_loopback(),
+        Some(url::Host::Ipv6(address)) => {
+            !(address.is_loopback() || address.to_ipv4_mapped().is_some_and(|ip| ip.is_loopback()))
+        }
+        Some(url::Host::Domain(host)) => {
+            let host = host.trim_end_matches('.');
+            host != "localhost" && !host.ends_with(".localhost")
+        }
+        None => true,
+    }
 }
 
 /// Port of `@shared/tab-unread.ts parseUnreadTitle` — "(N)"/"[N]" prefix
@@ -341,6 +346,10 @@ mod tests {
         assert!(!should_persist_history("pab://newtab"));
         assert!(!should_persist_history("http://127.0.0.1:3000/x"));
         assert!(!should_persist_history("http://localhost:8888/search"));
+        assert!(!should_persist_history("http://127.9.8.7/"));
+        assert!(!should_persist_history("http://[::1]/"));
+        assert!(!should_persist_history("http://[::ffff:127.0.0.1]/"));
+        assert!(!should_persist_history("http://fixture.localhost./"));
         assert!(should_persist_history("https://example.com/"));
     }
 

@@ -210,10 +210,16 @@ export function App() {
   );
 
   const handleAddBookmark = useCallback(async () => {
-    if (!activeTab?.url) return;
-    await actions.addBookmark(activeTab.url, activeTab.title || activeTab.url);
-    await ui.refreshBookmarks();
-  }, [actions, activeTab, ui]);
+    try {
+      // The shell's tab snapshot can lag behind a WebView navigation commit.
+      const tab = (await platformApi.browser.listTabs()).find((item) => item.isActive);
+      if (!tab?.url) return;
+      await actions.addBookmark(tab.url, tab.title || tab.url);
+      await ui.refreshBookmarks();
+    } catch (error) {
+      reportActionError(error);
+    }
+  }, [actions, reportActionError, ui]);
 
   const handleDeleteBookmark = useCallback(
     async (id: string) => {

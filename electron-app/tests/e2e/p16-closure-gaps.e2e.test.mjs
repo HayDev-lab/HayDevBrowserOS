@@ -160,3 +160,23 @@ test('P16: Shield config persists across restart; protectedTabs tracks the concr
   assert.equal(after.enabled, false, 'explicit Shield OFF must survive restart');
   assert.ok(after.allowlist.includes('allowme.example'), 'allowlist must survive restart');
 });
+
+test('P16: the bookmark button saves the native page that just committed', { timeout: 60000 }, async t => {
+  const app = new AppHandle();
+  t.after(() => app.stop());
+  await app.launch();
+  const shell = app.chromePage();
+  await shell.waitForSelector('.commandbar__input');
+  const tabId = await app.activeTabId(shell);
+  const url = fixtureServer.url('/static?bookmark-race');
+  await invoke(shell, 'browser_navigate', { req: { tabId, url } });
+  const tab = await app.waitTabPage(/bookmark-race$/);
+  await tab.waitForSelector('#fixture-marker');
+  await until(async () => (await invoke(shell, 'browser_tabs_list')).some(item =>
+    item.id === tabId && item.url === url && item.loadState === 'committed'), 'The native page did not commit');
+  await shell.getByRole('button', { name: 'Bookmark', exact: true }).press('Enter');
+  const bookmarks = await invoke(shell, 'browser_bookmarks_list');
+  assert.equal(bookmarks.length, 1);
+  assert.equal(bookmarks[0].url, url);
+});
+
