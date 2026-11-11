@@ -44,6 +44,8 @@ pub mod layout;
 pub mod llm;
 pub mod mcp;
 pub mod memory;
+mod media_cleaner;
+mod media_image;
 pub mod navstack;
 #[cfg(windows)]
 pub mod native_webview;
@@ -179,6 +181,8 @@ pub fn run() {
             commands::agent_timeline_list,
             commands::agent_research_report,
             commands::agent_pick_attachment,
+            media_cleaner::media_cleaner_run,
+            media_cleaner::media_cleaner_video_available,
             commands::agent_release_attachment,
             commands::control_set_mode,
             commands::control_take_control,

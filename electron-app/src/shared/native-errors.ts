@@ -5,7 +5,7 @@ import { attachmentErrorMessage } from './attachment-errors';
 export function nativeErrorCode(error: unknown): string {
   const item = error && typeof error === 'object' ? error as { code?: unknown; message?: unknown } : null;
   const text = item ? `${String(item.code ?? '')} ${String(item.message ?? '')}` : String(error ?? '');
-  return text.match(/(?:VAULT|STORE|DOCUMENT|ATTACHMENT|EGRESS|TAB|WEBVIEW|AGENT|CONTROL|RESEARCH)_[A-Z_]+/)?.[0] ?? 'OPERATION_FAILED';
+  return text.match(/(?:VAULT|STORE|DOCUMENT|ATTACHMENT|EGRESS|TAB|WEBVIEW|AGENT|CONTROL|RESEARCH|MEDIA)_[A-Z_]+/)?.[0] ?? 'OPERATION_FAILED';
 }
 const messages: Record<string, readonly [string, string, string]> = {
   OPERATION_FAILED: ['The operation failed. Please try again.', 'Не удалось выполнить действие. Повторите попытку.', 'Գործողությունը չհաջողվեց։ Փորձեք կրկին։'],

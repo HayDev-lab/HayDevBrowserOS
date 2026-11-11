@@ -477,7 +477,7 @@ export function isWebAppTabActive(activeTabUrl: string, app: WebAppPin): boolean
 // ---------------------------------------------------------------------------
 // Side panels (history / bookmarks / downloads)
 // ---------------------------------------------------------------------------
-export type PanelKind = 'history' | 'bookmarks' | 'downloads' | 'vault' | 'settings' | 'vpn';
+export type PanelKind = 'history' | 'bookmarks' | 'downloads' | 'vault' | 'settings' | 'vpn' | 'mediaCleaner';
 
 /**
  * Returns true if the given panel kind matches the active panel.

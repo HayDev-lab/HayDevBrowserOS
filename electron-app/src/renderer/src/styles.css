@@ -2374,6 +2374,20 @@ input {
 .ai-settings__body input:not([type="checkbox"]), .ai-settings__body select { width: 100%; min-width: 0; box-sizing: border-box; padding: 8px; color: var(--nc-text-primary); background: var(--nc-bg); border: 1px solid var(--nc-border); border-radius: 5px; }
 .ai-settings__body .ai-settings__check { flex-direction: row; align-items: center; }
 .ai-settings__body p, .ai-settings__body small { line-height: 1.5; }
+.media-cleaner { display: grid; align-content: start; gap: 16px; overflow-wrap: anywhere; }
+.media-cleaner p, .media-cleaner small { line-height: 1.5; }
+.media-cleaner small { color: var(--nc-text-secondary); }
+.media-cleaner__option { display: grid; gap: 5px; }
+.media-cleaner__option button {
+  padding: 8px 12px;
+  color: var(--nc-text-primary);
+  background: var(--nc-bg);
+  border: 1px solid var(--nc-border);
+  border-radius: 6px;
+  text-align: left;
+  cursor: pointer;
+}
+.media-cleaner__option button:disabled { cursor: default; opacity: .55; }
 .vpn-fields { display: grid; gap: 10px; }
 .vpn-status { font-weight: 600; color: var(--nc-text-secondary); }
 .vpn-status[data-state="ready"] { color: var(--nc-accent); }

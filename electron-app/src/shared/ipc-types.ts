@@ -270,7 +270,15 @@ export interface VaultApi {
  * The renderer-side API surface exposed via contextBridge.
  * MUST stay serialisable (no functions carrying closures over Node objects).
  */
+export type MediaCleanerKind = 'image' | 'video';
+
+export interface MediaCleanerApi {
+  videoAvailable(): Promise<boolean>;
+  clean(kind: MediaCleanerKind): Promise<{ fileName: string } | null>;
+}
+
 export interface ExposedApi {
+  mediaCleaner?: MediaCleanerApi;
   aiSettings?: import('./ai-settings').AiSettingsApi;
   haydevVpn?: HayDevVpnApi;
   // Foundation

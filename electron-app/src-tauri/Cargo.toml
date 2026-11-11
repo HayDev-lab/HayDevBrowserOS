@@ -45,6 +45,8 @@ base64 = "0.22"
 pdf-extract = "=0.12.1"
 zip = { version = "=9.0.3", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 quick-xml = "=0.42.0"
+crc32fast = "=1.5.2"
+tempfile = "=3.27.0"
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "=0.38.2"

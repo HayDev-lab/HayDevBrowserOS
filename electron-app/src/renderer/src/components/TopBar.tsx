@@ -1,5 +1,6 @@
 import haydevLogo from '../assets/haydev-logo.png';
 import { AI_SETTINGS_TITLE } from './panels/AiSettingsPanel';
+import { MEDIA_CLEANER_TITLE } from './panels/MediaCleanerPanel';
 import { useEffect, useState } from 'react';
 import { platformApi } from '../platform';
 import { HAYDEV_VPN_NAME, type ShieldStatus } from '@shared/ipc-types';
@@ -162,6 +163,16 @@ export function TopBar(props: TopBarProps) {
             onClick={() => props.onTogglePanel('downloads')}
             title={t('topbar.downloadsTip')}
           />
+          {platformApi.mediaCleaner && (
+            <ActionToggle
+              glyph="✂"
+              label={MEDIA_CLEANER_TITLE[lang]}
+              title={MEDIA_CLEANER_TITLE[lang]}
+              active={props.activePanel === 'mediaCleaner'}
+              onClick={() => props.onTogglePanel('mediaCleaner')}
+              iconOnly
+            />
+          )}
           <ActionToggle
             glyph=" 🔒 "
             label={t('topbar.vault')}

@@ -23,6 +23,10 @@ const ALLOWED_LISTEN_CHANNELS = new Set<string>([
 ]);
 
 export const tauriApi: ExposedApi = {
+  mediaCleaner: {
+    videoAvailable: () => invoke('media_cleaner_video_available'),
+    clean: (kind) => invoke('media_cleaner_run', { kind }),
+  },
   haydevVpn: {
     status: () => invoke('arman_vpn_status'),
     prepare: () => invoke('arman_vpn_prepare'),

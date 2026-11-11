@@ -257,13 +257,20 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 // created before the per-service job is assigned. The OS closes our job handle
 // on a crash; no command-line heuristics or foreign process enumeration.
 #[cfg(windows)]
-struct RuntimeJob(windows::Win32::Foundation::HANDLE);
+pub(crate) struct RuntimeJob(windows::Win32::Foundation::HANDLE);
 #[cfg(windows)]
 unsafe impl Send for RuntimeJob {} // Owned kernel handle; APIs are thread safe.
 #[cfg(windows)]
 unsafe impl Sync for RuntimeJob {}
 #[cfg(windows)]
 impl RuntimeJob {
+    pub(crate) fn for_child(child: &std::process::Child) -> std::io::Result<Self> {
+        use std::os::windows::io::AsRawHandle;
+        let job = Self::new()?;
+        job.assign(windows::Win32::Foundation::HANDLE(child.as_raw_handle()))?;
+        Ok(job)
+    }
+
     fn new() -> std::io::Result<Self> {
         use windows::Win32::System::JobObjects::*;
         unsafe {

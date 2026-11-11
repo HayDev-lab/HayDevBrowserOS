@@ -13,6 +13,7 @@ import { DownloadsPanel } from './components/panels/DownloadsPanel';
 import { VaultPanel } from './components/panels/VaultPanel';
 import { AiSettingsPanel } from './components/panels/AiSettingsPanel';
 import { HayDevVpnPanel } from './components/panels/HayDevVpnPanel';
+import { MediaCleanerPanel } from './components/panels/MediaCleanerPanel';
 import { pickLayoutKind, getLayoutModifier, findWebAppTabId, type PanelKind } from './store/ui-logic';
 import { useI18n } from './i18n';
 import type { WebAppPin } from '@shared/browser-types';
@@ -397,6 +398,7 @@ export function App() {
         onClose={() => setActivePanel(null)}
         activeTabId={ui.activeTabId}
       />
+      {activePanel === 'mediaCleaner' && <MediaCleanerPanel onClose={() => setActivePanel(null)} />}
       {activePanel === 'settings' && <AiSettingsPanel onClose={() => setActivePanel(null)} agentRunning={agentRunning} />}
       {activePanel === 'vpn' && <HayDevVpnPanel onClose={() => setActivePanel(null)} onTabsChanged={ui.refreshTabs} />}
 
