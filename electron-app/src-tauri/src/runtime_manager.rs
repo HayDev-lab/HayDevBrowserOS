@@ -757,7 +757,7 @@ fn start_perplexica(
                     pid,
                     &format!("http://127.0.0.1:{port}"),
                     PERPLEXICA_START_TIMEOUT,
-                    probe_http_ok,
+                    probe_perplexica_ready,
                     restart_perplexica,
                 );
             }
@@ -782,6 +782,16 @@ fn find_node() -> Option<PathBuf> {
         }
     }
     None
+}
+
+// The homepage renders user-facing Next.js content. Its readiness is
+// independent of the providers API used by HayDev Search.
+pub(crate) fn probe_perplexica_ready(endpoint: &str) -> bool {
+    let url = format!("{}/api/providers", endpoint.trim_end_matches('/'));
+    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(4)).build();
+    agent.get(&url).set("X-Forwarded-For", "127.0.0.1").call()
+        .ok().and_then(|response| response.into_json::<serde_json::Value>().ok())
+        .is_some_and(|body| body.get("providers").is_some_and(serde_json::Value::is_array))
 }
 
 fn probe_http_ok(url: &str) -> bool {

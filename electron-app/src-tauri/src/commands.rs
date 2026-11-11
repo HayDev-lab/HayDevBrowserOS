@@ -55,6 +55,7 @@ pub async fn app_runtime_status(app: AppHandle<tauri::Wry>) -> AppResult<types::
         crate::runtime_manager::with_manager(&app, |s| s.service_state("perplexica")).flatten();
     let managed = crate::runtime_manager::with_manager(&app, |s| s.perplexica_endpoint()).flatten();
     use crate::runtime_manager::ServiceState;
+    let has_runtime_endpoint = managed.is_some();
     let endpoint = managed.or_else(|| {
         std::env::var("PAB_PERPLEXICA_URL").ok().filter(|v| !v.trim().is_empty())
     });
@@ -68,7 +69,13 @@ pub async fn app_runtime_status(app: AppHandle<tauri::Wry>) -> AppResult<types::
     };
     let endpoint_for_probe = endpoint.clone();
     let reachable =
-        tauri::async_runtime::spawn_blocking(move || probe_http_endpoint(&endpoint_for_probe))
+        tauri::async_runtime::spawn_blocking(move || {
+            if has_runtime_endpoint {
+                crate::runtime_manager::probe_perplexica_ready(&endpoint_for_probe)
+            } else {
+                probe_http_endpoint(&endpoint_for_probe)
+            }
+        })
             .await
             .map_err(|e| AppError::new("RUNTIME_PROBE_FAILED", e.to_string()))?;
     let state = match perplexica_state {
