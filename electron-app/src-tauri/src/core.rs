@@ -231,9 +231,22 @@ fn create_tab_webview(
         .into_iter()
         .find(|profile| tab.profile == profile.dir_name());
 
+    let tor_proxy_tab = proxy_profile == Some(ProfileKind::TorProxy);
     let mut builder = tauri::WebviewBuilder::new(label.clone(), WebviewUrl::External(url::Url::parse("about:blank")?))
         .initialization_script(crate::run_host::INIT)
-        .on_navigation(if proxy_profile.is_some() { crate::arman_vpn::navigation_allowed } else { urlnorm::navigation_allowed })
+        .on_navigation(move |url| {
+            if darkweb {
+                return url.as_str() == "about:blank" || crate::darkweb::is_onion_url(url.as_str());
+            }
+            if crate::darkweb::has_onion_host(url) && !tor_proxy_tab {
+                return false;
+            }
+            if proxy_profile.is_some() {
+                crate::arman_vpn::navigation_allowed(url)
+            } else {
+                urlnorm::navigation_allowed(url)
+            }
+        })
         .on_page_load(move |_wv, payload| {
             on_page_load(&handle_for_load, &tab_for_load, &payload);
         })
@@ -268,10 +281,10 @@ fn create_tab_webview(
     // tab traffic) enters the Tor network.
     let profile = if let Some(profile) = proxy_profile {
         profile
-    } else if incognito {
-        crate::profiles::ProfileKind::Private
     } else if darkweb {
         crate::profiles::ProfileKind::DarkWeb
+    } else if incognito {
+        crate::profiles::ProfileKind::Private
     } else if tab.profile == "agent" {
         crate::profiles::ProfileKind::Agent
     } else {
@@ -369,7 +382,9 @@ fn create_tab_webview(
             if let Some(dir) = manager.data_dir(profile) {
                 builder = builder.data_directory(dir);
             }
-            builder = builder.additional_browser_args(&format!("{PRIVACY_ARGS}{proxy_args}"));
+            builder = builder.incognito(true)
+                .additional_browser_args(&format!("{PRIVACY_ARGS}{proxy_args}"))
+                .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny);
         }
         kind => {
             manager
@@ -409,7 +424,7 @@ fn create_tab_webview(
     let destination = crate::urlnorm::to_webview_display_url(parsed.as_str())?;
     webview.with_webview(move |native| {
         let result = unsafe {
-            crate::native_webview::install(&handle, &native, &id).and_then(|_| {
+            crate::native_webview::install(&handle, &native, &id, darkweb, tor_proxy_tab).and_then(|_| {
                 native.controller().CoreWebView2().and_then(|wv| wv.Navigate(&windows::core::HSTRING::from(destination)))
                     .map_err(|_| AppError::new("WEBVIEW_CREATE_FAILED", "Initial navigation failed"))
             })
@@ -605,7 +620,7 @@ fn on_download_event(
                 };
                 let mut q = q.lock().unwrap_or_else(|p| p.into_inner());
                 let (id, dest) = q.intercept(
-                    &crate::lib_app_data_dir().join("darkweb"),
+                    &crate::lib_app_data_dir(),
                     url.as_str(),
                     &*destination,
                 );
@@ -659,21 +674,6 @@ pub fn prepare_open_tab(
     app: &AppHandle<Wry>,
     req: &OpenTabRequest,
 ) -> AppResult<(String, bool, bool, bool, String)> {
-    if req.agent == Some(true) && (req.incognito == Some(true) || req.darkweb == Some(true)) { return Err(AppError::new("PROFILE_CONFLICT", "Choose exactly one profile")); }
-    let darkweb = req.darkweb.unwrap_or(false);
-    if darkweb {
-        // Only .onion addresses and the darkweb internal page may open in
-        // the isolated Tor environment (fail closed on anything else).
-        let ok = crate::darkweb::is_onion_url(&req.url)
-            || req.url.trim_start_matches('/').starts_with("pab://darkweb")
-            || req.url.contains("pab.localhost/darkweb");
-        if !ok {
-            return Err(AppError::new(
-                "URL_REJECTED",
-                "dark-web tabs accept .onion addresses only",
-            ));
-        }
-    }
     let normalized = urlnorm::normalize_address_bar_input(&req.url);
     let target = urlnorm::canonicalize_internal_url(&normalized.url.ok_or_else(|| {
         AppError::new(
@@ -684,13 +684,24 @@ pub fn prepare_open_tab(
             ),
         )
     })?);
+    let parsed = url::Url::parse(&target)?;
+    let darkweb = crate::darkweb::is_onion_url(&target);
+    let darkweb_page = parsed.scheme() == "pab" && parsed.host_str() == Some("darkweb");
+    if (crate::darkweb::has_onion_host(&parsed) && !darkweb)
+        || (req.darkweb == Some(true) && !darkweb && !darkweb_page)
+    {
+        return Err(AppError::new("URL_REJECTED", "DarkWeb requires a valid .onion address"));
+    }
+    if req.agent == Some(true) && (req.incognito == Some(true) || darkweb || req.darkweb == Some(true)) {
+        return Err(AppError::new("PROFILE_CONFLICT", "Choose exactly one profile"));
+    }
 
     let (tab_id, events, incognito) = with_state(app, |state| {
         let normalized_req = OpenTabRequest {
             url: target.clone(),
             activate: req.activate,
             incognito: req.incognito,
-            darkweb: req.darkweb,
+            darkweb: Some(darkweb),
             background: req.background,
             agent: req.agent,
             id: req.id.clone(),
@@ -871,6 +882,16 @@ pub fn navigate(app: &AppHandle<Wry>, req: &NavigateRequest) -> AppResult<bool> 
     // display form it understands (http://pab.<page>/…).
     let navigate_url = urlnorm::to_webview_display_url(&target)?;
     let parsed = url::Url::parse(&navigate_url)?;
+    if crate::darkweb::has_onion_host(&parsed) {
+        let accepts_onion = with_state(app, |state| {
+            state.registry.get(&req.tab_id).is_some_and(|tab| {
+                tab.is_dark_web.unwrap_or(false) || tab.profile == crate::profiles::ProfileKind::TorProxy.dir_name()
+            })
+        })?;
+        if !accepts_onion {
+            return Err(AppError::new("ONION_REQUIRES_TOR_TAB", "Open the .onion address in a Tor tab"));
+        }
+    }
     #[cfg(windows)]
     if let Some(guard) = crate::run_guard::current() {
         return crate::bridge::navigate_guarded(app, &req.tab_id, parsed.as_str(), guard);

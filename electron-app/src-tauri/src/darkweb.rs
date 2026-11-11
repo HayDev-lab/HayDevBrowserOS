@@ -845,12 +845,16 @@ impl ToSocketAddrsFirst for String {
 // Fetch + text extraction
 // ---------------------------------------------------------------------------
 
+pub fn has_onion_host(url: &url::Url) -> bool {
+    url.host_str().is_some_and(|host| host.trim_end_matches('.').ends_with(".onion"))
+}
+
 pub fn is_onion_url(url: &str) -> bool {
     url::Url::parse(url).is_ok_and(|url| {
         matches!(url.scheme(), "http" | "https")
             && url.username().is_empty()
             && url.password().is_none()
-            && url.host_str().is_some_and(|host| host.ends_with(".onion"))
+            && has_onion_host(&url)
     })
 }
 

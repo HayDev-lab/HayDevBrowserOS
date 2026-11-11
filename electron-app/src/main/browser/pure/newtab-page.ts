@@ -1041,7 +1041,7 @@ ${newsBlock}
       }).join('');
       var items = (snap.results || []).map(function (r) {
         var url = r.url || r.link || r.finalUrl || '';
-        var href = /^https?:/i.test(url) ? url : 'pab://darkweb?url=' + encodeURIComponent(url);
+        var href = '/open?url=' + encodeURIComponent(url);
         return '<a class="dwresult" href="' + esc(href) + '">' +
           '<div class="dwresult__url">' + esc(url) + '</div>' +
           '<div class="dwresult__title">' + esc(r.title || '') + '</div>' +

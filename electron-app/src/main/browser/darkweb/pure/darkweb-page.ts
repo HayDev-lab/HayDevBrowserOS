@@ -824,7 +824,7 @@ export function buildDarkWebPageHtml(logoDataUrl?: string, opts?: DarkWebPageOpt
         line.appendChild(el('span', null, d.sourceUrl));
         if (d.dangerous) line.appendChild(el('span', 'st-error', tr('dl.danger')));
         line.appendChild(el('span', null, d.state));
-        if (d.state === 'QUARANTINED') {
+        if (d.state === 'QUARANTINED' && d.complete) {
           var save = document.createElement('button');
           save.type = 'button'; save.textContent = tr('dl.saveAs');
           save.addEventListener('click', function () { api('downloads/' + d.id + '/save', { method: 'POST' }).then(refreshDownloads); });
@@ -837,6 +837,10 @@ export function buildDarkWebPageHtml(logoDataUrl?: string, opts?: DarkWebPageOpt
       });
     });
   }
+
+  $('downloads-panel').addEventListener('toggle', function () {
+    if (this.open) refreshDownloads();
+  });
 
   // ---- history + local index ---------------------------------------------------
   function refreshHistory() {
@@ -915,7 +919,10 @@ export function buildDarkWebPageHtml(logoDataUrl?: string, opts?: DarkWebPageOpt
   refreshDownloads();
   refreshHistory();
   loadSettings();
-  statusTimer = setInterval(refreshStatus, 8000);
+  statusTimer = setInterval(function () {
+    refreshStatus();
+    if ($('downloads-panel').open) refreshDownloads();
+  }, 8000);
   // Engine routing from the Matrix New Tab: pab://darkweb?q=… auto-runs
   // the query through the real Tor-gated search pipeline above.
   try {

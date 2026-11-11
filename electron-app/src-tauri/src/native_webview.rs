@@ -50,26 +50,32 @@ pub fn restrict_provider_dashboard(
 fn emit_downloads(app: &AppHandle<Wry>) {
     if let Ok(items) = crate::core::list_downloads(app) { let _ = app.emit("browser:downloads:changed", &items); }
 }
-unsafe fn progress(app: &AppHandle<Wry>, id: &str, op: &ICoreWebView2DownloadOperation) {
+unsafe fn progress(
+    app: &AppHandle<Wry>, id: &str, op: &ICoreWebView2DownloadOperation, quarantine: Option<&std::path::Path>,
+) {
     let mut received = 0; let mut total = 0; let mut state = COREWEBVIEW2_DOWNLOAD_STATE::default();
     let _ = op.BytesReceived(&mut received); let _ = op.TotalBytesToReceive(&mut total); let _ = op.State(&mut state);
     let _ = crate::core::with_state(app, |s| s.downloads.progress(id, received.max(0) as u64, total.max(0) as u64,
         if state == COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED { Some(true) } else if state == COREWEBVIEW2_DOWNLOAD_STATE_INTERRUPTED { Some(false) } else { None }));
     emit_downloads(app);
     if state != COREWEBVIEW2_DOWNLOAD_STATE_IN_PROGRESS {
-        if let Ok(path) = string(|p| op.ResultFilePath(p)) {
-            if let Some(q) = app.try_state::<crate::downloads::SharedQuarantine>() {
-                q.lock().unwrap_or_else(|p| p.into_inner()).finished(std::path::Path::new(&path), state == COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED);
-            }
+        if let (Some(path), Some(q)) = (quarantine, app.try_state::<crate::downloads::SharedQuarantine>()) {
+            q.lock().unwrap_or_else(|p| p.into_inner()).finished(path, state == COREWEBVIEW2_DOWNLOAD_STATE_COMPLETED);
         }
         DOWNLOADS.with(|m| { m.borrow_mut().remove(id); });
     }
 }
 
 /// Called on the UI thread. No protected target is loaded before this succeeds.
-pub unsafe fn install(app: &AppHandle<Wry>, native: &tauri::webview::PlatformWebview, tab_id: &str) -> AppResult<()> {
+pub unsafe fn install(
+    app: &AppHandle<Wry>, native: &tauri::webview::PlatformWebview, tab_id: &str, darkweb: bool, tor_proxy_tab: bool,
+) -> AppResult<()> {
     let wv = native.controller().CoreWebView2().map_err(failure)?;
-    let settings: ICoreWebView2Settings2 = wv.Settings().map_err(failure)?.cast().map_err(failure)?;
+    let settings = wv.Settings().map_err(failure)?;
+    if darkweb {
+        settings.SetIsScriptEnabled(false).map_err(failure)?;
+    }
+    let settings: ICoreWebView2Settings2 = settings.cast().map_err(failure)?;
     let ua = string(|p| settings.UserAgent(p)).map_err(failure)?;
     settings.SetUserAgent(&HSTRING::from(crate::site_ua::build_site_user_agent(&ua))).map_err(failure)?;
     let host: windows::Win32::System::Com::IDispatch = crate::run_host::RunHost { shared: app.state::<crate::agent::SharedAgent>().inner().clone() }.into();
@@ -112,6 +118,15 @@ pub unsafe fn install(app: &AppHandle<Wry>, native: &tauri::webview::PlatformWeb
         let (Some(sender), Some(args)) = (sender, args) else { return Ok(()); };
         let request = args.Request()?;
         let request_url = string(|p| request.Uri(p))?;
+        if !darkweb && !tor_proxy_tab
+            && url::Url::parse(&request_url).is_ok_and(|uri| crate::darkweb::has_onion_host(&uri))
+        {
+            let response = env.CreateWebResourceResponse(
+                None, 403, &HSTRING::from("Tor tab required"), &HSTRING::from("Content-Length: 0\r\n"),
+            )?;
+            args.SetResponse(&response)?;
+            return Ok(());
+        }
         // NavigationStarting is the TOP document event. An iframe request must
         // never choose the visited-site exception from its own request URL.
         let page_url = if top_url.borrow().is_empty() { string(|p| sender.Source(p))? } else { top_url.borrow().clone() };
@@ -155,9 +170,9 @@ pub unsafe fn install(app: &AppHandle<Wry>, native: &tauri::webview::PlatformWeb
         let suggested = string(|p| args.ResultFilePath(p))?;
         let item = crate::core::with_state(&handle, |s| {
             let mut dest = s.downloads.destination_for(&url, std::path::Path::new(&suggested));
-            if s.registry.get(&tab).and_then(|t| t.is_dark_web).unwrap_or(false) {
+            if darkweb {
                 let q = handle.state::<crate::downloads::SharedQuarantine>();
-                dest = q.lock().unwrap_or_else(|p| p.into_inner()).intercept(&crate::lib_app_data_dir().join("darkweb"), &url, &dest).1;
+                dest = q.lock().unwrap_or_else(|p| p.into_inner()).intercept(&crate::lib_app_data_dir(), &url, &dest).1;
             }
             let id = s.downloads.started(&url, &dest);
             s.downloads.set_tab(&id, &tab);
@@ -165,16 +180,17 @@ pub unsafe fn install(app: &AppHandle<Wry>, native: &tauri::webview::PlatformWeb
         });
         let Ok((id, dest)) = item else { args.SetCancel(true)?; return Ok(()); };
         args.SetResultFilePath(&HSTRING::from(dest.as_os_str()))?; args.SetHandled(true)?;
+        let quarantine = darkweb.then_some(dest);
         DOWNLOADS.with(|m| { m.borrow_mut().insert(id.clone(), op.clone()); });
-        let h = handle.clone(); let i = id.clone();
+        let h = handle.clone(); let i = id.clone(); let q = quarantine.clone();
         op.add_BytesReceivedChanged(&BytesReceivedChangedEventHandler::create(Box::new(move |op, _| {
-            if let Some(op) = op { progress(&h, &i, &op); } Ok(())
+            if let Some(op) = op { progress(&h, &i, &op, q.as_deref()); } Ok(())
         })), &mut 0)?;
-        let h = handle.clone(); let i = id.clone();
+        let h = handle.clone(); let i = id.clone(); let q = quarantine.clone();
         op.add_StateChanged(&StateChangedEventHandler::create(Box::new(move |op, _| {
-            if let Some(op) = op { progress(&h, &i, &op); } Ok(())
+            if let Some(op) = op { progress(&h, &i, &op, q.as_deref()); } Ok(())
         })), &mut 0)?;
-        progress(&handle, &id, &op);
+        progress(&handle, &id, &op, quarantine.as_deref());
         Ok(())
     })), &mut 0).map_err(failure)?;
     let handle = app.clone(); let tab = tab_id.to_string();

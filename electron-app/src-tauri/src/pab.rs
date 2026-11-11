@@ -442,6 +442,7 @@ fn serve_newtab(
         },
         ("/api/news", "GET") => json_response(fetch_tech_news(4)),
         ("/api/topsites", "GET") => json_response(topsites_payload(app)),
+        ("/open", "GET") => open_onion_document(app, uri),
         // Inline darkweb search (user requirement: the darkweb engine on the
         // newtab page searches HERE, never opening another page). Same
         // DarkWebService + job contract the pab://darkweb page uses.
@@ -822,6 +823,34 @@ fn internal_page_of(raw_url: &str) -> Option<&'static str> {
 // honestly NOT_IMPLEMENTED).
 // ---------------------------------------------------------------------------
 
+fn open_onion_document(app: &AppHandle<tauri::Wry>, uri: &Uri) -> http::Response<Vec<u8>> {
+    let target = uri.query()
+        .and_then(|query| query.split('&').find_map(|param| param.strip_prefix("url=")))
+        .map(urldecode)
+        .unwrap_or_default();
+    let opened = crate::darkweb::is_onion_url(&target) && tauri::async_runtime::block_on(
+        crate::commands::browser_tabs_open(app.clone(), crate::types::OpenTabRequest {
+            url: target,
+            activate: Some(true),
+            incognito: None,
+            darkweb: Some(true),
+            background: None,
+            agent: None,
+            id: None,
+            title: None,
+        }),
+    ).is_ok();
+    let message = if opened {
+        "Opened in an isolated Tor tab."
+    } else {
+        "The .onion page could not open. Check that Tor is connected."
+    };
+    html_response(format!(
+        "<!doctype html><meta charset='utf-8'><title>DarkWeb</title><p>{message}</p>\
+         <script>setTimeout(function(){{history.back()}},600)</script>",
+    ))
+}
+
 fn serve_darkweb(
     app: &AppHandle<tauri::Wry>,
     path: &str,
@@ -850,45 +879,8 @@ fn serve_darkweb(
         };
     }
 
-    // GET /open?url=<onion> → open an isolated Tor tab (parity).
     if path == "/open" && method == "GET" {
-        let target = uri
-            .query()
-            .and_then(|q| q.split('&').find(|p| p.starts_with("url=")))
-            .map(|p| urldecode(&p[4..]))
-            .unwrap_or_default();
-        let ok = crate::darkweb::is_onion_url(&target)
-            && crate::core::prepare_open_tab(
-                app,
-                &crate::types::OpenTabRequest {
-                    url: target.clone(),
-                    activate: Some(true),
-                    incognito: Some(false),
-                    darkweb: Some(true),
-                    background: None,
-            agent: None,
-                    id: None,
-                    title: None,
-                },
-            )
-            .map(|(tab_id, _, _, _, _)| {
-                let handle = app.clone();
-                let _ = app.run_on_main_thread(move || {
-                    if let Err(err) =
-                        crate::core::materialize_open_tab(&handle, &tab_id, &target, false, true)
-                    {
-                        log::error!("[DARKWEB] tab create failed: {err}");
-                    }
-                });
-                true
-            })
-            .is_ok();
-        return html_response(format!(
-            "<!doctype html><meta charset='utf-8'><title>Opening…</title>\
-             <body style=\"background:#02040a;color:#9fb4d0;font-family:system-ui;display:grid;place-items:center;height:100vh;margin:0\"><p>{}</p>\
-             <script>setTimeout(function(){{history.back()}},600)</script></body>",
-            if ok { "Opening in an isolated Tor tab…" } else { "Could not open: URL is not a valid .onion address, or the Tor gateway is down." }
-        ));
+        return open_onion_document(app, uri);
     }
 
     let api: &str = path.trim_start_matches('/');

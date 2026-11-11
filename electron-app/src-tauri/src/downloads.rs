@@ -245,6 +245,7 @@ pub struct QuarantineRecord {
     /// QUARANTINED | SAVED | DISCARDED
     pub state: String,
     pub dangerous: bool,
+    pub complete: bool,
     pub quarantine_path: Option<PathBuf>,
 }
 
@@ -298,6 +299,7 @@ impl QuarantineRegistry {
             received_at: now_millis(),
             state: "QUARANTINED".into(),
             dangerous: Self::is_dangerous(&dest.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default()),
+            complete: false,
             quarantine_path: Some(dest.clone()),
         });
         (id, dest)
@@ -312,12 +314,15 @@ impl QuarantineRegistry {
         else {
             return;
         };
-        if !success {
-            // A failed download leaves nothing behind — drop the record.
-            self.records.retain(|r| r.quarantine_path.as_deref() != Some(dest));
-            return;
+        if success {
+            if let Ok(metadata) = std::fs::metadata(dest) {
+                rec.size_bytes = metadata.len();
+                rec.complete = true;
+                return;
+            }
         }
-        rec.size_bytes = std::fs::metadata(dest).map(|m| m.len()).unwrap_or(0);
+        let _ = std::fs::remove_file(dest);
+        self.records.retain(|r| r.quarantine_path.as_deref() != Some(dest));
     }
 
     pub fn list(&self) -> Vec<serde_json::Value> {
@@ -333,6 +338,7 @@ impl QuarantineRegistry {
                     "receivedAt": r.received_at,
                     "state": r.state,
                     "dangerous": r.dangerous,
+                    "complete": r.complete,
                 })
             })
             .collect()
@@ -351,6 +357,9 @@ impl QuarantineRegistry {
         };
         if rec.state != "QUARANTINED" {
             return Err(rec.state.clone());
+        }
+        if !rec.complete {
+            return Err("DOWNLOAD_IN_PROGRESS".into());
         }
         let Some(src) = rec.quarantine_path.clone() else {
             return Err("NO_FILE".into());
@@ -377,7 +386,7 @@ impl QuarantineRegistry {
 
     pub fn discard(&mut self, id: &str) -> bool {
         let Some(rec) = self.records.iter().find(|r| r.id == id) else { return false };
-        if rec.state != "QUARANTINED" {
+        if rec.state != "QUARANTINED" || !rec.complete {
             return false;
         }
         if let Some(p) = &rec.quarantine_path {
