@@ -288,6 +288,8 @@ test('Onion pages require Tor, disable website scripts and quarantine downloads'
 
   await invoke('browser_tabs_activate', { req: { tabId: controlTabId } });
   const addressBar = chrome.locator('.commandbar__input');
+  await addressBar.blur();
+  await chrome.waitForFunction(() => /^pab:\/\/darkweb\/?$/.test(document.querySelector('.commandbar__input').value));
   await addressBar.fill(onionHost + '/from-address-bar');
   await addressBar.press('Enter');
   const pasted = await waitUntil(() => invoke('browser_tabs_list'),
