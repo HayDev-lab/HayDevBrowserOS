@@ -133,6 +133,9 @@ const STRINGS: Record<AppLocale, Record<string, string>> = {
     'act.copyUrl': 'Copy URL',
     'act.crawl': 'Crawl',
     'act.addIndex': 'Add to index',
+    'act.indexed': 'Index entry saved',
+    'error.torUnavailable': 'Tor is unavailable. Wait for it to connect, then try again.',
+    'error.noProviders': 'Select an available provider.',
   },
   ru: {
     'page.title': 'Поиск в даркнете',
@@ -231,6 +234,9 @@ const STRINGS: Record<AppLocale, Record<string, string>> = {
     'act.copyUrl': 'Копировать URL',
     'act.crawl': 'Обход',
     'act.addIndex': 'Добавить в индекс',
+    'act.indexed': 'Запись добавлена в индекс',
+    'error.torUnavailable': 'Tor недоступен. Дождитесь подключения и повторите поиск.',
+    'error.noProviders': 'Выберите доступный источник.',
   },
   hy: {
     'page.title': 'Որոնում Dark Web-ում',
@@ -329,6 +335,9 @@ const STRINGS: Record<AppLocale, Record<string, string>> = {
     'act.copyUrl': 'Պատճենել URL-ը',
     'act.crawl': 'Հավաքագրում',
     'act.addIndex': 'Ավելացնել ինդեքսում',
+    'act.indexed': 'Գրառումն ավելացվել է',
+    'error.torUnavailable': 'Tor-ը հասանելի չէ։ Սպասեք միացմանը և նորից փորձեք։',
+    'error.noProviders': 'Ընտրեք հասանելի աղբյուր։',
   },
 };
 
@@ -536,7 +545,7 @@ export function buildDarkWebPageHtml(logoDataUrl?: string, opts?: DarkWebPageOpt
   var form = $('form'), input = $('input'), go = $('go'), stop = $('stop');
   var results = $('results'), provstrip = $('provstrip'), statebar = $('statebar'), stateLabel = $('state-label');
   var currentSearchId = null, pollTimer = null, statusTimer = null, crawlTimer = null;
-  var lastResults = [];
+  var lastResults = [], submitting = false;
   var torReady = false;
 
   function el(tag, cls, text) {
@@ -561,7 +570,7 @@ export function buildDarkWebPageHtml(logoDataUrl?: string, opts?: DarkWebPageOpt
 
   // ---- Tor status -------------------------------------------------------
   function refreshStatus() {
-    api('status').then(function (r) {
+    return api('status').then(function (r) {
       var t = r.body.tor || {};
       torReady = t.state === 'READY';
       var pill = $('tor-pill');
@@ -586,11 +595,13 @@ export function buildDarkWebPageHtml(logoDataUrl?: string, opts?: DarkWebPageOpt
   function renderProviderChecks(providers) {
     var box = $('prov-checks');
     box.textContent = '';
+    var previous = providerEls;
+    providerEls = {};
     providers.forEach(function (p) {
       var label = el('label');
       var cb = document.createElement('input');
       cb.type = 'checkbox';
-      cb.checked = p.enabled;
+      cb.checked = p.enabled && (!previous[p.id] || previous[p.id].checked);
       cb.disabled = !p.enabled && p.health === 'OFFLINE';
       label.appendChild(cb);
       label.appendChild(document.createTextNode(p.name + (p.requiresTor ? ' (Tor)' : '')));
@@ -604,21 +615,29 @@ export function buildDarkWebPageHtml(logoDataUrl?: string, opts?: DarkWebPageOpt
   form.addEventListener('submit', function (e) {
     e.preventDefault();
     var q = input.value.trim();
-    if (!q || currentSearchId) return;
-    var providers = Object.keys(providerEls).filter(function (id) { return providerEls[id].checked; });
+    if (!q || submitting || currentSearchId) return;
+    submitting = true;
+    go.disabled = true;
+    var ids = Object.keys(providerEls);
+    var providers = ids.length ? ids.filter(function (id) { return providerEls[id].checked; }) : undefined;
     api('search', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ query: q, providers: providers })
     }).then(function (r) {
       if (r.body.error) { showError(r.body.error); return; }
+      if (input.value.trim() === q) input.value = '';
       currentSearchId = r.body.searchId;
       lastResults = [];
       renderProgress(r.body);
       renderResults(r.body);
-      pollTimer = setInterval(function () { pollSearch(currentSearchId); }, 700);
-    }).catch(function () { showError(tr('search.failed')); });
-    input.value = '';
+      if (r.body.state === 'SEARCHING' || r.body.state === 'PARTIAL_RESULTS') {
+        pollTimer = setInterval(function () { pollSearch(currentSearchId); }, 700);
+      } else {
+        stopPolling(r.body.state);
+      }
+    }).catch(function () { showError(tr('search.failed')); })
+      .finally(function () { submitting = false; });
   });
 
   function pollSearch(id) {
@@ -646,6 +665,8 @@ export function buildDarkWebPageHtml(logoDataUrl?: string, opts?: DarkWebPageOpt
 
   function showError(msg) {
     results.textContent = '';
+    if (msg === 'TOR_UNAVAILABLE') msg = tr('error.torUnavailable');
+    if (msg === 'NO_PROVIDERS_ENABLED') msg = tr('error.noProviders');
     results.appendChild(el('div', 'error', tr('error.prefix', { m: msg })));
     stopPolling('ERROR');
   }
@@ -717,9 +738,23 @@ export function buildDarkWebPageHtml(logoDataUrl?: string, opts?: DarkWebPageOpt
     acts.appendChild(Object.assign(document.createElement('a'), { href: '/open?url=' + encodeURIComponent(r.url), textContent: tr('act.open') }));
     acts.appendChild(mk(tr('act.preview'), function () { preview(r.url); }));
     acts.appendChild(mk(tr('act.copyUrl'), function () { navigator.clipboard.writeText(r.url).catch(function () {}); }));
-    acts.appendChild(mk(tr('act.crawl'), function () { crawl(r.url, 1, 25); }));
+    acts.appendChild(mk(tr('act.crawl'), function () { crawl(r.url); }));
     acts.appendChild(mk(tr('act.addIndex'), function () {
-      api('index/add', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: r.url }) });
+      var button = this;
+      button.disabled = true;
+      api('index/add', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: r.url }) })
+        .then(function (result) {
+          if (result.body.added || result.body.reason === 'duplicate_content') {
+            button.textContent = tr('act.indexed');
+          } else {
+            window.alert(tr('error.prefix', { m: result.body.error || result.body.reason }));
+            button.disabled = false;
+          }
+        })
+        .catch(function () {
+          window.alert(tr('error.prefix', { m: tr('search.failed') }));
+          button.disabled = false;
+        });
     }));
     c.appendChild(acts);
     return c;
@@ -741,8 +776,8 @@ export function buildDarkWebPageHtml(logoDataUrl?: string, opts?: DarkWebPageOpt
   });
 
   // ---- crawl ---------------------------------------------------------------
-  function crawl(url, depth, pages) {
-    api('crawl', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: url, maxDepth: depth, maxPages: pages }) })
+  function crawl(url) {
+    api('crawl', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ url: url }) })
       .then(function (r) {
         if (r.body.error) { window.alert(tr('crawl.refused', { e: r.body.error })); return; }
         refreshCrawls();
@@ -875,7 +910,7 @@ export function buildDarkWebPageHtml(logoDataUrl?: string, opts?: DarkWebPageOpt
   // ---- boot -------------------------------------------------------------------
   $('filter').addEventListener('change', function () { renderResults({ state: go.disabled ? 'SEARCHING' : 'DONE', results: lastResults }); });
   $('sort').addEventListener('change', function () { renderResults({ state: go.disabled ? 'SEARCHING' : 'DONE', results: lastResults }); });
-  refreshStatus();
+  var initialStatus = refreshStatus();
   refreshCrawls();
   refreshDownloads();
   refreshHistory();
@@ -887,8 +922,10 @@ export function buildDarkWebPageHtml(logoDataUrl?: string, opts?: DarkWebPageOpt
     var initialQuery = new URLSearchParams(window.location.search).get('q');
     if (initialQuery && initialQuery.trim()) {
       input.value = initialQuery.trim();
-      if (typeof form.requestSubmit === 'function') form.requestSubmit();
-      else form.dispatchEvent(new Event('submit', { cancelable: true }));
+      initialStatus.then(function () {
+        if (typeof form.requestSubmit === 'function') form.requestSubmit();
+        else form.dispatchEvent(new Event('submit', { cancelable: true }));
+      });
     }
   } catch (e) { /* malformed query string — ignore */ }
 })();

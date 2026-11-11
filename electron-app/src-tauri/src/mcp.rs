@@ -507,7 +507,8 @@ fn call_tool(app: &tauri::AppHandle<tauri::Wry>, name: &str, args: &Value) -> Va
             let Some(index) = app.try_state::<crate::crawl::SharedIndex>() else {
                 return err_content("runtime_unavailable", "index missing");
             };
-            let index = index.lock().unwrap_or_else(|p| p.into_inner());
+            let mut index = index.lock().unwrap_or_else(|p| p.into_inner());
+            index.load(&crate::darkweb_data_dir());
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
             ok_content(json!({ "hits": index.search(get_str("query").as_str(), limit) }))
         }

@@ -12,16 +12,15 @@
 //! FNV-1a content-hash dedup (exact Electron parity) and LLM-free keyword
 //! scoring (title×3, url×1, text×1).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use serde::Serialize;
 
 use crate::darkweb::{is_onion_url, DarkWebConfig};
 
 const MAX_JOBS: usize = 8;
-const TEXT_MAX_CHARS: usize = 400_000;
+pub(crate) const TEXT_MAX_CHARS: usize = 400_000;
 /// ~8 MiB heuristic cap (Electron INDEX_MAX_BYTES / AVG_DOC_BYTES).
 const MAX_DOCS: usize = 1000;
 const LINKS_PER_PAGE: usize = 100;
@@ -206,6 +205,7 @@ impl LocalIndex {
     pub fn clear(&mut self, data_dir: &std::path::Path) {
         self.docs.clear();
         self.by_hash.clear();
+        self.loaded = true;
         self.persist(data_dir);
     }
 
@@ -243,9 +243,33 @@ pub struct CrawlStatus {
 struct CrawlJobInner {
     status: CrawlStatus,
     seen: HashSet<String>,
-    queue: Vec<(String, u32)>,
+    queue: VecDeque<(String, u32)>,
+    in_flight: usize,
     stop: bool,
     data_dir: std::path::PathBuf,
+}
+
+impl CrawlJobInner {
+    fn settle_if_drained(&mut self) {
+        if self.in_flight != 0 || !self.queue.is_empty() || self.status.ended_at.is_some() {
+            return;
+        }
+        self.status.state = if self.stop {
+            "CANCELLED"
+        } else if self.status.pages_fetched == 0 || self.status.error_code.as_deref() == Some("CRAWL_TIMEOUT") {
+            "ERROR"
+        } else {
+            "DONE"
+        }.into();
+        self.status.ended_at = Some(now_ms());
+    }
+
+    fn record_failure(&mut self, code: &str) {
+        if !self.stop {
+            self.status.pages_failed += 1;
+            self.status.error_code = Some(code.into());
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -264,9 +288,7 @@ impl CrawlRegistry {
         let now = now_ms();
         jobs.retain(|_, j| {
             let j = j.lock().unwrap_or_else(|p| p.into_inner());
-            !j.status.state.as_str().contains("DONE")
-                && !j.status.state.as_str().contains("CANCELLED")
-                || j.status.ended_at.map(|e| now.saturating_sub(e) < 10 * 60_000).unwrap_or(true)
+            j.status.ended_at.is_none_or(|end| now.saturating_sub(end) < 10 * 60_000)
         });
     }
 
@@ -288,8 +310,8 @@ impl CrawlRegistry {
             return Err("ONION_ONLY".into());
         }
         let seed_host = host_of(url).ok_or("invalid_url")?;
-        let max_depth = max_depth.unwrap_or(1).clamp(1, 5).min(5);
-        let max_pages = max_pages.unwrap_or(25).clamp(1, 200);
+        let max_depth = max_depth.unwrap_or(config.crawler_max_depth).clamp(1, 5);
+        let max_pages = max_pages.unwrap_or(config.crawler_max_pages).clamp(1, 200);
         let same_host_only = same_host_only.unwrap_or(true);
         let timeout_ms = 120_000u64; // Electron crawlerTimeoutMs default
 
@@ -321,7 +343,8 @@ impl CrawlRegistry {
                 error_code: None,
             },
             seen: HashSet::from([url.to_string()]),
-            queue: vec![(url.to_string(), 0)],
+            queue: VecDeque::from([(url.to_string(), 0)]),
+            in_flight: 0,
             stop: false,
             data_dir: crate::lib_app_data_dir().join("darkweb"),
         }));
@@ -367,6 +390,7 @@ impl CrawlRegistry {
         j.stop = true;
         j.status.state = "STOPPING".into();
         j.queue.clear();
+        j.settle_if_drained();
         true
     }
 }
@@ -380,25 +404,25 @@ fn worker_loop(
     deadline: u64,
 ) {
     loop {
-        let (url, depth) = {
+        let next = {
             let mut j = job.lock().unwrap_or_else(|p| p.into_inner());
-            if j.stop {
-                return;
+            if now_ms() > deadline && !j.queue.is_empty() {
+                j.queue.clear();
+                j.status.error_code = Some("CRAWL_TIMEOUT".into());
             }
-            if j.status.pages_fetched + j.status.pages_failed >= j.status.max_pages {
-                return;
+            let next = j.queue.pop_front();
+            if next.is_some() {
+                j.in_flight += 1;
+            } else {
+                j.settle_if_drained();
             }
-            match j.queue.pop() {
-                Some(next) => next,
-                None => return,
-            }
+            next
         };
-        if now_ms() > deadline {
-            let mut j = job.lock().unwrap_or_else(|p| p.into_inner());
-            j.status.error_code = Some("CRAWL_TIMEOUT".into());
-            return;
-        }
+        let Some((url, depth)) = next else { return };
         fetch_and_store(app, config, registry, job, &url, depth, seed_host);
+        let mut j = job.lock().unwrap_or_else(|p| p.into_inner());
+        j.in_flight -= 1;
+        j.settle_if_drained();
     }
 }
 
@@ -412,156 +436,87 @@ fn fetch_and_store(
     seed_host: &str,
 ) {
     let Some((host, port)) = crate::darkweb::tor_endpoint(app, config) else {
-        let mut j = job.lock().unwrap_or_else(|p| p.into_inner());
-        j.status.pages_failed += 1;
-        j.status.error_code = Some("TOR_UNAVAILABLE".into());
+        job.lock().unwrap_or_else(|p| p.into_inner()).record_failure("TOR_UNAVAILABLE");
         return;
     };
-    let fetch_to = config.fetch_timeout_ms.min(20_000);
-    let resp = match crate::socks_http::get_via_socks5(
-        &host,
-        port,
-        url,
-        fetch_to,
-        config.fetch_max_bytes,
-    ) {
-        Ok(r) => r,
-        Err(_) => {
-            let mut j = job.lock().unwrap_or_else(|p| p.into_inner());
-            j.status.pages_failed += 1;
+    let response = crate::socks_http::get_via_socks5(
+        &host, port, url, config.fetch_timeout_ms.min(20_000), config.fetch_max_bytes,
+    );
+    let resp = match response {
+        Ok(response) if (200..300).contains(&response.status) => response,
+        Ok(_) => {
+            job.lock().unwrap_or_else(|p| p.into_inner()).record_failure("HTTP_ERROR");
+            return;
+        }
+        Err(error) => {
+            job.lock().unwrap_or_else(|p| p.into_inner()).record_failure(error.code());
             return;
         }
     };
-    {
-        let mut j = job.lock().unwrap_or_else(|p| p.into_inner());
-        j.status.pages_fetched += 1;
-    }
-
-    let mime = resp.content_type.as_deref().unwrap_or("").split(';').next().unwrap_or("").trim().to_lowercase();
-    let is_html = mime == "text/html"
-        || (mime.is_empty() && resp.text.trim_start().to_lowercase().starts_with("<!doctype html")
-            || resp.text.trim_start().to_lowercase().starts_with("<html"));
-
-    // Index the text content (page text, capped).
-    let text = if is_html {
-        extract_text(&resp.text, TEXT_MAX_CHARS)
-    } else if mime.starts_with("text/") || mime == "application/json" {
-        resp.text.chars().take(TEXT_MAX_CHARS).collect()
-    } else {
-        String::new()
+    let Some(final_host) = host_of(&resp.final_url).filter(|_| is_onion_url(&resp.final_url)) else {
+        job.lock().unwrap_or_else(|p| p.into_inner()).record_failure("ONION_ONLY");
+        return;
     };
-    if !text.trim().is_empty() {
-        let title = if is_html {
-            crate::darkweb::extract_title(&resp.text).unwrap_or_else(|| url.to_string())
-        } else {
-            url.to_string()
-        };
-        let outcome = {
-            let mut index = registry.index.lock().unwrap_or_else(|p| p.into_inner());
-            index.load(&job.lock().unwrap_or_else(|p| p.into_inner()).data_dir);
-            let data_dir = job.lock().unwrap_or_else(|p| p.into_inner()).data_dir.clone();
-            let job_id = job.lock().unwrap_or_else(|p| p.into_inner()).status.job_id.clone();
-            index.add(&data_dir, &resp.final_url, seed_host, &title, &text, now_ms(), Some(&job_id))
-        };
-        let mut j = job.lock().unwrap_or_else(|p| p.into_inner());
+
+    let (is_html, text) = indexable_content(&resp);
+    let mut j = job.lock().unwrap_or_else(|p| p.into_inner());
+    if j.stop {
+        return;
+    }
+    if j.status.same_host_only && final_host != seed_host {
+        j.record_failure("CROSS_HOST_REDIRECT");
+        return;
+    }
+    j.status.pages_fetched += 1;
+    if config.store_local_index && !text.is_empty() {
+        let title = crate::darkweb::extract_title(&resp.text).unwrap_or_else(|| resp.final_url.clone());
+        let mut index = registry.index.lock().unwrap_or_else(|p| p.into_inner());
+        index.load(&j.data_dir);
+        let outcome = index.add(
+            &j.data_dir, &resp.final_url, &final_host, &title, &text, now_ms(), Some(&j.status.job_id),
+        );
         if outcome.added {
             j.status.docs_added += 1;
         } else if outcome.reason.as_deref() == Some("duplicate_content") {
             j.status.docs_duplicate += 1;
         }
     }
+    if !is_html || depth >= j.status.max_depth {
+        return;
+    }
 
-    // Link discovery from HTML pages under the depth limit.
-    if is_html && depth < job.lock().unwrap_or_else(|p| p.into_inner()).status.max_depth {
-        let links = extract_links(&resp.text, &resp.final_url, LINKS_PER_PAGE);
-        let mut j = job.lock().unwrap_or_else(|p| p.into_inner());
-        for link in links {
-            if j.status.pages_fetched + j.status.pages_failed + j.queue.len() as u32
-                >= j.status.max_pages
-            {
-                break;
-            }
-            if !is_onion_url(&link) {
-                continue;
-            }
-            if j.status.same_host_only && host_of(&link).as_deref() != Some(seed_host) {
-                continue;
-            }
-            if j.seen.contains(&link) {
-                continue;
-            }
-            j.seen.insert(link.clone());
-            j.queue.push((link, depth + 1));
+    for link in extract_links(&resp.text, &resp.final_url, LINKS_PER_PAGE) {
+        if j.seen.len() >= j.status.max_pages as usize {
+            break;
+        }
+        if !is_onion_url(&link) || (j.status.same_host_only && host_of(&link).as_deref() != Some(seed_host)) {
+            continue;
+        }
+        if j.seen.insert(link.clone()) {
+            j.queue.push_back((link, depth + 1));
             j.status.pages_queued += 1;
         }
     }
+}
 
-    // Drain detection: last worker out finalizes the state.
-    let j = job.lock().unwrap_or_else(|p| p.into_inner());
-    if j.queue.is_empty() && j.status.ended_at.is_none() {
-        // Other workers may still hold a popped URL; only settle when the
-        // page counters stop moving is hard to observe — settle lazily via
-        // a short grace sleep (threads cannot block forever: fetch timeouts
-        // bound every worker).
-        drop(j);
-        std::thread::sleep(Duration::from_millis(1500));
-        let mut j = job.lock().unwrap_or_else(|p| p.into_inner());
-        if j.queue.is_empty() && j.status.ended_at.is_none() {
-            j.status.state = if j.stop { "CANCELLED".into() } else { "DONE".into() };
-            j.status.ended_at = Some(now_ms());
-        }
-    }
+pub(crate) fn indexable_content(resp: &crate::socks_http::SimpleResponse) -> (bool, String) {
+    let mime = resp.content_type.as_deref().unwrap_or("").split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    let prefix: String = resp.text.trim_start().chars().take(20).collect::<String>().to_ascii_lowercase();
+    let is_html = mime == "text/html"
+        || (mime.is_empty() && (prefix.starts_with("<!doctype html") || prefix.starts_with("<html")));
+    let text = if is_html {
+        crate::extract::extract_readable(&resp.text, TEXT_MAX_CHARS)
+    } else if mime.starts_with("text/") || mime == "application/json" {
+        resp.text.trim().chars().take(TEXT_MAX_CHARS).collect()
+    } else {
+        String::new()
+    };
+    (is_html, text)
 }
 
 // ---------------------------------------------------------------------------
 // HTML helpers (bounded, dependency-light)
 // ---------------------------------------------------------------------------
-
-/// Strip tags/scripts/styles to visible text (bounded char output).
-pub fn extract_text(html: &str, max_chars: usize) -> String {
-    let mut out = String::new();
-    let mut depth_script = 0usize;
-    let mut depth_style = 0usize;
-    let lower = html.to_lowercase();
-    let bytes = html.as_bytes();
-    let mut i = 0usize;
-    while i < bytes.len() && out.chars().count() < max_chars {
-        if bytes[i] == b'<' {
-            // Tag or comment.
-            if lower[i..].starts_with("<!--") {
-                i = lower[i..].find("-->").map(|p| i + p + 3).unwrap_or(bytes.len());
-                continue;
-            }
-            let Some(end_rel) = lower[i..].find('>') else { break };
-            let tag = &lower[i + 1..i + end_rel];
-            if tag.starts_with("script") || tag.starts_with("/script") {
-                depth_script = if tag.starts_with('/') { depth_script.saturating_sub(1) } else { depth_script + 1 };
-            } else if tag.starts_with("style") || tag.starts_with("/style") {
-                depth_style = if tag.starts_with('/') { depth_style.saturating_sub(1) } else { depth_style + 1 };
-            } else if !tag.starts_with('/') && out.chars().last().map(|c| c != ' ').unwrap_or(true) {
-                out.push(' ');
-            }
-            i += end_rel + 1;
-            continue;
-        }
-        if depth_script == 0 && depth_style == 0 {
-            out.push(bytes[i] as char);
-        }
-        i += 1;
-    }
-    // Collapse whitespace + decode the handful of entities that matter.
-    let collapsed: String = out.split_whitespace().collect::<Vec<_>>().join(" ");
-    collapsed
-        .replace("&nbsp;", " ")
-        .replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .chars()
-        .take(max_chars)
-        .collect()
-}
 
 /// Absolute http(s) hrefs resolved against the page URL (bounded).
 pub fn extract_links(html: &str, base_url: &str, cap: usize) -> Vec<String> {
@@ -626,7 +581,7 @@ mod tests {
     #[test]
     fn extract_text_strips_scripts_and_tags() {
         let html = r#"<html><head><style>p{}</style></head><body><script>evil()</script><h1>Title</h1><p>Hello <b>world</b></p><!-- comment --></body></html>"#;
-        let text = extract_text(html, 1000);
+        let text = crate::extract::extract_readable(html, 1000);
         assert!(text.contains("Hello world"), "got: {text}");
         assert!(text.contains("Title"));
         assert!(!text.contains("evil"));

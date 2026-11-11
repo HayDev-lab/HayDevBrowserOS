@@ -1012,22 +1012,52 @@ fn serve_darkweb(
         }
         ("api/index/add", "POST") => {
             use tauri::Manager;
-            let (Some(url), Some(text)) = (
-                body.get("url").and_then(|v| v.as_str()),
-                body.get("text").and_then(|v| v.as_str()),
-            ) else {
+            let Some(url) = body.get("url").and_then(|v| v.as_str()) else {
                 return respond(serde_json::json!({ "error": "invalid_json" }), 400);
             };
+            let config = service.config();
+            if !config.enabled || !config.store_local_index {
+                return respond(serde_json::json!({ "error": "INDEX_DISABLED" }), 403);
+            }
             if !crate::darkweb::is_onion_url(url) {
                 return respond(serde_json::json!({ "error": "ONION_ONLY" }), 400);
             }
+            let (url, title, text) = if let Some(text) = body.get("text").and_then(|v| v.as_str()) {
+                let title = body.get("title").and_then(|v| v.as_str()).unwrap_or(url);
+                (url.to_string(), title.chars().take(300).collect(),
+                    text.trim().chars().take(crate::crawl::TEXT_MAX_CHARS).collect())
+            } else {
+                let Some((host, port)) = crate::darkweb::tor_endpoint(app, &config) else {
+                    return respond(serde_json::json!({ "error": "TOR_UNAVAILABLE" }), 503);
+                };
+                let response = crate::socks_http::get_via_socks5(
+                    &host, port, url, config.fetch_timeout_ms, config.fetch_max_bytes,
+                );
+                let page = match response {
+                    Ok(page) if (200..300).contains(&page.status) => page,
+                    Ok(_) => return respond(serde_json::json!({ "error": "HTTP_ERROR" }), 502),
+                    Err(error) => return respond(serde_json::json!({ "error": error.code() }), 502),
+                };
+                let title = crate::darkweb::extract_title(&page.text).unwrap_or_else(|| page.final_url.clone());
+                let (_, text) = crate::crawl::indexable_content(&page);
+                (page.final_url, title, text)
+            };
             let Some(index) = app.try_state::<crate::crawl::SharedIndex>() else {
                 return respond(serde_json::json!({ "error": "STATE_NOT_INITIALIZED" }), 500);
             };
+            let host = url::Url::parse(&url).ok().and_then(|value| value.host_str().map(str::to_string));
+            let Some(host) = host.filter(|_| crate::darkweb::is_onion_url(&url)) else {
+                return respond(serde_json::json!({ "error": "ONION_ONLY" }), 400);
+            };
+            // Recheck after the network call in case storage was disabled
+            // while it was in progress. Serialize the decision with settings.
+            let settings = service.config.lock().unwrap_or_else(|p| p.into_inner());
+            if !settings.enabled || !settings.store_local_index {
+                return respond(serde_json::json!({ "error": "INDEX_DISABLED" }), 403);
+            }
             let mut index = index.lock().unwrap_or_else(|p| p.into_inner());
-            let host = url.split("//").nth(1).and_then(|r| r.split('/').next()).unwrap_or("").to_string();
-            let title = body.get("title").and_then(|v| v.as_str()).unwrap_or(url);
-            let out = index.add(&crate::lib_app_data_dir().join("darkweb"), url, &host, title, text, crate::darkweb::now_ms(), None);
+            index.load(&service.data_dir);
+            let out = index.add(&service.data_dir, &url, &host, &title, &text, crate::darkweb::now_ms(), None);
             respond(serde_json::json!({ "added": out.added, "reason": out.reason, "id": out.id }), 200)
         }
         ("api/index/search", "GET") => {
@@ -1043,7 +1073,8 @@ fn serve_darkweb(
             let Some(index) = app.try_state::<crate::crawl::SharedIndex>() else {
                 return respond(serde_json::json!({ "error": "STATE_NOT_INITIALIZED" }), 500);
             };
-            let index = index.lock().unwrap_or_else(|p| p.into_inner());
+            let mut index = index.lock().unwrap_or_else(|p| p.into_inner());
+            index.load(&service.data_dir);
             respond(serde_json::json!({ "hits": index.search(&q, limit) }), 200)
         }
         ("api/index/clear", "POST") => {

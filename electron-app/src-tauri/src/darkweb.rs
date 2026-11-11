@@ -71,6 +71,9 @@ pub struct DarkWebConfig {
     pub ahmia_enabled: bool,
     pub tor66_enabled: bool,
     pub store_search_history: bool,
+    pub store_local_index: bool,
+    pub crawler_max_depth: u32,
+    pub crawler_max_pages: u32,
     // Ranking weights (Electron DARKWEB_HARD_BOUNDS.ranking, clamp 0..10).
     pub rank_provider_count: f64,
     pub rank_title_match: f64,
@@ -98,6 +101,9 @@ impl Default for DarkWebConfig {
             ahmia_enabled: true,
             tor66_enabled: true,
             store_search_history: true,
+            store_local_index: true,
+            crawler_max_depth: 1,
+            crawler_max_pages: 25,
             rank_provider_count: 3.0,
             rank_title_match: 2.0,
             rank_snippet_match: 0.5,
@@ -141,6 +147,8 @@ impl DarkWebConfig {
                 "tor66": { "enabled": self.tor66_enabled },
             },
             "storeSearchHistory": self.store_search_history,
+            "storeLocalIndex": self.store_local_index,
+            "crawler": { "maxDepth": self.crawler_max_depth, "maxPages": self.crawler_max_pages },
             "ranking": {
                 "providerCount": self.rank_provider_count,
                 "titleMatch": self.rank_title_match,
@@ -192,6 +200,7 @@ impl DarkWebConfig {
                 c.tor66_enabled = t.get("enabled").and_then(get_bool).unwrap_or(c.tor66_enabled);
             }
         }
+        c.apply_index_settings(raw);
         c.enabled = raw.get("enabled").and_then(get_bool).unwrap_or(c.enabled);
         c.store_search_history = raw.get("storeSearchHistory").and_then(get_bool).unwrap_or(c.store_search_history);
         if let Some(r) = raw.get("ranking") {
@@ -206,8 +215,23 @@ impl DarkWebConfig {
         c
     }
 
+    fn apply_index_settings(&mut self, value: &Value) {
+        if let Some(enabled) = value.get("storeLocalIndex").and_then(Value::as_bool) {
+            self.store_local_index = enabled;
+        }
+        if let Some(crawler) = value.get("crawler") {
+            self.crawler_max_depth = clamp(
+                crawler.get("maxDepth").and_then(Value::as_u64), 1, 5, self.crawler_max_depth.into(),
+            ) as u32;
+            self.crawler_max_pages = clamp(
+                crawler.get("maxPages").and_then(Value::as_u64), 1, 200, self.crawler_max_pages.into(),
+            ) as u32;
+        }
+    }
+
     /// Apply an untrusted settings patch (UI POST /api/settings) with clamps.
     pub fn apply_patch(&mut self, patch: &Value) {
+        self.apply_index_settings(patch);
         if let Some(b) = patch.get("enabled").and_then(Value::as_bool) {
             self.enabled = b;
         }
@@ -280,6 +304,8 @@ impl DarkWebConfig {
                 "tor66": { "enabled": self.tor66_enabled },
             },
             "storeSearchHistory": self.store_search_history,
+            "storeLocalIndex": self.store_local_index,
+            "crawler": { "maxDepth": self.crawler_max_depth, "maxPages": self.crawler_max_pages },
             "ranking": {
                 "providerCount": self.rank_provider_count,
                 "titleMatch": self.rank_title_match,
@@ -820,10 +846,12 @@ impl ToSocketAddrsFirst for String {
 // ---------------------------------------------------------------------------
 
 pub fn is_onion_url(url: &str) -> bool {
-    url::Url::parse(url)
-        .ok()
-        .and_then(|u| u.host_str().map(|h| h.to_lowercase().ends_with(".onion")))
-        .unwrap_or(false)
+    url::Url::parse(url).is_ok_and(|url| {
+        matches!(url.scheme(), "http" | "https")
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.host_str().is_some_and(|host| host.ends_with(".onion"))
+    })
 }
 
 pub fn extract_title(html: &str) -> Option<String> {
@@ -948,6 +976,7 @@ pub fn check_reachable(
 pub struct SearchJob {
     pub id: String,
     pub query: String,
+    cache_key: String,
     pub state: &'static str,
     pub results: Vec<Value>,
     pub providers: HashMap<String, Value>,
@@ -1060,8 +1089,21 @@ impl DarkWebService {
             return Err("QUERY_TOO_LONG".to_string());
         }
 
+        let selected: Vec<&str> = [("ahmia", config.ahmia_enabled), ("tor66", config.tor66_enabled)]
+            .into_iter()
+            .filter(|(id, enabled)| {
+                *enabled && providers_filter.as_ref().is_none_or(|filter| filter.iter().any(|p| p == id))
+            })
+            .map(|(id, _)| id)
+            .collect();
+        if selected.is_empty() {
+            return Err("NO_PROVIDERS_ENABLED".to_string());
+        }
+
+        // Both upstreams use this endpoint for the lifetime of the search.
+        let tor = tor_endpoint(app, &config).ok_or("TOR_UNAVAILABLE")?;
         let now = now_ms();
-        let cache_key = format!("{}|", query.to_lowercase());
+        let cache_key = format!("{}|{}", query.to_lowercase(), selected.join(","));
         if config.cache_ttl_ms > 0 {
             let cache = self.cache.lock().unwrap_or_else(|p| p.into_inner());
             if let Some((snap, expires)) = cache.get(&cache_key) {
@@ -1070,39 +1112,18 @@ impl DarkWebService {
                 }
             }
         }
-
-        // Which providers run?
-        let tor = tor_endpoint(app, &config);
-        let mut runnable: Vec<(&str, bool)> = Vec::new(); // (id, requires_tor)
-        if config.ahmia_enabled {
-            runnable.push(("ahmia", false));
-        }
-        if config.tor66_enabled {
-            runnable.push(("tor66", true));
-        }
-        runnable.retain(|(id, requires_tor)| {
-            if let Some(filter) = &providers_filter {
-                if !filter.iter().any(|f| f == id) {
-                    return false;
-                }
-            }
-            if *requires_tor && tor.is_none() {
-                return false;
-            }
-            let health = self
-                .health
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
-            health
-                .get(*id)
-                .map(|h| h.allows(now))
-                .unwrap_or(true)
-        });
+        let runnable: Vec<_> = {
+            let health = self.health.lock().unwrap_or_else(|p| p.into_inner());
+            selected.into_iter()
+                .filter(|id| health.get(*id).is_none_or(|provider| provider.allows(now)))
+                .collect()
+        };
 
         let job_id = format!("s_{}_{}", now, self.job_seq.fetch_add(1, Ordering::Relaxed));
         let job = Arc::new(Mutex::new(SearchJob {
             id: job_id.clone(),
             query: query.clone(),
+            cache_key,
             state: "SEARCHING",
             results: Vec::new(),
             providers: HashMap::new(),
@@ -1113,7 +1134,7 @@ impl DarkWebService {
             cancelled: false,
             settled: 0,
             registered: runnable.len(),
-            registered_ids: runnable.iter().map(|(id, _)| id.to_string()).collect(),
+            registered_ids: runnable.iter().map(|id| id.to_string()).collect(),
             finalized: false,
         }));
         {
@@ -1147,18 +1168,19 @@ impl DarkWebService {
 
         // Fire the workers; each records its own report, the LAST settler
         // finalizes (merge → rank → availability → cache → history).
-        for (id, _requires_tor) in runnable {
+        for id in runnable {
             let job_ref = job.clone();
             let service = self.clone();
             let app_w = app.clone();
             let cfg_w = config.clone();
+            let tor = tor.clone();
             let query_w = query.clone();
             let provider_id = id.to_string();
             std::thread::spawn(move || {
                 let started = now_ms();
                 let result: Result<Vec<RawProviderResult>, String> = match provider_id.as_str() {
-                    "ahmia" => service.ahmia_search(&app_w, &cfg_w, &query_w),
-                    "tor66" => service.tor66_search(&app_w, &cfg_w, &query_w),
+                    "ahmia" => service.ahmia_search(&tor, &cfg_w, &query_w),
+                    "tor66" => service.tor66_search(&tor, &cfg_w, &query_w),
                     _ => Err("UNKNOWN_PROVIDER".to_string()),
                 };
                 let duration = now_ms().saturating_sub(started);
@@ -1169,16 +1191,16 @@ impl DarkWebService {
                 match result {
                     Ok(raw) if on_time => {
                         let count = raw.len();
-                        service.record_provider(&job_ref, &provider_id, "ok", duration, count, None);
                         if !job_ref.lock().unwrap_or_else(|p| p.into_inner()).cancelled {
                             service.push_raw(&job_ref, &provider_id, raw);
                         }
+                        service.record_provider(&job_ref, &provider_id, "ok", duration, count, None);
                     }
                     Ok(_) => {
                         service.record_provider(&job_ref, &provider_id, "timeout", duration, 0, Some("PROVIDER_TIMEOUT".to_string()));
                     }
                     Err(code) => {
-                        let status = if code == "NO_TOR" { "no_tor" } else if on_time { "error" } else { "timeout" };
+                        let status = if code == "TOR_UNAVAILABLE" { "no_tor" } else if on_time { "error" } else { "timeout" };
                         service.record_provider(&job_ref, &provider_id, status, duration, 0, Some(code));
                     }
                 }
@@ -1244,6 +1266,9 @@ impl DarkWebService {
     ) {
         {
             let mut j = job.lock().unwrap_or_else(|p| p.into_inner());
+            if j.cancelled || j.finalized || j.providers.contains_key(id) {
+                return;
+            }
             j.providers.insert(
                 id.to_string(),
                 json!({
@@ -1275,7 +1300,9 @@ impl DarkWebService {
             .filter_map(|r| normalize_provider_result(r, provider))
             .collect();
         let mut j = job.lock().unwrap_or_else(|p| p.into_inner());
-        j.pending_raw(normalized);
+        if !j.cancelled && !j.finalized {
+            j.pending_raw(normalized);
+        }
     }
 
     /// Finalize when every provider settled: merge → rank → availability →
@@ -1289,19 +1316,19 @@ impl DarkWebService {
             return;
         }
         let now = now_ms();
-        let (merged, query, search_id) = {
+        let (merged, query, search_id, cache_key) = {
             let mut j = job.lock().unwrap_or_else(|p| p.into_inner());
             if j.finalized {
                 return;
             }
             j.finalized = true;
-            if cancelled {
+            if cancelled || j.cancelled {
                 j.state = "CANCELLED";
                 j.ended_at = Some(now);
                 return;
             }
             let merged = merge_results(j.take_raw());
-            (merged, j.query.clone(), j.id.clone())
+            (merged, j.query.clone(), j.id.clone(), j.cache_key.clone())
         };
 
         // Bounded availability check (concurrent, capped). Precompute the
@@ -1353,9 +1380,11 @@ impl DarkWebService {
             })
             .collect();
 
-        let cache_key = format!("{}|", query.to_lowercase());
         {
             let mut j = job.lock().unwrap_or_else(|p| p.into_inner());
+            if j.cancelled {
+                return;
+            }
             j.results = results;
             j.state = "DONE";
             j.ended_at = Some(now);
@@ -1399,7 +1428,7 @@ impl DarkWebService {
 
     // -- providers -----------------------------------------------------------
 
-    fn ensure_ahmia_token(&self, app: &tauri::AppHandle<tauri::Wry>, config: &DarkWebConfig, use_tor: bool) -> Option<(String, String)> {
+    fn ensure_ahmia_token(&self, tor: &(String, u16), config: &DarkWebConfig) -> Option<(String, String)> {
         let now = now_ms();
         {
             let tok = self.ahmia_token.lock().unwrap_or_else(|p| p.into_inner());
@@ -1409,7 +1438,7 @@ impl DarkWebService {
                 }
             }
         }
-        let home = self.ahmia_fetch(app, config, use_tor, "/").ok()?;
+        let home = self.ahmia_fetch(tor, config, "/").ok()?;
         let token = parse_ahmia_token(&home.text);
         if let Some((name, value)) = &token {
             *self.ahmia_token.lock().unwrap_or_else(|p| p.into_inner()) =
@@ -1424,11 +1453,8 @@ impl DarkWebService {
     /// eat it), then the same path on the clearnet base ROUTED THROUGH THE
     /// SAME Tor SOCKS (remote DNS, TLS over the tunnel). Not a direct
     /// fallback — the egress stays Tor-only.
-    fn ahmia_fetch(&self, app: &tauri::AppHandle<tauri::Wry>, config: &DarkWebConfig, use_tor: bool, path: &str) -> Result<socks_http::SimpleResponse, FetchError> {
-        if !use_tor {
-            return socks_http::get_clearnet(&format!("{AHMIA_CLEARNET_BASE}{path}"), config.fetch_timeout_ms, config.fetch_max_bytes);
-        }
-        let (host, port) = tor_endpoint(app, config).ok_or(FetchError::TorUnavailable("no tor gateway".into()))?;
+    fn ahmia_fetch(&self, tor: &(String, u16), config: &DarkWebConfig, path: &str) -> Result<socks_http::SimpleResponse, FetchError> {
+        let (host, port) = (&tor.0, tor.1);
         const ONION_PROBE_MS: u64 = 6_000;
         // Circuit breaker: while the mirror is known-bad, go straight to the
         // clearnet base over the same Tor SOCKS (no 6s burn per fetch).
@@ -1442,7 +1468,7 @@ impl DarkWebService {
         let onion = if mirror_bad {
             Err(FetchError::Unreachable("mirror circuit open".into()))
         } else {
-            socks_http::get_via_socks5(&host, port, &format!("{AHMIA_ONION_BASE}{path}"), ONION_PROBE_MS.min(config.fetch_timeout_ms), config.fetch_max_bytes)
+            socks_http::get_via_socks5(host, port, &format!("{AHMIA_ONION_BASE}{path}"), ONION_PROBE_MS.min(config.fetch_timeout_ms), config.fetch_max_bytes)
         };
         match onion {
             Ok(resp) => {
@@ -1458,7 +1484,7 @@ impl DarkWebService {
                 // Tor needs several RTTs; curl over the same SOCKS answers
                 // in ~1-3s but short windows (4-5s) die at the OS level.
                 let clear_url = format!("{AHMIA_CLEARNET_BASE}{path}");
-                socks_http::get_https_via_socks5(&host, port, &clear_url, config.provider_timeout_ms.max(10_000), config.fetch_max_bytes)
+                socks_http::get_https_via_socks5(host, port, &clear_url, config.provider_timeout_ms.max(10_000), config.fetch_max_bytes)
                     .map_err(|e2| {
                         log::warn!("[DARKWEB] ahmia clearnet-via-Tor fallback failed: {} ({})", e2.code(), e2);
                         e2
@@ -1467,24 +1493,23 @@ impl DarkWebService {
         }
     }
 
-    fn ahmia_search(&self, app: &tauri::AppHandle<tauri::Wry>, config: &DarkWebConfig, query: &str) -> Result<Vec<RawProviderResult>, String> {
-        let use_tor = tor_endpoint(app, config).is_some();
-        let token = self.ensure_ahmia_token(app, config, use_tor);
+    fn ahmia_search(&self, tor: &(String, u16), config: &DarkWebConfig, query: &str) -> Result<Vec<RawProviderResult>, String> {
+        let token = self.ensure_ahmia_token(tor, config);
         let mut path = format!("/search?q={}", urlencode_query(query));
         if let Some((name, value)) = &token {
             path.push_str(&format!("&{}={}", urlencode_query(name), urlencode_query(value)));
         }
-        let resp = self.ahmia_fetch(app, config, use_tor, &path).map_err(|e: FetchError| e.code().to_string())?;
+        let resp = self.ahmia_fetch(tor, config, &path).map_err(|e: FetchError| e.code().to_string())?;
         if resp.status >= 400 {
             return Err("EXTERNAL_PROVIDER_UNAVAILABLE".to_string());
         }
         Ok(parse_ahmia_results(&resp.text).into_iter().take(config.max_results).collect())
     }
 
-    fn tor66_search(&self, app: &tauri::AppHandle<tauri::Wry>, config: &DarkWebConfig, query: &str) -> Result<Vec<RawProviderResult>, String> {
-        let (host, port) = tor_endpoint(app, config).ok_or("NO_TOR")?;
+    fn tor66_search(&self, tor: &(String, u16), config: &DarkWebConfig, query: &str) -> Result<Vec<RawProviderResult>, String> {
+        let (host, port) = (&tor.0, tor.1);
         let url = format!("{TOR66_ONION_BASE}/search?q={}", urlencode_query(query));
-        let resp = socks_http::get_via_socks5(&host, port, &url, config.provider_timeout_ms, config.fetch_max_bytes)
+        let resp = socks_http::get_via_socks5(host, port, &url, config.provider_timeout_ms, config.fetch_max_bytes)
             .map_err(|e: FetchError| e.code().to_string())?;
         if resp.status >= 400 {
             return Err("EXTERNAL_PROVIDER_UNAVAILABLE".to_string());
@@ -1549,7 +1574,11 @@ impl DarkWebService {
         let index_count = {
             use tauri::Manager;
             app.try_state::<crate::crawl::SharedIndex>()
-                .map(|i| i.lock().unwrap_or_else(|p| p.into_inner()).count())
+                .map(|index| {
+                    let mut index = index.lock().unwrap_or_else(|p| p.into_inner());
+                    index.load(&self.data_dir);
+                    index.count()
+                })
                 .unwrap_or(0)
         };
         json!({
@@ -1563,7 +1592,7 @@ impl DarkWebService {
                 "lastCheckAt": now,
             },
             "providers": [
-                provider_status("ahmia", "Ahmia", config.ahmia_enabled, false),
+                provider_status("ahmia", "Ahmia", config.ahmia_enabled, true),
                 provider_status("tor66", "Tor66", config.tor66_enabled, true),
             ],
             "historyCount": history_count,

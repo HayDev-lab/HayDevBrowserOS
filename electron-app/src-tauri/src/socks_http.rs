@@ -69,6 +69,12 @@ pub fn get_via_socks5(
 ) -> Result<SimpleResponse, FetchError> {
     let mut current = url.to_string();
     for _hop in 0..=MAX_REDIRECTS {
+        let uri = url::Url::parse(&current)
+            .map_err(|_| FetchError::Protocol("invalid onion URL".into()))?;
+        if !crate::darkweb::is_onion_url(uri.as_str()) {
+            return Err(FetchError::Protocol("non-onion destination".into()));
+        }
+        current = uri.into();
         let parsed = parse_http_url(&current)
             .ok_or_else(|| FetchError::Protocol(format!("not a plain-http URL: {current}")))?;
         let resp = fetch_once_via_socks5(proxy_host, proxy_port, &parsed, timeout_ms, max_bytes)?;
@@ -355,33 +361,6 @@ fn resolve_redirect(current: &str, location: &str) -> String {
         }
         None => loc.to_string(),
     }
-}
-
-/// Clearnet GET for gateways like ahmia.fi (HTTPS via ureq).
-pub fn get_clearnet(
-    url: &str,
-    timeout_ms: u64,
-    max_bytes: usize,
-) -> Result<SimpleResponse, FetchError> {
-    let agent = ureq::AgentBuilder::new()
-        .timeout(Duration::from_millis(timeout_ms))
-        .build();
-    let resp = agent
-        .get(url)
-        .set("User-Agent", USER_AGENT)
-        .call()
-        .map_err(|e| match e {
-            ureq::Error::Status(code, _) => FetchError::Unreachable(format!("HTTP {code}")),
-            other => FetchError::Unreachable(other.to_string()),
-        })?;
-    let status = resp.status();
-    let content_type = resp.header("content-type").map(str::to_string);
-    let mut text = String::new();
-    resp.into_reader()
-        .take(max_bytes as u64)
-        .read_to_string(&mut text)
-        .map_err(|e| FetchError::Unreachable(e.to_string()))?;
-    Ok(SimpleResponse { status, content_type, text, final_url: url.to_string() })
 }
 
 /// HTTPS GET for a CLEARNET host routed through the Tor SOCKS5 gateway.
