@@ -60,7 +60,9 @@ test('Managed runtime can start again after a stop and a later stop cancels star
     const status = await invoke('runtime_manager_status');
     assert.equal(status.searxng.state, 'STOPPED');
     assert.equal(status.perplexica.state, 'STOPPED');
+    assert.equal(status.tor.state, 'STOPPED');
   }
+  await invoke('privacy_status');
   await stopped();
   assert.equal(await invoke('runtime_manager_start'), true);
   await ready();

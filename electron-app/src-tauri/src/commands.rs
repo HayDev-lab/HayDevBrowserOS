@@ -800,8 +800,8 @@ fn egress_label(e: &crate::privacy::Egress) -> String {
 #[tauri::command]
 pub fn privacy_status(app: AppHandle<tauri::Wry>) -> PrivacyStatus {
     let cfg = crate::privacy::global().clone();
-    let tor = crate::darkweb::tor_endpoint(&app, &crate::darkweb::config_of(&app))
-        .map(|(host, port)| format!("socks5://{host}:{port}"));
+    // The renderer polls this status. Only an explicit Tor action may start the service.
+    let tor = crate::runtime_manager::with_manager(&app, |manager| manager.tor_socks_endpoint()).flatten();
     PrivacyStatus {
         private_egress: egress_label(&cfg.private_egress),
         agent_egress: egress_label(&cfg.agent_egress),
