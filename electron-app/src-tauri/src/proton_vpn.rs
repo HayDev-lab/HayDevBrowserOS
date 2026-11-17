@@ -23,8 +23,8 @@ mod windows_client {
     };
     use windows::Win32::Security::WinTrust::*;
     use windows::Win32::System::Com::{
-        CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, IServiceProvider,
-        CLSCTX_LOCAL_SERVER, COINIT_APARTMENTTHREADED,
+        CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, IDispatch,
+        IServiceProvider, CLSCTX_LOCAL_SERVER, COINIT_APARTMENTTHREADED,
     };
     use windows::Win32::System::Threading::{
         CreateMutexW, GetExitCodeProcess, ReleaseMutex, WaitForSingleObject, INFINITE,
@@ -190,10 +190,14 @@ mod windows_client {
             let browser: IShellBrowser = desktop
                 .cast::<IServiceProvider>()?
                 .QueryService(&SID_STopLevelBrowser)?;
-            let view: IShellFolderViewDual = browser
+            // Explorer returns the background automation object as IDispatch.
+            let view: IDispatch = browser
                 .QueryActiveShellView()?
                 .GetItemObject(SVGIO_BACKGROUND)?;
-            let shell = view.Application()?.cast::<IShellDispatch2>()?;
+            let shell = view
+                .cast::<IShellFolderViewDual>()?
+                .Application()?
+                .cast::<IShellDispatch2>()?;
             shell.ShellExecute(
                 &BSTR::from_wide(&path.as_os_str().encode_wide().collect::<Vec<_>>()),
                 &empty,
