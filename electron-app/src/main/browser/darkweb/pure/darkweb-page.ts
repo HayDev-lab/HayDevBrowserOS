@@ -60,6 +60,7 @@ const STRINGS: Record<AppLocale, Record<string, string>> = {
     'sort.availability': 'Availability',
     'sort.recent': 'Recent',
     'state.IDLE': 'IDLE',
+    'state.WAITING_FOR_TOR': 'Connecting to Tor…',
     'state.SEARCHING': 'SEARCHING',
     'state.PARTIAL_RESULTS': 'PARTIAL_RESULTS',
     'state.DONE': 'DONE',
@@ -135,6 +136,10 @@ const STRINGS: Record<AppLocale, Record<string, string>> = {
     'act.addIndex': 'Add to index',
     'act.indexed': 'Index entry saved',
     'error.torUnavailable': 'Tor is unavailable. Wait for it to connect, then try again.',
+    'error.torTimeout': 'Tor did not connect in time. Check your connection and try again.',
+    'error.busy': 'Too many active searches. Cancel one or try again in a moment.',
+    'error.disabled': 'Dark Web search is disabled.',
+    'error.longQuery': 'The query is too long.',
     'error.noProviders': 'Select VormWeb to search.',
     'error.shortQuery': 'Enter at least three characters.',
     'error.providerUnavailable': 'VormWeb is unavailable through Tor. Try again in a moment.',
@@ -164,6 +169,7 @@ const STRINGS: Record<AppLocale, Record<string, string>> = {
     'sort.availability': 'Доступность',
     'sort.recent': 'Недавние',
     'state.IDLE': 'ОЖИДАНИЕ',
+    'state.WAITING_FOR_TOR': 'Подключение к Tor…',
     'state.SEARCHING': 'ПОИСК',
     'state.PARTIAL_RESULTS': 'ЧАСТИЧНЫЕ РЕЗУЛЬТАТЫ',
     'state.DONE': 'ГОТОВО',
@@ -239,6 +245,10 @@ const STRINGS: Record<AppLocale, Record<string, string>> = {
     'act.addIndex': 'Добавить в индекс',
     'act.indexed': 'Запись добавлена в индекс',
     'error.torUnavailable': 'Tor недоступен. Дождитесь подключения и повторите поиск.',
+    'error.torTimeout': 'Tor не успел подключиться. Проверьте соединение и попробуйте снова.',
+    'error.busy': 'Слишком много активных запросов. Отмените один или попробуйте чуть позже.',
+    'error.disabled': 'Поиск в даркнете выключен.',
+    'error.longQuery': 'Запрос слишком длинный.',
     'error.noProviders': 'Выберите VormWeb для поиска.',
     'error.shortQuery': 'Введите не менее трёх символов.',
     'error.providerUnavailable': 'VormWeb недоступен через Tor. Повторите попытку чуть позже.',
@@ -268,6 +278,7 @@ const STRINGS: Record<AppLocale, Record<string, string>> = {
     'sort.availability': 'Հասանելիություն',
     'sort.recent': 'Վերջիններ',
     'state.IDLE': 'ՍՊԱՍՈՒՄ',
+    'state.WAITING_FOR_TOR': 'Միացում Tor-ին…',
     'state.SEARCHING': 'ՈՐՈՆՈՒՄ',
     'state.PARTIAL_RESULTS': 'ՄԱՍՆԱԿԻ ԱՐԴՅՈՒՆՔՆԵՐ',
     'state.DONE': 'ՊԱՏՐԱՍՏ Է',
@@ -343,6 +354,10 @@ const STRINGS: Record<AppLocale, Record<string, string>> = {
     'act.addIndex': 'Ավելացնել ինդեքսում',
     'act.indexed': 'Գրառումն ավելացվել է',
     'error.torUnavailable': 'Tor-ը հասանելի չէ։ Սպասեք միացմանը և նորից փորձեք։',
+    'error.torTimeout': 'Tor-ը ժամանակին չմիացավ։ Ստուգեք կապը և կրկին փորձեք։',
+    'error.busy': 'Չափազանց շատ ակտիվ որոնումներ կան։ Չեղարկեք մեկը կամ կրկին փորձեք։',
+    'error.disabled': 'Մութ ցանցի որոնումն անջատված է։',
+    'error.longQuery': 'Հարցումը չափազանց երկար է։',
     'error.noProviders': 'Որոնման համար ընտրեք VormWeb-ը։',
     'error.shortQuery': 'Մուտքագրեք առնվազն երեք նիշ։',
     'error.providerUnavailable': 'VormWeb-ը հասանելի չէ Tor-ով։ Փորձեք ավելի ուշ։',
@@ -546,7 +561,7 @@ export function buildDarkWebPageHtml(logoDataUrl?: string, opts?: DarkWebPageOpt
     return s;
   }
   var STATE_TEXT = {
-    IDLE: tr('state.IDLE'), SEARCHING: tr('state.SEARCHING'), PARTIAL_RESULTS: tr('state.PARTIAL_RESULTS'),
+    IDLE: tr('state.IDLE'), WAITING_FOR_TOR: tr('state.WAITING_FOR_TOR'), SEARCHING: tr('state.SEARCHING'), PARTIAL_RESULTS: tr('state.PARTIAL_RESULTS'),
     DONE: tr('state.DONE'), ERROR: tr('state.ERROR'), CANCELLED: tr('state.CANCELLED'), GONE: tr('state.GONE')
   };
   function stateText(s) { return STATE_TEXT[s] || s; }
@@ -641,34 +656,41 @@ export function buildDarkWebPageHtml(logoDataUrl?: string, opts?: DarkWebPageOpt
       body: JSON.stringify({ query: q, providers: providers })
     }).then(function (r) {
       if (r.body.error) { showError(r.body.error); return; }
-      if (input.value.trim() === q) input.value = '';
       currentSearchId = r.body.searchId;
       lastResults = [];
-      renderProgress(r.body);
-      if (r.body.errorCode) { showError(r.body.errorCode); return; }
-      renderResults(r.body);
-      if (r.body.state === 'SEARCHING' || r.body.state === 'PARTIAL_RESULTS') {
-        pollTimer = setInterval(function () { pollSearch(currentSearchId); }, 700);
-      } else {
-        stopPolling(r.body.state);
-      }
+      updateSearch(r.body);
     }).catch(function () { showError(tr('search.failed')); })
       .finally(function () { submitting = false; });
   });
 
-  function pollSearch(id) {
-    api('search/' + id).then(function (r) {
-      if (r.body.error === 'NOT_FOUND') { stopPolling('GONE'); return; }
-      renderProgress(r.body);
-      if (r.body.errorCode) { showError(r.body.errorCode); return; }
-      renderResults(r.body);
-      if (r.body.state === 'DONE' || r.body.state === 'ERROR' || r.body.state === 'CANCELLED') {
-        stopPolling(r.body.state);
-      }
-    }).catch(function () { stopPolling('ERROR'); });
+  function searchActive(state) {
+    return state === 'WAITING_FOR_TOR' || state === 'SEARCHING' || state === 'PARTIAL_RESULTS';
+  }
+
+  function updateSearch(resp) {
+    if (resp.errorCode || resp.error) {
+      showError(resp.errorCode || resp.error);
+      return;
+    }
+    renderProgress(resp);
+    if (resp.state === 'CANCELLED') {
+      results.textContent = stateText(resp.state);
+    } else {
+      renderResults(resp);
+    }
+    if (!searchActive(resp.state)) {
+      stopPolling(resp.state);
+      return;
+    }
+    var id = currentSearchId;
+    pollTimer = setTimeout(function () {
+      api('search/' + id).then(function (r) {
+        if (currentSearchId === id) updateSearch(r.body);
+      }).catch(function () { showError(tr('search.failed')); });
+    }, 500);
   }
   function stopPolling(state) {
-    if (pollTimer) clearInterval(pollTimer);
+    if (pollTimer) clearTimeout(pollTimer);
     pollTimer = null;
     currentSearchId = null;
     stateLabel.textContent = state ? stateText(state) : tr('state.IDLE');
@@ -677,12 +699,21 @@ export function buildDarkWebPageHtml(logoDataUrl?: string, opts?: DarkWebPageOpt
     refreshStatus();
   }
   stop.addEventListener('click', function () {
-    if (currentSearchId) api('search/' + currentSearchId + '/cancel', { method: 'POST' });
+    var id = currentSearchId;
+    if (!id) return;
+    api('search/' + id + '/cancel', { method: 'POST' }).catch(function () {
+      if (currentSearchId === id) showError(tr('search.failed'));
+    });
   });
 
   function showError(msg) {
     results.textContent = '';
     if (msg === 'TOR_UNAVAILABLE' || msg === 'EGRESS_UNAVAILABLE') msg = tr('error.torUnavailable');
+    if (msg === 'TOR_START_TIMEOUT') msg = tr('error.torTimeout');
+    if (msg === 'SEARCH_BUSY') msg = tr('error.busy');
+    if (msg === 'DARKWEB_DISABLED') msg = tr('error.disabled');
+    if (msg === 'QUERY_TOO_LONG') msg = tr('error.longQuery');
+    if (msg === 'NOT_FOUND') msg = tr('search.failed');
     if (msg === 'NO_PROVIDERS_ENABLED') msg = tr('error.noProviders');
     if (msg === 'QUERY_TOO_SHORT') msg = tr('error.shortQuery');
     if (['EXTERNAL_PROVIDER_UNAVAILABLE', 'PROVIDER_RESPONSE_INVALID', 'ONION_UNREACHABLE',
@@ -699,9 +730,10 @@ export function buildDarkWebPageHtml(logoDataUrl?: string, opts?: DarkWebPageOpt
       var text = id + ' · ' + p.status + (p.status === 'ok' ? ' · ' + tr('prov.results', { n: p.resultCount }) + ' · ' + p.durationMs + ' ' + tr('unit.ms') : (p.errorCode ? ' · ' + p.errorCode : ''));
       provstrip.appendChild(el('span', 'prov ' + cls, text));
     });
-    go.disabled = resp.state === 'SEARCHING' || resp.state === 'PARTIAL_RESULTS';
+    go.disabled = searchActive(resp.state);
     statebar.style.display = go.disabled ? 'flex' : 'none';
-    stateLabel.textContent = stateText(resp.state) + (resp.durationMs ? ' · ' + Math.round(resp.durationMs / 100) / 10 + tr('unit.s') : '');
+    var progress = resp.state === 'WAITING_FOR_TOR' && resp.torProgress != null ? ' ' + resp.torProgress + '%' : '';
+    stateLabel.textContent = stateText(resp.state) + progress;
   }
 
   function onionAddress(value) {

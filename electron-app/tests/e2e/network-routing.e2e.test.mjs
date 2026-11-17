@@ -36,11 +36,15 @@ test('Proton VPN is the sole VPN panel and onion tabs require Tor', { timeout: 6
   const shell = app.chromePage();
   assert.equal(await shell.getByRole('button', { name: 'HayDevVPN', exact: true }).count(), 0);
   await shell.getByRole('button', { name: 'Proton VPN', exact: true }).click();
+  const protonInstalled = await invoke('proton_vpn_installed');
   await shell.getByRole('region', { name: 'Proton VPN', exact: true })
-    .getByRole('button', { name: 'Get Proton VPN Free', exact: true }).waitFor();
+    .getByRole('button', {
+      name: protonInstalled ? 'Open Proton VPN' : 'Install Proton VPN Free',
+      exact: true,
+    }).waitFor();
   await app.chromePage().getByRole('button', { name: 'Check Windows routes' }).click();
   await app.chromePage().getByText(/^IPv4 —/).waitFor();
-  console.log(JSON.stringify({ routeTable: routes, torNotReady: code }));
+  console.log(JSON.stringify({ routeTable: routes, torNotReady: code, protonInstalled }));
 });
 
 test('Managed runtime can start again after a stop and a later stop cancels startup', {
@@ -145,16 +149,19 @@ test('Bundled Tor searches VormWeb, opens onion results and recovers after loss 
       + ', navigation ' + JSON.stringify({ state: tab?.loadState, error: tab?.error }));
   }
 
-  await invoke('browser_tabs_open', { req: { url: 'pab://darkweb', activate: true } });
-  const page = await app.waitTabPage(/pab\.darkweb|pab\.localhost\/darkweb/);
-  await page.getByText('VormWeb (Tor)', { exact: true }).waitFor();
+  const newTab = await app.waitTabPage(/pab\.newtab|pab\.localhost\/newtab/);
+  assert.equal((await invoke('runtime_manager_status')).tor.state, 'STOPPED');
+  await newTab.locator('#engine-darkweb').click();
+  await newTab.locator('#sinput').fill('Tor Blog');
+  const accepted = newTab.waitForResponse(response =>
+    new URL(response.url()).pathname === '/api/search' && response.request().method() === 'POST');
+  await newTab.locator('#sinput').press('Enter');
+  const first = await (await accepted).json();
+  assert.equal(first.state, 'WAITING_FOR_TOR', JSON.stringify(first));
   const initialTor = await untilReady();
-
-  await page.locator('#input').fill('Tor Blog');
-  await page.locator('#go').click();
   const resultHref = '/open?url=' + encodeURIComponent(torBlog);
-  const result = page.locator('.card .t a').filter({ hasText: 'Tor Blog | The Tor Project' })
-    .and(page.locator('a[href="' + resultHref + '"]')).first();
+  const result = newTab.locator('.dwresult').filter({ hasText: 'Tor Blog | The Tor Project' })
+    .and(newTab.locator('a[href="' + resultHref + '"]')).first();
   await result.waitFor({ timeout: 30000 });
   assert.equal(await result.getAttribute('href'), resultHref);
   await result.click();
@@ -167,10 +174,8 @@ test('Bundled Tor searches VormWeb, opens onion results and recovers after loss 
   const resultTitle = await waitForPage(resultTab.id, 'Tor Blog');
 
   // A bare .onion pasted into the DarkWeb field opens an isolated tab directly.
-  await shell.evaluate(() => window.__TAURI_INTERNALS__.invoke('browser_tabs_list').then(tabs => {
-    const darkweb = tabs.find(tab => !tab.isDarkWeb && (tab.url?.includes('darkweb') || tab.pendingUrl?.includes('darkweb')));
-    return window.__TAURI_INTERNALS__.invoke('browser_tabs_activate', { req: { tabId: darkweb.id } });
-  }));
+  await invoke('browser_tabs_open', { req: { url: 'pab://darkweb', activate: true } });
+  const page = await app.waitTabPage(/pab\.darkweb|pab\.localhost\/darkweb/);
   await page.locator('#input').fill(directBlog.slice('http://'.length));
   await page.locator('#go').click();
   await shell.waitForFunction(url => window.__TAURI_INTERNALS__.invoke('browser_tabs_list')
@@ -190,6 +195,6 @@ test('Bundled Tor searches VormWeb, opens onion results and recovers after loss 
   await invoke('browser_navigate', { req: { tabId: blogTab.id, url: torBlog + '?cycle=recovered' } });
   await waitForPage(blogTab.id, 'Tor Blog');
   assert.equal((await list()).find(tab => tab.id === blogTab.id).egress, blogTab.egress);
-  console.log(JSON.stringify({ liveProvider: 'VormWeb', openedResult: resultTitle, onionPage: title,
+  console.log(JSON.stringify({ liveProvider: 'VormWeb', firstSearch: first.state, openedResult: resultTitle, onionPage: title,
     isolated: true, missingTor: 'blocked', restartedTor: true, sameTabRecovered: true }));
 });

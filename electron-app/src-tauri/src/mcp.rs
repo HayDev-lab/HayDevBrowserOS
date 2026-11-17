@@ -443,7 +443,7 @@ fn call_tool(app: &tauri::AppHandle<tauri::Wry>, name: &str, args: &Value) -> Va
             let providers: Option<Vec<String>> = args.get("providers").and_then(|v| v.as_str()).map(|s| {
                 s.split(',').map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect()
             });
-            match service.search(app, &query, providers) {
+            match service.search(app, &query, providers, false) {
                 Ok(initial) => {
                     // Wait for terminal state (bounded, Electron parity:
                     // "waits for completion").

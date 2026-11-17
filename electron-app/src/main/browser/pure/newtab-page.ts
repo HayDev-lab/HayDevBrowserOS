@@ -156,7 +156,20 @@ const STRINGS: Record<AppLocale, Record<string, string>> = {
     'research.couldNotStart': 'Deep Research could not start.',
     'research.failed': 'Deep Research request failed.',
     'search.needQuery': 'Type a query first — then press Search or Enter.',
-    'darkweb.opening': 'Opening Dark Web search…',
+    'darkweb.cancel': 'Cancel search',
+    'darkweb.waiting': 'Connecting to Tor…',
+    'darkweb.searching': 'Searching VormWeb…',
+    'darkweb.empty': 'No results found.',
+    'darkweb.cancelled': 'Search cancelled.',
+    'darkweb.torUnavailable': 'Tor is unavailable. Try again.',
+    'darkweb.torTimeout': 'Tor did not connect in time. Check your connection and try again.',
+    'darkweb.providerUnavailable': 'VormWeb is unavailable through Tor. Try again in a moment.',
+    'darkweb.disabled': 'Dark Web search is disabled.',
+    'darkweb.noProviders': 'Enable VormWeb to search.',
+    'darkweb.shortQuery': 'Enter at least 3 characters.',
+    'darkweb.longQuery': 'The query is too long.',
+    'darkweb.busy': 'Too many active searches. Cancel one or try again in a moment.',
+    'darkweb.failed': 'Search failed. Try again.',
     'search.perplexity': 'Searching — Perplexity (AI + Web)…',
     'search.haydev': 'Starting Deep Research (HayDev agent)…',
   },
@@ -209,7 +222,20 @@ const STRINGS: Record<AppLocale, Record<string, string>> = {
     'research.couldNotStart': 'Не удалось запустить Deep Research.',
     'research.failed': 'Запрос Deep Research не удался.',
     'search.needQuery': 'Сначала введите запрос — затем нажмите «Поиск» или Enter.',
-    'darkweb.opening': 'Открываю поиск в даркнете…',
+    'darkweb.cancel': 'Отменить поиск',
+    'darkweb.waiting': 'Подключение к Tor…',
+    'darkweb.searching': 'Поиск в VormWeb…',
+    'darkweb.empty': 'Ничего не найдено.',
+    'darkweb.cancelled': 'Поиск отменён.',
+    'darkweb.torUnavailable': 'Tor недоступен. Повторите попытку.',
+    'darkweb.torTimeout': 'Tor не успел подключиться. Проверьте соединение и попробуйте снова.',
+    'darkweb.providerUnavailable': 'VormWeb недоступен через Tor. Попробуйте чуть позже.',
+    'darkweb.disabled': 'Поиск в даркнете выключен.',
+    'darkweb.noProviders': 'Включите VormWeb для поиска.',
+    'darkweb.shortQuery': 'Введите не менее 3 символов.',
+    'darkweb.longQuery': 'Запрос слишком длинный.',
+    'darkweb.busy': 'Слишком много активных запросов. Отмените один или попробуйте чуть позже.',
+    'darkweb.failed': 'Поиск не удался. Повторите попытку.',
     'search.perplexity': 'Ищу — Perplexity (ИИ + Веб)…',
     'search.haydev': 'Запуск Deep Research (агент HayDev)…',
   },
@@ -262,7 +288,20 @@ const STRINGS: Record<AppLocale, Record<string, string>> = {
     'research.couldNotStart': 'Deep Research-ը չհաջողվեց մեկնարկել։',
     'research.failed': 'Deep Research հարցումը ձախողվեց։',
     'search.needQuery': 'Նախ մուտքագրեք հարցումը, ապա սեղմեք «Որոնում» կամ Enter։',
-    'darkweb.opening': 'Բացվում է որոնումը Dark Web-ում…',
+    'darkweb.cancel': 'Չեղարկել որոնումը',
+    'darkweb.waiting': 'Միացում Tor-ին…',
+    'darkweb.searching': 'Որոնում VormWeb-ում…',
+    'darkweb.empty': 'Արդյունքներ չկան։',
+    'darkweb.cancelled': 'Որոնումը չեղարկվեց։',
+    'darkweb.torUnavailable': 'Tor-ը հասանելի չէ։ Կրկին փորձեք։',
+    'darkweb.torTimeout': 'Tor-ը ժամանակին չմիացավ։ Ստուգեք կապը և կրկին փորձեք։',
+    'darkweb.providerUnavailable': 'VormWeb-ը հասանելի չէ Tor-ով։ Փորձեք մի փոքր ուշ։',
+    'darkweb.disabled': 'Մութ ցանցի որոնումն անջատված է։',
+    'darkweb.noProviders': 'Որոնելու համար միացրեք VormWeb-ը։',
+    'darkweb.shortQuery': 'Մուտքագրեք առնվազն 3 նիշ։',
+    'darkweb.longQuery': 'Հարցումը չափազանց երկար է։',
+    'darkweb.busy': 'Չափազանց շատ ակտիվ որոնումներ կան։ Չեղարկեք մեկը կամ կրկին փորձեք։',
+    'darkweb.failed': 'Որոնումը ձախողվեց։ Կրկին փորձեք։',
     'search.perplexity': 'Որոնում՝ Perplexity (ԱԻ + Վեբ)…',
     'search.haydev': 'Մեկնարկում է Deep Research-ը (HayDev գործակալ)…',
   },
@@ -293,7 +332,19 @@ const CLIENT_STRING_KEYS = [
   'research.couldNotStart',
   'research.failed',
   'search.needQuery',
-  'darkweb.opening',
+  'darkweb.waiting',
+  'darkweb.searching',
+  'darkweb.empty',
+  'darkweb.cancelled',
+  'darkweb.torUnavailable',
+  'darkweb.torTimeout',
+  'darkweb.providerUnavailable',
+  'darkweb.disabled',
+  'darkweb.noProviders',
+  'darkweb.shortQuery',
+  'darkweb.longQuery',
+  'darkweb.busy',
+  'darkweb.failed',
   'search.perplexity',
   'search.haydev',
 ] as const;
@@ -376,18 +427,18 @@ ${newsCards}`
     --mx-glass: rgba(9, 20, 29, 0.62);
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  html, body { height: 100%; }
+  html { min-height: 100%; overflow-y: auto; }
   body {
     background: #03070b;
     color: #dce7ee;
     font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif;
-    overflow: hidden;
+    overflow-x: hidden;
   }
   :focus-visible { outline: 2px solid rgba(0, 255, 209, 0.65); outline-offset: 2px; }
 
   /* ---- planet layers (centered) ---------------------------------------- */
   #planet-shell {
-    position: absolute; left: 50%; top: 50%;
+    position: fixed; left: 50%; top: 50%;
     width: 300px; height: 300px;            /* sized by JS */
     transform: translate(-50%, -50%);
     border-radius: 50%;
@@ -400,7 +451,7 @@ ${newsCards}`
     z-index: 1; pointer-events: none;
   }
   #planet-canvas {
-    position: absolute; left: 50%; top: 50%;
+    position: fixed; left: 50%; top: 50%;
     transform: translate(-50%, -50%);
     z-index: 2; pointer-events: none;
   }
@@ -490,6 +541,7 @@ ${newsCards}`
     transition: color 140ms ease-out, background 140ms ease-out,
       border-color 140ms ease-out;
   }
+  .search__btn[hidden] { display: none; }
   .search__btn:hover, .search__btn:focus-visible {
     color: #00ffd1; background: rgba(0, 255, 209, 0.08);
     border-color: rgba(0, 255, 209, 0.30);
@@ -508,20 +560,14 @@ ${newsCards}`
   .chips { display: flex; flex-wrap: wrap; gap: 8px; }
   .chips:empty { display: none; }
   /* ---- inline darkweb results (same page, no navigation) --------------- */
-  .dwresults { margin-top: 14px; text-align: left; max-width: 760px; margin-left: auto; margin-right: auto; }
-  .dwresults__head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 10px; }
-  .dwresults__title { font-size: 13px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--fg-dim, #7fa8a0); }
-  .dwresults__meta { font-size: 12px; color: var(--fg-dim, #7fa8a0); }
-  .dwresults__prov { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; font-size: 12px; }
-  .dwresults__prov span { padding: 2px 8px; border-radius: 10px; border: 1px solid var(--line, #1d3a3a); }
-  .dwresults__prov span.is-err { color: #ff9d7a; border-color: #57342a; }
-  .dwresults__list { display: flex; flex-direction: column; gap: 8px; max-height: 46vh; overflow-y: auto; }
+  .dwresults { width: min(760px, 100%); text-align: left; }
+  .dwresults__cancel { width: auto; height: auto; min-height: 32px; padding: 4px 12px; border-radius: 12px; }
+  .dwresults__list { display: grid; gap: 8px; }
   .dwresult { display: block; padding: 10px 14px; border: 1px solid var(--line, #1d3a3a); border-radius: 10px; background: rgba(6, 16, 20, 0.6); text-decoration: none; color: inherit; }
   .dwresult:hover { border-color: rgba(0, 255, 209, 0.4); }
   .dwresult__url { font-size: 11px; color: #58d5c0; word-break: break-all; }
   .dwresult__title { font-size: 14px; margin: 3px 0; color: #d7efe9; }
   .dwresult__desc { font-size: 12px; color: var(--fg-dim, #7fa8a0); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-  .dwresults__empty { font-size: 13px; color: var(--fg-dim, #7fa8a0); }
   .chip {
     display: inline-flex; align-items: center; gap: 8px;
     max-width: 320px; padding: 5px 8px 5px 6px;
@@ -747,6 +793,7 @@ ${newsCards}`
         <div class="chips" id="schips" aria-label="${tr(loc, 'attach.chips.aria')}"></div>
         <p class="status" id="sstatus" role="status" aria-live="polite"></p>
       </form>
+      <button type="button" class="search__btn dwresults__cancel" id="dwcancel" hidden>${tr(loc, 'darkweb.cancel')}</button>
       <div class="dwresults" id="dwresults" hidden></div>
       <div class="engines" role="radiogroup" aria-label="${tr(loc, 'engines.aria')}">
         <button type="button" class="engine" id="engine-haydev" role="radio" aria-checked="true" data-engine="haydev" title="${tr(loc, 'engine.haydev.title')}">
@@ -1022,69 +1069,110 @@ ${newsBlock}
     // the pab://darkweb page uses); results render HERE — this page never
     // navigates away and never opens another page.
     var dwBox = document.getElementById('dwresults');
-    var dwTimer = null;
+    var dwCancel = document.getElementById('dwcancel');
+    var dwSearch = null;
+    var dwErrors = {
+      TOR_UNAVAILABLE: 'torUnavailable',
+      TOR_START_TIMEOUT: 'torTimeout',
+      EGRESS_UNAVAILABLE: 'torUnavailable',
+      EXTERNAL_PROVIDER_UNAVAILABLE: 'providerUnavailable',
+      PROVIDER_RESPONSE_INVALID: 'providerUnavailable',
+      PROVIDER_TIMEOUT: 'providerUnavailable',
+      GLOBAL_TIMEOUT: 'providerUnavailable',
+      ONION_UNREACHABLE: 'providerUnavailable',
+      DARKWEB_DISABLED: 'disabled',
+      NO_PROVIDERS_ENABLED: 'noProviders',
+      QUERY_TOO_SHORT: 'shortQuery',
+      QUERY_TOO_LONG: 'longQuery',
+      SEARCH_BUSY: 'busy'
+    };
+
     function esc(s) {
       return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
         return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
       });
     }
     function dwRender(snap) {
-      if (!dwBox) return;
-      var provMap = snap.providers || {};
-      var provList = Array.isArray(provMap)
-        ? provMap
-        : Object.keys(provMap).map(function (k) { return provMap[k]; });
-      var provs = provList.map(function (p) {
-        var err = p.status === 'error' || p.status === 'timeout';
-        return '<span class="' + (err ? 'is-err' : '') + '">' + esc(p.id || p.providerId || '?') + ': ' +
-          esc(err ? (p.errorCode || p.status || 'error') : (p.status || 'ok')) + '</span>';
-      }).join('');
+      if (snap.errorCode || snap.error || snap.state === 'ERROR') {
+        status(L('darkweb.' + (dwErrors[snap.errorCode || snap.error] || 'failed')), true);
+      } else if (snap.state === 'WAITING_FOR_TOR') {
+        status(L('darkweb.waiting') + (snap.torProgress == null ? '' : ' ' + snap.torProgress + '%'));
+      } else if (snap.state === 'CANCELLED') {
+        status(L('darkweb.cancelled'));
+      } else if (snap.state === 'DONE') {
+        status((snap.results || []).length ? '' : L('darkweb.empty'));
+      } else {
+        status(L('darkweb.searching'));
+      }
       var items = (snap.results || []).map(function (r) {
-        var url = r.url || r.link || r.finalUrl || '';
-        var href = '/open?url=' + encodeURIComponent(url);
+        var href = '/open?url=' + encodeURIComponent(r.url);
         return '<a class="dwresult" href="' + esc(href) + '">' +
-          '<div class="dwresult__url">' + esc(url) + '</div>' +
+          '<div class="dwresult__url">' + esc(r.url) + '</div>' +
           '<div class="dwresult__title">' + esc(r.title || '') + '</div>' +
           '<div class="dwresult__desc">' + esc(r.description || r.excerpt || r.snippet || '') + '</div>' +
           '</a>';
       }).join('');
-      dwBox.innerHTML =
-        '<div class="dwresults__head"><span class="dwresults__title">Dark Web</span>' +
-        '<span class="dwresults__meta">' + esc(snap.state || '') +
-        (snap.total != null ? ' · ' + snap.total : '') +
-        (snap.durationMs != null ? ' · ' + (snap.durationMs / 1000).toFixed(1) + 's' : '') + '</span></div>' +
-        (provs ? '<div class="dwresults__prov">' + provs + '</div>' : '') +
-        (items || '<div class="dwresults__empty">' + esc(snap.errorCode || 'no results') + '</div>');
-      dwBox.hidden = false;
+      dwBox.innerHTML = items ? '<div class="dwresults__list">' + items + '</div>' : '';
+      dwBox.hidden = !items;
     }
+
+    function cancelDarkwebRequest(id) {
+      return fetch('/api/search/cancel?id=' + encodeURIComponent(id), { method: 'POST' })
+        .catch(function () { /* The host bounds the lifetime of every search. */ });
+    }
+
+    function cancelInlineDarkwebSearch(showStatus) {
+      if (!dwSearch) return;
+      var search = dwSearch;
+      dwSearch = null;
+      clearTimeout(search.timer);
+      dwCancel.hidden = true;
+      if (search.id) cancelDarkwebRequest(search.id);
+      if (showStatus) dwRender({ state: 'CANCELLED' });
+    }
+    dwCancel.addEventListener('click', function () { cancelInlineDarkwebSearch(true); });
+
     function runInlineDarkwebSearch(q) {
-      if (!bridge) { status(L('research.unavailable'), true); return; }
-      if (dwTimer) { clearInterval(dwTimer); dwTimer = null; }
-      dwBox.hidden = false;
-      dwBox.innerHTML = '<div class="dwresults__empty">…</div>';
-      status('');
+      if (!bridge) { status(L('darkweb.failed'), true); return; }
+      cancelInlineDarkwebSearch(false);
+      var search = { id: null, timer: null };
+      dwSearch = search;
+      dwCancel.hidden = false;
+      dwRender({ state: 'SEARCHING' });
+
+      function update(snap) {
+        if (dwSearch !== search) return;
+        dwRender(snap);
+        if (['WAITING_FOR_TOR', 'SEARCHING', 'PARTIAL_RESULTS'].indexOf(snap.state) < 0) {
+          dwSearch = null;
+          dwCancel.hidden = true;
+          return;
+        }
+        search.timer = setTimeout(function () {
+          fetch('/api/search/' + encodeURIComponent(search.id))
+            .then(function (r) { return r.json(); })
+            .then(update)
+            .catch(failed);
+        }, 500);
+      }
+      function failed() {
+        if (dwSearch !== search) return;
+        cancelInlineDarkwebSearch(false);
+        dwRender({ state: 'ERROR' });
+      }
+
       fetch('/api/search', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ query: q })
       }).then(function (r) { return r.json(); }).then(function (start) {
-        var id = start && (start.searchId || start.id);
-        if (!id) { dwRender({ state: 'error', errorCode: (start && start.error) || 'SEARCH_FAILED', providers: [], results: [] }); return; }
-        dwTimer = setInterval(function () {
-          fetch('/api/search/' + encodeURIComponent(id))
-            .then(function (r) { return r.json(); })
-            .then(function (snap) {
-              dwRender(snap);
-              var st = (snap && snap.state || '').toUpperCase();
-              if (st === 'DONE' || st === 'ERROR' || st === 'CANCELLED') {
-                clearInterval(dwTimer); dwTimer = null;
-              }
-            })
-            .catch(function () { clearInterval(dwTimer); dwTimer = null; });
-        }, 1500);
-      }).catch(function () {
-        dwRender({ state: 'error', errorCode: 'SEARCH_FAILED', providers: [], results: [] });
-      });
+        search.id = start.searchId;
+        if (dwSearch !== search) {
+          if (search.id) cancelDarkwebRequest(search.id);
+          return;
+        }
+        update(start);
+      }).catch(failed);
     }
 
     form.addEventListener('submit', function (e) {
@@ -1101,6 +1189,7 @@ ${newsBlock}
       // Attachments can only be consumed by the agent pipeline — route
       // there explicitly (the only honest engine for files/images).
       if (chips.length > 0) {
+        cancelInlineDarkwebSearch(false);
         runResearch(v);
         return;
       }
@@ -1108,6 +1197,7 @@ ${newsBlock}
         runInlineDarkwebSearch(v);
         return;
       }
+      cancelInlineDarkwebSearch(false);
       if (engine === 'perplexity') {
         // Perplexity chip = instant AI + Web answers (Perplexica, web mode).
         status(L('search.perplexity'));

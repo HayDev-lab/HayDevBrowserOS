@@ -29,7 +29,7 @@ const PREFERRED_SEARXNG: u16 = 8888;
 const PREFERRED_TOR_SOCKS: u16 = 9050;
 const PREFERRED_TOR_CONTROL: u16 = 9051;
 /// Tor bootstrap can take a while on a cold network.
-const TOR_START_TIMEOUT: Duration = Duration::from_secs(90);
+pub(crate) const TOR_START_TIMEOUT: Duration = Duration::from_secs(90);
 const SEARXNG_START_TIMEOUT: Duration = Duration::from_secs(90);
 const PERPLEXICA_START_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_RESTARTS: u32 = 3;
@@ -97,6 +97,7 @@ pub struct RuntimeManagerState {
     next_start: u64,
     start_request: Option<u64>,
     start_with_tor: bool,
+    last_tor_start: Option<Instant>,
 }
 
 impl RuntimeManagerState {
@@ -112,10 +113,11 @@ impl RuntimeManagerState {
 
     /// Raw service state (footer-chip phase reporting).
     pub fn service_state(&self, key: &str) -> Option<ServiceState> {
-        self.svcs
-            .get(key)
-            .and_then(|s| s.status.as_ref())
-            .map(|st| st.state)
+        self.service_status(key).map(|status| status.state)
+    }
+
+    pub(crate) fn service_status(&self, key: &str) -> Option<&ServiceStatus> {
+        self.svcs.get(key).and_then(|service| service.status.as_ref())
     }
 
     pub fn perplexica_endpoint(&self) -> Option<String> {
@@ -952,20 +954,35 @@ fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Tor managed spawn — bundled tor.exe on dynamic SOCKS/control ports.
-/// Single-flight for tor spawns: the status flips to Bootstrapping only
-/// INSIDE the supervisor thread, so two concurrent entry points (engines
-/// start + on-demand request_tor_start) could both pass is_active and spawn
-/// two tor processes — the loser dies with "exited after READY" and takes
-/// the SOCKS port down with it (reproduced in tor.log, 2026-10-25).
+/// Reserve the Tor worker and publish STARTING under the same lock so
+/// callers waiting for Tor can distinguish startup from a failed service.
 static TOR_SPAWNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-fn start_tor(m: SharedRuntimeManager) {
-    let Some(worker) = begin_worker(&m) else { return };
-    if TOR_SPAWNING.swap(true, std::sync::atomic::Ordering::SeqCst) {
-        log::info!("[PROCESS] tor spawn already in flight — skipping duplicate start");
-        return;
-    }
+fn start_tor(m: &SharedRuntimeManager, on_demand: bool) -> bool {
+    let worker = {
+        let mut guard = m.lock().unwrap_or_else(|p| p.into_inner());
+        if guard.stopping || guard.closed || engines_disabled() {
+            return false;
+        }
+        if matches!(guard.service_state("tor"),
+            Some(ServiceState::Starting | ServiceState::Bootstrapping | ServiceState::Ready))
+        {
+            return true;
+        }
+        if on_demand && guard.last_tor_start.is_some_and(|last| last.elapsed() < Duration::from_secs(15)) {
+            return false;
+        }
+        if TOR_SPAWNING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return false;
+        }
+        let mut status = ServiceStatus::not_started();
+        status.state = ServiceState::Starting;
+        guard.svcs.entry("tor").or_default().status = Some(status);
+        guard.last_tor_start = Some(Instant::now());
+        guard.active_workers += 1;
+        RuntimeWorker { manager: m.clone(), start_request: None }
+    };
+    let m = m.clone();
     struct SpawnGate;
     impl Drop for SpawnGate {
         fn drop(&mut self) {
@@ -1105,6 +1122,7 @@ fn start_tor(m: SharedRuntimeManager) {
             Err(err) => set_status(&m, "tor", |s| *s = fail(&format!("SPAWN_FAILED: {err}"))),
         }
     });
+    true
 }
 
 /// Port of findTorBinary: PAB_TOR_PATH → Tor Browser installs → system
@@ -1200,27 +1218,9 @@ fn tor_bootstrap_progress(port: u16, pid: u32, data_dir: &Path) -> Option<u32> {
         .filter(|progress| *progress <= 100)
 }
 
-/// On-demand Tor start (Electron `tor.spawnIfAvailable` parity). Rate-
-/// limited so a UI polling loop cannot fork tor bombs; start_tor itself is
-/// idempotent (is_active guard) and runs on its own thread.
-pub fn request_tor_start(m: &SharedRuntimeManager) {
-    if stopping(m) { return; }
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static LAST_TRY: AtomicU64 = AtomicU64::new(0);
-    if is_active(m, "tor") {
-        return;
-    }
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
-    let last = LAST_TRY.load(Ordering::Relaxed);
-    if now.saturating_sub(last) < 15_000 {
-        return;
-    }
-    LAST_TRY.store(now, Ordering::Relaxed);
-    log::info!("[PROCESS] tor offline — on-demand start requested (spawnIfAvailable)");
-    start_tor(m.clone());
+/// Start Tor on demand or join an existing startup without spawning twice.
+pub fn request_tor_start(m: &SharedRuntimeManager) -> bool {
+    start_tor(m, true)
 }
 
 /// Confirm the local SOCKS listener accepts unauthenticated SOCKS5 streams.
@@ -1276,7 +1276,7 @@ fn schedule_start(m: &SharedRuntimeManager, with_tor: bool) -> bool {
             guard.start_with_tor |= with_tor;
             drop(guard);
             if with_tor && !is_active(m, "tor") {
-                start_tor(m.clone());
+                start_tor(m, false);
             }
             return true;
         }
@@ -1362,7 +1362,7 @@ fn run_start_all(m: &SharedRuntimeManager, with_tor: bool) {
         .filter(|v| !v.is_empty());
 
     if with_tor && !is_active(m, "tor") {
-        start_tor(m.clone());
+        start_tor(m, false);
     }
 
     // SearXNG first (Perplexica's config wants its URL).

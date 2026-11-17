@@ -59,6 +59,7 @@ pub mod shield;
 pub mod site_ua;
 mod tor_route;
 mod windows_routes;
+pub mod proton_vpn;
 pub mod youtube;
 pub mod socks_http;
 pub mod stores;
@@ -188,6 +189,9 @@ pub fn run() {
             commands::control_get_mode,
             commands::privacy_status,
             windows_routes::windows_route_status,
+            proton_vpn::proton_vpn_installed,
+            proton_vpn::proton_vpn_open,
+            proton_vpn::proton_vpn_install,
             commands::privacy_set_fingerprint_noise,
             commands::set_locale,
             commands::ui_locale,

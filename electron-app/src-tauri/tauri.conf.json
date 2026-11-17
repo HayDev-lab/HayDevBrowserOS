@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "HayDevBrowser",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "identifier": "com.haydev.browser",
   "build": {
     "frontendDist": "../.vite/build/renderer",
@@ -32,6 +32,10 @@
       "icons/icon.ico"
     ],
     "windows": {
+      "nsis": {
+        "installerHooks": "proton-vpn.nsh",
+        "languages": ["English", "Russian"]
+      },
       "webviewInstallMode": {
         "type": "offlineInstaller"
       }

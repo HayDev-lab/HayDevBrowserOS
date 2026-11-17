@@ -2,7 +2,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    if std::env::args().nth(1).as_deref() == Some("--build-identity") {
+    let arg = std::env::args().nth(1);
+    if let Some(status) = app_lib::proton_vpn::setup_command(arg.as_deref()) {
+        std::process::exit(status);
+    }
+    if arg.as_deref() == Some("--build-identity") {
         println!("{}", app_lib::commands::build_identity());
         return;
     }

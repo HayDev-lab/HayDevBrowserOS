@@ -280,6 +280,11 @@ export interface MediaCleanerApi {
 export interface ExposedApi {
   mediaCleaner?: MediaCleanerApi;
   aiSettings?: import('./ai-settings').AiSettingsApi;
+  protonVpn?: {
+    installed(): Promise<boolean>;
+    open(): Promise<void>;
+    install(): Promise<void>;
+  };
   windowsRoutes?(): Promise<WindowsRoutes>;
   // Foundation
   getVersion(): Promise<AppVersionInfo>;

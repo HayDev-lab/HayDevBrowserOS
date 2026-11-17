@@ -8,14 +8,18 @@ import { AppHandle } from '../../scripts/e2e/harness.mjs';
 const onionHost = 'a'.repeat(56) + '.onion';
 const onionPage = 'http://' + onionHost + '/welcome';
 
-async function createOnionFixture() {
+async function createOnionFixture({ holdGreeting = false } = {}) {
   const clients = new Set();
   const requests = [];
   const connections = [];
+  const greetings = new Map();
   const server = net.createServer(socket => {
     clients.add(socket);
     socket.on('error', () => {});
-    socket.once('close', () => clients.delete(socket));
+    socket.once('close', () => {
+      clients.delete(socket);
+      greetings.delete(socket);
+    });
     let state = 'greeting';
     let pending = Buffer.alloc(0);
     let host;
@@ -24,8 +28,16 @@ async function createOnionFixture() {
       if (state === 'greeting') {
         if (pending.length < 2 || pending.length < 2 + pending[1]) return;
         pending = pending.subarray(2 + pending[1]);
-        socket.write(Buffer.from([5, 0]));
-        state = 'connect';
+        const greet = () => {
+          socket.write(Buffer.from([5, 0]));
+          state = 'connect';
+        };
+        if (holdGreeting) {
+          state = 'waiting';
+          greetings.set(socket, greet);
+          return;
+        }
+        greet();
       }
       if (state === 'connect') {
         if (pending.length < 5) return;
@@ -75,6 +87,11 @@ async function createOnionFixture() {
     port: server.address().port,
     requests,
     connections,
+    allowGreeting() {
+      holdGreeting = false;
+      for (const greet of greetings.values()) greet();
+      greetings.clear();
+    },
     release() {
       for (const client of clients) client.destroy();
     },
@@ -95,6 +112,91 @@ async function waitUntil(read, accept, message) {
   } while (Date.now() < deadline);
   assert.fail(message + ': ' + JSON.stringify(value));
 }
+
+test('First New Tab search waits for Tor and cancelling it sends no provider request', { timeout: 60_000 }, async t => {
+  const app = new AppHandle();
+  const fixture = await createOnionFixture({ holdGreeting: true });
+  t.after(async () => {
+    await app.stop({ runDir: app.evidenceDir });
+    await fixture.close();
+  });
+  await app.launch({ envOverrides: {
+    HAYDEV_NO_ENGINES: '0',
+    PAB_TOR_MODE: 'external',
+    PAB_TOR_SOCKS_PORT: String(fixture.port),
+    HTTPS_PROXY: 'http://127.0.0.1:1',
+  } });
+  const page = await app.waitTabPage(/pab\.newtab|pab\.localhost\/newtab/);
+  await page.locator('#engine-darkweb').click();
+  assert.equal(await page.locator('#scancel-attach').isVisible(), false);
+  const input = page.locator('#sinput');
+  const status = page.locator('#sstatus');
+  async function search(query) {
+    await input.fill(query);
+    const accepted = page.waitForResponse(response =>
+      new URL(response.url()).pathname === '/api/search' && response.request().method() === 'POST');
+    await input.press('Enter');
+    const initial = await (await accepted).json();
+    assert.equal(initial.state, 'WAITING_FOR_TOR', JSON.stringify(initial));
+    return initial.searchId;
+  }
+
+  const first = await search('Synthetic cancelled');
+  await status.filter({ hasText: /^Connecting to Tor…$/ }).waitFor();
+  assert.equal(fixture.connections.length, 0);
+  const cancel = page.waitForResponse(response =>
+    new URL(response.url()).pathname === '/api/search/cancel' &&
+    new URL(response.url()).searchParams.get('id') === first);
+  await page.locator('#dwcancel').click();
+  assert.equal((await cancel).ok(), true);
+  await status.filter({ hasText: /^Search cancelled\.$/ }).waitFor();
+
+  const next = await search('Synthetic retry');
+  assert.notEqual(next, first);
+  fixture.allowGreeting();
+  await status.filter({ hasText: /^VormWeb is unavailable through Tor\. Try again in a moment\.$/ }).waitFor();
+  assert.deepEqual(fixture.connections, [{ host: 'vormweb.de', port: 443 }]);
+  assert.equal(await page.locator('#dwcancel').isVisible(), false);
+  assert.equal(await input.inputValue(), 'Synthetic retry');
+});
+
+test('Every result on a compact New Tab is reachable by scrolling and keyboard', { timeout: 60_000 }, async t => {
+  const app = new AppHandle();
+  t.after(() => app.stop({ runDir: app.evidenceDir }));
+  await app.launch();
+  const page = await app.waitTabPage(/pab\.newtab|pab\.localhost\/newtab/);
+  await page.setViewportSize({ width: 1024, height: 600 });
+
+  const results = Array.from({ length: 50 }, (_, index) => ({
+    url: 'http://' + onionHost + '/result-' + (index + 1),
+    title: 'Synthetic card ' + (index + 1),
+    snippet: 'Synthetic search result displayed in HayDev Browser.',
+  }));
+  const snapshot = { searchId: 'fixture-scroll', state: 'DONE', results, total: results.length };
+  await page.route('**/api/search', route => route.fulfill({ json: snapshot }));
+  await page.route('**/api/search/fixture-scroll', route => route.fulfill({ json: snapshot }));
+  await page.locator('#engine-darkweb').click();
+  await page.locator('#sinput').fill('Synthetic search');
+  await page.locator('#sinput').press('Enter');
+  const cards = page.locator('.dwresult');
+  const last = cards.last();
+  await last.waitFor();
+  assert.equal(await cards.count(), 50);
+  assert.ok((await last.boundingBox()).y >= 600);
+
+  await page.mouse.move(380, 360);
+  await page.mouse.wheel(0, 16000);
+  await page.waitForFunction(() => {
+    const items = document.querySelectorAll('.dwresult');
+    const bounds = items[items.length - 1].getBoundingClientRect();
+    return document.scrollingElement.scrollTop > 0 && bounds.top >= 0 && bounds.bottom <= innerHeight;
+  }, null, { timeout: 4000 });
+
+  await page.locator('#engine-haydev').focus();
+  await page.keyboard.press('Shift+Tab');
+  assert.equal(await last.evaluate(link => document.activeElement === link), true);
+  console.log(JSON.stringify({ results: await cards.count(), lastVisibleAfterWheel: true, lastFocusedByKeyboard: true }));
+});
 
 test('DarkWeb search, index settings, Tor refusal and crawler lifecycle', { timeout: 70_000 }, async t => {
   const app = new AppHandle();

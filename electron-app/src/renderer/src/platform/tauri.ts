@@ -27,6 +27,11 @@ export const tauriApi: ExposedApi = {
     videoAvailable: () => invoke('media_cleaner_video_available'),
     clean: (kind) => invoke('media_cleaner_run', { kind }),
   },
+  protonVpn: {
+    installed: () => invoke('proton_vpn_installed'),
+    open: () => invoke('proton_vpn_open'),
+    install: () => invoke('proton_vpn_install'),
+  },
   windowsRoutes: () => invoke('windows_route_status'),
   aiSettings: {
     get: () => invoke('ai_settings_get'),

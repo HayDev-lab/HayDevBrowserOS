@@ -457,7 +457,7 @@ fn serve_newtab(
             let Some(service) = app.try_state::<crate::darkweb::SharedDarkWeb>() else {
                 return json_response(r#"{"error":"DARKWEB_DISABLED"}"#.to_string());
             };
-            match crate::darkweb::DarkWebService::search(&service, app, query, providers) {
+            match crate::darkweb::DarkWebService::search(&service, app, query, providers, true) {
                 Ok(v) => json_response(v.to_string()),
                 Err(code) => json_response(serde_json::json!({ "error": code }).to_string()),
             }
@@ -920,7 +920,7 @@ fn serve_darkweb(
             let providers = body.get("providers").and_then(|v| v.as_array()).map(|a| {
                 a.iter().filter_map(|p| p.as_str().map(str::to_string)).collect::<Vec<_>>()
             });
-            match service.search(app, query, providers) {
+            match service.search(app, query, providers, true) {
                 Ok(v) => respond(v, 200),
                 Err(code) => respond(serde_json::json!({ "error": code }), 400),
             }

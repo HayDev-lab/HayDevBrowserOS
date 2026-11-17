@@ -714,6 +714,24 @@ fn resolve_tor_endpoint(
     config: &DarkWebConfig,
     onion_only: bool,
 ) -> Option<(String, u16)> {
+    let ready = ready_tor_endpoint(app, config, onion_only);
+    if ready.is_none() {
+        request_configured_tor(app, config);
+    }
+    ready
+}
+
+fn request_configured_tor(app: &tauri::AppHandle<tauri::Wry>, config: &DarkWebConfig) -> bool {
+    use tauri::Manager;
+    config.tor_spawn_if_available && app.try_state::<crate::runtime_manager::SharedRuntimeManager>()
+        .is_some_and(|manager| crate::runtime_manager::request_tor_start(manager.inner()))
+}
+
+fn ready_tor_endpoint(
+    app: &tauri::AppHandle<tauri::Wry>,
+    config: &DarkWebConfig,
+    onion_only: bool,
+) -> Option<(String, u16)> {
     if std::env::var("HAYDEV_NO_ENGINES").is_ok_and(|v| v.trim() == "1") {
         return None;
     }
@@ -740,12 +758,6 @@ fn resolve_tor_endpoint(
     };
     if let Some(host) = manual_host.filter(|host| socks_probe(host, config.socks_port)) {
         return Some((host.to_string(), config.socks_port));
-    }
-    if config.tor_spawn_if_available {
-        use tauri::Manager;
-        if let Some(manager) = app.try_state::<crate::runtime_manager::SharedRuntimeManager>() {
-            crate::runtime_manager::request_tor_start(manager.inner());
-        }
     }
     None
 }
@@ -943,6 +955,7 @@ pub struct SearchJob {
     pub raw: Vec<NormalizedResult>,
     pub started_at: u64,
     pub ended_at: Option<u64>,
+    tor_progress: Option<u32>,
     pub error_code: Option<String>,
     pub cancelled: bool,
     pub settled: usize,
@@ -965,6 +978,7 @@ impl SearchJob {
             "total": self.results.len(),
             "durationMs": (self.ended_at.unwrap_or(now)).saturating_sub(self.started_at),
             "errorCode": self.error_code,
+            "torProgress": self.tor_progress,
         })
     }
 
@@ -974,6 +988,51 @@ impl SearchJob {
 
     fn take_raw(&mut self) -> Vec<NormalizedResult> {
         std::mem::take(&mut self.raw)
+    }
+}
+
+fn wait_for_tor_route(
+    app: &tauri::AppHandle<tauri::Wry>,
+    config: &DarkWebConfig,
+    job: &Arc<Mutex<SearchJob>>,
+) -> Result<Option<(String, u16)>, &'static str> {
+    use crate::runtime_manager::{with_manager, ServiceState, TOR_START_TIMEOUT};
+    use std::time::{Duration, Instant};
+
+    let deadline = Instant::now() + TOR_START_TIMEOUT;
+    loop {
+        let status = with_manager(app, |manager| manager.service_status("tor").cloned()).flatten();
+        {
+            let mut search = job.lock().unwrap_or_else(|p| p.into_inner());
+            if search.cancelled {
+                return Ok(None);
+            }
+            search.tor_progress = status.as_ref().and_then(|status| status.progress);
+        }
+        match status.as_ref().map(|status| status.state) {
+            Some(ServiceState::Ready) => {
+                return ready_tor_endpoint(app, config, true).map(Some).ok_or("TOR_UNAVAILABLE");
+            }
+            Some(ServiceState::Starting | ServiceState::Bootstrapping) => {}
+            _ if status.as_ref().and_then(|status| status.error_code.as_deref()) == Some("START_TIMEOUT") => {
+                return Err("TOR_START_TIMEOUT");
+            }
+            _ => return Err("TOR_UNAVAILABLE"),
+        }
+        if Instant::now() >= deadline {
+            return Err("TOR_START_TIMEOUT");
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+fn search_error(job: &Arc<Mutex<SearchJob>>, code: &str) {
+    let mut job = job.lock().unwrap_or_else(|p| p.into_inner());
+    if !job.cancelled {
+        job.state = "ERROR";
+        job.ended_at = Some(now_ms());
+        job.error_code = Some(code.to_string());
+        job.tor_progress = None;
     }
 }
 
@@ -1026,6 +1085,7 @@ impl DarkWebService {
         app: &tauri::AppHandle<tauri::Wry>,
         query: &str,
         providers_filter: Option<Vec<String>>,
+        wait_for_tor: bool,
     ) -> Result<Value, String> {
         let config = self.config();
         if !config.enabled {
@@ -1053,11 +1113,15 @@ impl DarkWebService {
             return Err("NO_PROVIDERS_ENABLED".to_string());
         }
 
-        // The provider request is tied to the Tor route resolved here.
-        let tor = onion_endpoint(app, &config).ok_or("TOR_UNAVAILABLE")?;
+        // A cold interactive search owns a job while Tor starts. MCP retains
+        // the immediate unavailable response so its callers can manage retries.
+        let tor = ready_tor_endpoint(app, &config, true);
+        if tor.is_none() && (!request_configured_tor(app, &config) || !wait_for_tor) {
+            return Err("TOR_UNAVAILABLE".into());
+        }
         let now = now_ms();
         let cache_key = format!("{}|{}", query.to_lowercase(), selected.join(","));
-        if config.cache_ttl_ms > 0 {
+        if tor.is_some() && config.cache_ttl_ms > 0 {
             let cache = self.cache.lock().unwrap_or_else(|p| p.into_inner());
             if let Some((snap, expires)) = cache.get(&cache_key) {
                 if now < *expires {
@@ -1065,29 +1129,23 @@ impl DarkWebService {
                 }
             }
         }
-        let runnable: Vec<_> = {
-            let health = self.health.lock().unwrap_or_else(|p| p.into_inner());
-            selected.into_iter()
-                .filter(|id| health.get(*id).is_none_or(|provider| provider.allows(now)))
-                .collect()
-        };
-
         let job_id = format!("s_{}_{}", now, self.job_seq.fetch_add(1, Ordering::Relaxed));
         let job = Arc::new(Mutex::new(SearchJob {
             id: job_id.clone(),
             query: query.clone(),
             cache_key,
-            state: "SEARCHING",
+            state: if tor.is_some() { "SEARCHING" } else { "WAITING_FOR_TOR" },
             results: Vec::new(),
             providers: HashMap::new(),
             raw: Vec::new(),
             started_at: now,
             ended_at: None,
+            tor_progress: None,
             error_code: None,
             cancelled: false,
             settled: 0,
-            registered: runnable.len(),
-            registered_ids: runnable.iter().map(|id| id.to_string()).collect(),
+            registered: 0,
+            registered_ids: Vec::new(),
             finalized: false,
         }));
         {
@@ -1097,27 +1155,75 @@ impl DarkWebService {
                 !matches!(j.state, "DONE" | "ERROR" | "CANCELLED")
                     || j.ended_at.map(|e| now.saturating_sub(e) < JOB_TTL_MS).unwrap_or(true)
             });
-            while jobs.len() >= MAX_JOBS {
-                let oldest = jobs.keys().next().cloned();
-                match oldest {
-                    Some(k) => {
-                        jobs.remove(&k);
-                    }
-                    None => break,
-                }
+            if jobs.len() >= MAX_JOBS {
+                let oldest = jobs.iter()
+                    .filter_map(|(id, job)| {
+                        let job = job.lock().unwrap_or_else(|p| p.into_inner());
+                        Some((id.clone(), job.ended_at?))
+                    })
+                    .min_by_key(|(_, ended)| *ended);
+                let Some((id, _)) = oldest else { return Err("SEARCH_BUSY".into()); };
+                jobs.remove(&id);
             }
-            jobs.insert(job_id.clone(), job.clone());
+            jobs.insert(job_id, job.clone());
+        }
+        if let Some(tor) = tor {
+            self.dispatch_search(app, &config, selected, tor, &job);
+        } else {
+            let service = self.clone();
+            let pending = job.clone();
+            let app = app.clone();
+            std::thread::spawn(move || {
+                match wait_for_tor_route(&app, &config, &pending) {
+                    Ok(Some(tor)) => {
+                        let current = service.config();
+                        if current.enabled && current.vormweb_enabled {
+                            service.dispatch_search(&app, &current, selected, tor, &pending);
+                        } else {
+                            search_error(&pending, if current.enabled { "NO_PROVIDERS_ENABLED" } else { "DARKWEB_DISABLED" });
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(code) => search_error(&pending, code),
+                }
+            });
         }
 
+        let initial = job.lock().unwrap_or_else(|p| p.into_inner()).snapshot(now_ms());
+        Ok(initial)
+    }
+
+    fn dispatch_search(
+        self: &Arc<Self>,
+        app: &tauri::AppHandle<tauri::Wry>,
+        config: &DarkWebConfig,
+        selected: Vec<&str>,
+        tor: (String, u16),
+        job: &Arc<Mutex<SearchJob>>,
+    ) {
+        let now = now_ms();
+        let runnable: Vec<_> = {
+            let health = self.health.lock().unwrap_or_else(|p| p.into_inner());
+            selected.into_iter()
+                .filter(|id| health.get(*id).is_none_or(|provider| provider.allows(now)))
+                .collect()
+        };
+
         if runnable.is_empty() {
-            {
-                let mut j = job.lock().unwrap_or_else(|p| p.into_inner());
-                j.state = "ERROR";
-                j.ended_at = Some(now);
-                j.error_code = Some("EXTERNAL_PROVIDER_UNAVAILABLE".to_string());
-            }
-            return Ok(job.lock().unwrap_or_else(|p| p.into_inner()).snapshot(now));
+            search_error(job, "EXTERNAL_PROVIDER_UNAVAILABLE");
+            return;
         }
+        let query = {
+            let mut j = job.lock().unwrap_or_else(|p| p.into_inner());
+            if j.cancelled {
+                return;
+            }
+            j.state = "SEARCHING";
+            j.tor_progress = None;
+            j.registered = runnable.len();
+            j.registered_ids = runnable.iter().map(|id| id.to_string()).collect();
+            j.query.clone()
+        };
 
         // Fire the workers; each records its own report, the LAST settler
         // finalizes (merge → rank → availability → cache → history).
@@ -1130,6 +1236,9 @@ impl DarkWebService {
             let query_w = query.clone();
             let provider_id = id.to_string();
             std::thread::spawn(move || {
+                if job_ref.lock().unwrap_or_else(|p| p.into_inner()).cancelled {
+                    return;
+                }
                 let started = now_ms();
                 let result = vormweb_search(&tor, &cfg_w, &query_w);
                 let duration = now_ms().saturating_sub(started);
@@ -1179,7 +1288,6 @@ impl DarkWebService {
                     // Providers that never settled report a GLOBAL timeout.
                     // No circuit-breaker penalty — the budget is ours, not a
                     // provider failure (honest health bookkeeping).
-                    let started_at = j.started_at;
                     for id in j.registered_ids.clone() {
                         if !j.providers.contains_key(&id) {
                             j.providers.insert(
@@ -1187,7 +1295,7 @@ impl DarkWebService {
                                 json!({
                                     "id": id,
                                     "status": "timeout",
-                                    "durationMs": now_ms().saturating_sub(started_at),
+                                    "durationMs": now_ms().saturating_sub(now),
                                     "resultCount": 0,
                                     "errorCode": "GLOBAL_TIMEOUT",
                                 }),
@@ -1200,8 +1308,6 @@ impl DarkWebService {
             });
         }
 
-        let initial = job.lock().unwrap_or_else(|p| p.into_inner()).snapshot(now);
-        Ok(initial)
     }
 
     fn record_provider(
