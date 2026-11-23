@@ -29,8 +29,7 @@ export interface SearchPageOptions {
   /** Brand hero image as a `data:image/*` URL injected by the build script
    * from a repo asset — a build-time constant, never user input. */
   logoDataUrl?: string;
-  /** UI language for every user-visible string on the page (default 'en';
-   * omitting it keeps the historical output unchanged). */
+  /** Language for the UI strings on this page. Defaults to English. */
   lang?: AppLocale;
 }
 
@@ -40,14 +39,13 @@ export const SEARCH_PAGE_BOUNDS = {
   searchTimeoutMs: 150_000,
 } as const;
 
-/** User-visible strings per locale. `en` values are the historical page
- * strings verbatim (so the default output is unchanged); keys are resolved
- * server-side via tr() and client-side via window.__PAB_STRINGS__. Brand
+/** User-visible strings per locale, resolved server-side via tr() and
+ * client-side via window.__PAB_STRINGS__. Brand
  * names (HayDev, Perplexica, Tor, DuckDuckGo, Deep Research) stay as-is. */
 const STRINGS: Record<AppLocale, Record<string, string>> = {
   en: {
     'logo.alt': 'HayDev Browser — Search logo',
-    'search.placeholder': 'Спроси что угодно — поиск с ИИ-ответом…',
+    'search.placeholder': 'Search the web or ask a question…',
     'input.aria': 'HayDev Search query',
     'modes.aria': 'Search mode',
     'status.starting': 'Starting local search…',
@@ -86,7 +84,7 @@ const STRINGS: Record<AppLocale, Record<string, string>> = {
   },
   ru: {
     'logo.alt': 'HayDev Browser — логотип поиска',
-    'search.placeholder': 'Спроси что угодно — поиск с ИИ-ответом…',
+    'search.placeholder': 'Введите запрос или задайте вопрос…',
     'input.aria': 'Поисковый запрос HayDev Search',
     'modes.aria': 'Режим поиска',
     'status.starting': 'Запускаю локальный поиск…',
@@ -125,7 +123,7 @@ const STRINGS: Record<AppLocale, Record<string, string>> = {
   },
   hy: {
     'logo.alt': 'HayDev Browser — որոնման լոգո',
-    'search.placeholder': 'Հարցրեք ցանկացած բան — որոնում ԱԻ-պատասխանով…',
+    'search.placeholder': 'Որոնեք համացանցում կամ հարց տվեք…',
     'input.aria': 'HayDev Search հարցում',
     'modes.aria': 'Որոնման ռեժիմ',
     'status.starting': 'Գործարկում եմ տեղական որոնումը…',

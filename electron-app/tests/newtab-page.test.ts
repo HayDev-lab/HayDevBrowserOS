@@ -7,6 +7,7 @@ import {
   buildNewTabHtml,
   escapeHtml,
 } from '../src/main/browser/pure/newtab-page';
+import { buildSearchPageHtml } from '../src/main/browser/pure/search-page';
 import type { HistoryEntry } from '@shared/browser-types';
 
 function entry(over: Partial<HistoryEntry> = {}): HistoryEntry {
@@ -205,5 +206,16 @@ describe('escapeHtml / buildNewTabHtml', () => {
     // above) and no query-string reflection exists in the template.
     const html = buildNewTabHtml([]);
     expect(html).not.toContain('location.search');
+  });
+});
+
+describe('search page localisation', () => {
+  it.each([
+    ['en', 'Search the web or ask a question…'],
+    ['ru', 'Введите запрос или задайте вопрос…'],
+    ['hy', 'Որոնեք համացանցում կամ հարց տվեք…'],
+  ] as const)('translates the results search field in %s', (lang, placeholder) => {
+    const html = buildSearchPageHtml({ perplexicaURL: 'http://127.0.0.1:4321', modelKey: '', lang });
+    expect(html).toContain(`id="input" placeholder="${placeholder}"`);
   });
 });
