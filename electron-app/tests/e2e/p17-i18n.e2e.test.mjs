@@ -16,6 +16,10 @@ test('P17: locale persists across restart and localizes chrome and internal page
   t.after(async () => { await app.stop(); rmSync(root, { recursive: true, force: true }); });
   await app.launch({ dataRoot: root });
   let chrome = app.chromePage(); await chrome.waitForSelector('.commandbar__input');
+  const { appVersion } = await invoke(chrome, 'app_version');
+  assert.ok(appVersion, 'native version must be available');
+  await until(async () => (await chrome.locator('.app__footer-brand').textContent()) === `HayDev Browser OS v${appVersion}`,
+    'footer must display the running application version');
   // 1. Switch to RU and persist across restart.
   const setResult = await invoke(chrome, 'set_locale', { locale: 'ru' });
   assert.equal(setResult.locale, 'ru');

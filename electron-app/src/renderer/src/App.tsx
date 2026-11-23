@@ -18,7 +18,7 @@ import { pickLayoutKind, getLayoutModifier, findWebAppTabId, type PanelKind } fr
 import { useI18n } from './i18n';
 import type { WebAppPin } from '@shared/browser-types';
 import { PAB_NEW_TAB_URL } from '@shared/browser-types';
-import type { RuntimeStatus } from '@shared/ipc-types';
+import type { AppVersionInfo, RuntimeStatus } from '@shared/ipc-types';
 
 export function App() {
   const { t, lang } = useI18n();
@@ -32,7 +32,7 @@ export function App() {
   const [actionError, setActionError] = useState<string | null>(null);
   const reportActionError = useCallback((e: unknown) => setActionError(nativeErrorCode(e)), []);
   useEffect(() => platformApi.on('storage:error', () => setStorageError(true)), []);
-  const [version, setVersion] = useState<string>('—');
+  const [version, setVersion] = useState<AppVersionInfo | null>(null);
   const [runtime, setRuntime] = useState<RuntimeStatus | null>(null);
   const [online, setOnline] = useState<boolean>(
     typeof navigator !== 'undefined' ? navigator.onLine : true
@@ -55,7 +55,7 @@ export function App() {
       .getVersion()
       .then((v) => {
         if (!cancelled) {
-          setVersion(`${v.electron} · WebView2 ${v.chrome}`);
+          setVersion(v);
         }
       })
       .catch(() => {});
@@ -415,9 +415,9 @@ export function App() {
 
       <footer className="app__footer" role="contentinfo">
         <div className="app__footer-left">
-          <span className="app__footer-brand">HayDev Browser OS v0.1.0</span>
+          <span className="app__footer-brand">HayDev Browser OS{version?.appVersion ? ` v${version.appVersion}` : ''}</span>
           <span className="app__footer-sep">|</span>
-          <span className="app__footer-version">{version}</span>
+          <span className="app__footer-version">{version ? `${version.electron} · WebView2 ${version.chrome}` : '—'}</span>
           <span className="app__footer-sep">|</span>
           <span className="app__footer-lab">HayDev Labs</span>
         </div>
