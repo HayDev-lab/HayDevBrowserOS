@@ -9,15 +9,17 @@
 //! the tool-calling loop speaks one protocol for every provider:
 //!   POST {base}/chat/completions   Authorization: Bearer {key}
 //!
-//! All providers read keys from the environment AT CALL TIME; the key is
-//! NEVER stored in the resolved config exposed to the UI (only the
-//! `credentialRef` naming the env var).
+//! Keyed providers resolve their credentials at call time. Kilo Free uses
+//! the anonymous free-only endpoint. Public config never includes keys.
 
 /// Gemini's OpenAI-compatible surface (same constant as agent.rs before).
 pub const GEMINI_BASE: &str = "https://generativelanguage.googleapis.com/v1beta/openai";
 pub const NVIDIA_BASE: &str = "https://integrate.api.nvidia.com/v1";
 /// Ollama Cloud / local Ollama, OpenAI-compatible endpoint.
 pub const OLLAMA_BASE: &str = "https://ollama.com/v1";
+pub const FREE_PROVIDER_ID: &str = "kilo-free";
+pub const FREE_MODEL: &str = "kilo-auto/free";
+const KILO_BASE: &str = "https://ai-gateway.kilo.ai/api/v1";
 
 pub const DEFAULT_GEMINI_MODEL: &str = "gemini-3.6-flash";
 pub const DEFAULT_NVIDIA_MODEL: &str = "openai/gpt-oss-20b";
@@ -28,7 +30,6 @@ pub const DEFAULT_OLLAMA_RESEARCH_MODEL: &str = "glm-5.3";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LlmProvider {
-    /// 'gemini' | 'nvidia' | 'ollama'
     pub id: &'static str,
     /// OpenAI-compatible base URL (no trailing slash), e.g. https://ollama.com/v1
     pub base_url: String,
@@ -36,8 +37,8 @@ pub struct LlmProvider {
     pub model: String,
     /// Model for DEEP_RESEARCH runs (None → same as `model`).
     pub research_model: Option<String>,
-    /// Env var holding the API key — read at call time, never copied.
-    pub api_key_env: &'static str,
+    /// Key source for keyed providers. An anonymous provider has no key source.
+    pub api_key_env: Option<&'static str>,
     pub reasoning: crate::ai_settings::GeminiReasoning,
     pub profile: String,
 }
@@ -46,23 +47,29 @@ impl LlmProvider {
     /// UI-facing config (NO key material) — shape matches Electron's
     /// `OllamaClientConfig { baseUrl, model, credentialRef }`.
     pub fn public_config(&self) -> serde_json::Value {
-        let saved = crate::ai_settings::load().ok().is_some_and(|s| s.providers.get(self.id).is_some_and(|p| p.encrypted_key.is_some()));
+        let credential_ref = match self.api_key_env {
+            None => "anonymous".to_string(),
+            Some(env) => {
+                let saved = crate::ai_settings::load().ok().is_some_and(|s| {
+                    s.providers.get(self.id).is_some_and(|p| p.encrypted_key.is_some())
+                });
+                if saved { format!("settings:{}", self.id) } else { format!("env:{env}") }
+            }
+        };
         serde_json::json!({
             "baseUrl": self.base_url,
             "model": self.model,
             "reasoningMode": if self.id == "gemini" { serde_json::to_value(self.reasoning).ok() } else { None },
-            "credentialRef": if saved {format!("settings:{}", self.id)} else {format!("env:{}", self.api_key_env)},
+            "credentialRef": credential_ref,
         })
     }
 
     pub fn is_configured(&self) -> bool {
-        !self.model.is_empty() && env_key(self.api_key_env)
-            .map(|k| !k.is_empty())
-            .unwrap_or(false)
+        !self.model.is_empty() && (self.api_key_env.is_none() || self.api_key().is_some())
     }
 
     pub fn api_key(&self) -> Option<String> {
-        env_key(self.api_key_env).filter(|k| !k.is_empty())
+        self.api_key_env.and_then(env_key).filter(|k| !k.is_empty())
     }
 
     /// Model for a run profile ("STANDARD" | "DEEP_RESEARCH").
@@ -112,7 +119,19 @@ fn env_str(name: &str) -> Option<String> {
 
 fn build(id: &'static str, base: String, model: String, research: Option<String>, env: &'static str) -> LlmProvider {
     let reasoning = if id == "gemini" { crate::ai_settings::load().map(|s| s.gemini_reasoning).unwrap_or_default() } else { crate::ai_settings::GeminiReasoning::Default };
-    LlmProvider { id, base_url: base, model, research_model: research, api_key_env: env, reasoning, profile: "STANDARD".into() }
+    LlmProvider { id, base_url: base, model, research_model: research, api_key_env: Some(env), reasoning, profile: "STANDARD".into() }
+}
+
+fn free_provider() -> LlmProvider {
+    LlmProvider {
+        id: FREE_PROVIDER_ID,
+        base_url: KILO_BASE.into(),
+        model: FREE_MODEL.into(),
+        research_model: None,
+        api_key_env: None,
+        reasoning: crate::ai_settings::GeminiReasoning::Default,
+        profile: "STANDARD".into(),
+    }
 }
 
 /// Resolve the active provider. `Ok(None)` means "no stack is usable" —
@@ -121,6 +140,7 @@ pub fn resolve_provider() -> Option<LlmProvider> {
     let settings = crate::ai_settings::load().ok()?;
     let forced = settings.active_provider.or_else(|| env_str("AI_PROVIDER")).map(|v| v.to_lowercase());
     match forced.as_deref() {
+        Some(FREE_PROVIDER_ID) => return Some(free_provider()),
         Some("gemini") => return Some(gemini_provider()),
         Some("openai") => return Some(compatible_provider("openai")),
         Some("openrouter") => return Some(compatible_provider("openrouter")),
@@ -319,6 +339,16 @@ fn run_model_probe() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn free_provider_is_anonymous_and_uses_only_the_free_router() {
+        let provider = free_provider();
+        assert!(provider.is_configured());
+        assert_eq!(provider.base_url, "https://ai-gateway.kilo.ai/api/v1");
+        assert_eq!(provider.api_key(), None);
+        assert_eq!(provider.model_for_profile("STANDARD"), "kilo-auto/free");
+        assert_eq!(provider.model_for_profile("DEEP_RESEARCH"), "kilo-auto/free");
+        assert_eq!(provider.public_config()["credentialRef"], "anonymous");
+    }
 
     fn clear_env() {
         for k in [
@@ -397,7 +427,7 @@ mod tests {
     #[test]
     fn reasoning_policy_keeps_selected_model_and_raises_effort_for_research() {
         use crate::ai_settings::GeminiReasoning;
-        let mut p=LlmProvider{id:"gemini",base_url:GEMINI_BASE.into(),model:"gemini-3.6-flash".into(),research_model:None,api_key_env:"GEMINI_API_KEY",reasoning:GeminiReasoning::Adaptive,profile:"STANDARD".into()};
+        let mut p=LlmProvider{id:"gemini",base_url:GEMINI_BASE.into(),model:"gemini-3.6-flash".into(),research_model:None,api_key_env:Some("GEMINI_API_KEY"),reasoning:GeminiReasoning::Adaptive,profile:"STANDARD".into()};
         assert_eq!(p.reasoning_effort(&[]),Some("low"));
         assert_eq!(p.request_timeout(&[]).as_secs(),20);
         p.profile="DEEP_RESEARCH".into();

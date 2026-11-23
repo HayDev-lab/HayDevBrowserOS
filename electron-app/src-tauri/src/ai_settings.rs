@@ -84,7 +84,12 @@ pub fn ai_settings_save(app: tauri::AppHandle<tauri::Wry>, patch: Patch) -> AppR
     let agent = app.state::<crate::agent::SharedAgent>();
     let active = agent.active.lock().unwrap_or_else(|p| p.into_inner());
     if control_guard.agent_run_active || active.as_ref().is_some_and(|g| g.check().is_ok()) { return Err(error("AI_AGENT_RUNNING")); }
-    if patch.active_provider != "environment" && !PROVIDERS.contains(&patch.active_provider.as_str()) { return Err(error("AI_INVALID_PROVIDER")); }
+    if patch.active_provider != "environment"
+        && patch.active_provider != crate::llm::FREE_PROVIDER_ID
+        && !PROVIDERS.contains(&patch.active_provider.as_str())
+    {
+        return Err(error("AI_INVALID_PROVIDER"));
+    }
     if !valid_model(&patch.gemini_live_model) || patch.gemini_live_model.contains(['/', ':']) { return Err(error("AI_INVALID_LIVE_MODEL")); }
     if patch.providers.len() > 3 { return Err(error("AI_INVALID_PROVIDER")); }
     let tx = crate::atomic_store::transaction(&path())?;

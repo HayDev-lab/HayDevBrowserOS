@@ -59,6 +59,14 @@ describe('computeTopSites', () => {
 });
 
 describe('escapeHtml / buildNewTabHtml', () => {
+  it.each([
+    ['en', 'Ask HayDev Search…'],
+    ['ru', 'Спросите HayDev Search…'],
+    ['hy', 'Հարցրեք HayDev Search-ին…'],
+  ] as const)('translates the search field in %s', (locale, placeholder) => {
+    expect(buildNewTabHtml([], [], locale)).toContain(`id="sinput" name="q" placeholder="${placeholder}"`);
+  });
+
   it('escapes HTML-significant characters', () => {
     expect(escapeHtml('<script>"a"&\'b\'</script>')).toBe(
       '&lt;script&gt;&quot;a&quot;&amp;&#39;b&#39;&lt;/script&gt;'

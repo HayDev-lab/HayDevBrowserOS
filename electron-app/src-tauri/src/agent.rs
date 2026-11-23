@@ -623,35 +623,49 @@ fn chat_body(provider: &LlmProvider, model: &str, messages: &[Value], tools: &Va
     body
 }
 
+fn send_chat_request(
+    agent: &ureq::Agent,
+    provider_id: &str,
+    url: &str,
+    timeout: Duration,
+    api_key: Option<&str>,
+    body: &str,
+) -> AppResult<ureq::Response> {
+    let request = agent.post(url).timeout(timeout).set("Content-Type", "application/json");
+    let request = match api_key {
+        Some(key) => request.set("Authorization", &format!("Bearer {key}")),
+        None => request,
+    };
+    let response = request.send_string(body).map_err(|err| match err {
+        ureq::Error::Status(429, _) if provider_id == crate::llm::FREE_PROVIDER_ID => {
+            AppError::new("LLM_FREE_RATE_LIMIT", "Free LLM request limit reached")
+        }
+        ureq::Error::Status(code, response) => {
+            let mut text = String::new();
+            let _ = response.into_reader().take(8192).read_to_string(&mut text);
+            AppError::new("LLM_HTTP_ERROR", format!("HTTP {code}: {}", provider_error_category(&text)))
+        }
+        _ => AppError::new("LLM_TRANSPORT", "Could not connect to the model provider"),
+    })?;
+    if !(200..300).contains(&response.status()) {
+        return Err(AppError::new("LLM_HTTP_ERROR", format!("HTTP {}: unexpected response", response.status())));
+    }
+    Ok(response)
+}
+
 fn chat_once(
     agent: &ureq::Agent,
     provider: &LlmProvider,
     model: &str,
-    api_key: &str,
+    api_key: Option<&str>,
     messages: &[Value],
     tools: &Value,
 ) -> AppResult<(Value, String)> {
     let body = chat_body(provider, model, messages, tools, false);
-    let resp = agent
-        .post(&format!("{}/chat/completions", provider.base_url))
-        .timeout(provider.request_timeout(messages))
-        .set("Authorization", &format!("Bearer {api_key}"))
-        .set("Content-Type", "application/json")
-        .send_string(&body.to_string())
-        .map_err(|e| match e {
-            ureq::Error::Status(code, resp) => {
-                let mut text = String::new();
-                let _ = resp.into_reader().take(8192).read_to_string(&mut text);
-                AppError::new(
-                    "LLM_HTTP_ERROR",
-                    format!(
-                        "HTTP {code}: {}",
-                        provider_error_category(&text)
-                    ),
-                )
-            }
-            other => AppError::new("LLM_TRANSPORT", other.to_string()),
-        })?;
+    let resp = send_chat_request(
+        agent, provider.id, &format!("{}/chat/completions", provider.base_url),
+        provider.request_timeout(messages), api_key, &body.to_string(),
+    )?;
     let mut json: Value = serde_json::from_reader(resp.into_reader().take(4 * 1024 * 1024))
         .map_err(|e| AppError::new("LLM_PARSE", e.to_string()))?;
     // Defensive about string-wrapped payloads (same unwrap discipline as
@@ -748,7 +762,7 @@ fn chat_interruptible(
     agent: &ureq::Agent,
     provider: &LlmProvider,
     model: &str,
-    api_key: &str,
+    api_key: Option<&str>,
     messages: &[Value],
     tools: &Value,
     stop: &AtomicBool,
@@ -758,11 +772,11 @@ fn chat_interruptible(
         let a = agent.clone();
         let provider = provider.clone();
         let model = model.to_string();
-        let api_key = api_key.to_string();
+        let api_key = api_key.map(str::to_owned);
         let messages = messages.to_vec();
         let tools = tools.clone();
         match interruptible(stop, move || {
-            chat_once(&a, &provider, &model, &api_key, &messages, &tools)
+            chat_once(&a, &provider, &model, api_key.as_deref(), &messages, &tools)
         }) {
             None => return Ok(None),
             Some(Ok(v)) => return Ok(Some(v)),
@@ -920,7 +934,7 @@ fn chat_streaming_attempt(
     agent: &ureq::Agent,
     provider: &LlmProvider,
     model: &str,
-    api_key: &str,
+    api_key: Option<&str>,
     messages: &[Value],
     tools: &Value,
     stop: Arc<AtomicBool>,
@@ -929,27 +943,16 @@ fn chat_streaming_attempt(
     let body = chat_body(provider, model, messages, tools, true);
     let body_str = body.to_string();
     let url = format!("{}/chat/completions", provider.base_url);
-    let auth = format!("Bearer {api_key}");
+    let credentials = api_key.map(str::to_owned);
+    let provider_id = provider.id;
     let request_timeout = provider.request_timeout(messages);
     let agent_cl = agent.clone();
     let app_w = app.clone();
     let shared_w = shared.clone();
     let stop_w = stop.clone();
     let worker = move || -> Result<(Value, String), String> {
-        let resp = agent_cl
-            .post(&url)
-            .timeout(request_timeout)
-            .set("Authorization", &auth)
-            .set("Content-Type", "application/json")
-            .send_string(&body_str)
-            .map_err(|e| match e {
-                ureq::Error::Status(code, r) => {
-                    let mut text = String::new();
-                    let _ = r.into_reader().take(8192).read_to_string(&mut text);
-                    format!("LLM_HTTP_ERROR: HTTP {code}: {}", provider_error_category(&text))
-                }
-                other => format!("LLM_TRANSPORT: {other}"),
-            })?;
+        let resp = send_chat_request(&agent_cl, provider_id, &url, request_timeout, credentials.as_deref(), &body_str)
+            .map_err(|err| format!("{}: {}", err.code, err.message))?;
         let ctype = resp.content_type().to_ascii_lowercase();
         if !ctype.contains("text/event-stream") {
             // Provider ignored `stream` — parse the plain JSON body.
@@ -1034,7 +1037,7 @@ fn chat_streaming_attempt(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn chat_once_streaming(app: &AppHandle<Wry>, shared: &SharedAgent, agent: &ureq::Agent, provider: &LlmProvider, model: &str, api_key: &str, messages: &[Value], tools: &Value, stop: Arc<AtomicBool>, generation: u64) -> AppResult<Option<(Value, String)>> {
+fn chat_once_streaming(app: &AppHandle<Wry>, shared: &SharedAgent, agent: &ureq::Agent, provider: &LlmProvider, model: &str, api_key: Option<&str>, messages: &[Value], tools: &Value, stop: Arc<AtomicBool>, generation: u64) -> AppResult<Option<(Value, String)>> {
     let mut attempt = 0;
     loop {
         if stop.load(Ordering::SeqCst) || !shared.is_current() { return Ok(None); }
@@ -1073,6 +1076,12 @@ pub fn run_loop(
         }
     }
     let _lease = EndLease { app: app.clone(), guard: shared.lease.clone().unwrap() };
+    // The model client currently supports the direct agent route. A routed
+    // profile must not send its prompt, pages or document contents directly.
+    if crate::privacy::global().agent_egress != crate::privacy::Egress::Direct {
+        return return_llm_error(&app, &shared, "LLM_EGRESS_UNAVAILABLE");
+    }
+
     // Provider + credential (call-time read; honest failure when absent).
     let Some(mut provider) = crate::llm::resolve_provider().filter(|p| p.is_configured()) else {
         set_status(&app, &shared, AgentStatus::Error, Some("provider_not_configured".to_string()));
@@ -1082,16 +1091,17 @@ pub fn run_loop(
             "error",
             "",
             "failed",
-            "AI_PROVIDER_NOT_CONFIGURED: open AI settings and configure the provider key and model",
+            "AI_PROVIDER_NOT_CONFIGURED",
             None,
             None,
         );
         return shared.snapshot.lock().unwrap_or_else(|p| p.into_inner()).clone();
     };
-    let Some(api_key) = provider.api_key() else {
+    let api_key = provider.api_key();
+    if provider.api_key_env.is_some() && api_key.is_none() {
         set_status(&app, &shared, AgentStatus::Error, Some("provider_not_configured".to_string()));
         return shared.snapshot.lock().unwrap_or_else(|p| p.into_inner()).clone();
-    };
+    }
     provider.profile = profile.to_owned();
     let model = provider.model_for_profile(profile);
     let is_research = profile == "DEEP_RESEARCH";
@@ -1154,7 +1164,7 @@ pub fn run_loop(
         Err(e) => return return_llm_error(&app, &shared, &e.code),
     };
     let _ = crate::core::with_state(&app, |s| { if let Some(tab) = s.registry.get_mut(&active_tab) { tab.owner_run = Some(generation); } });
-    let agent = ureq::AgentBuilder::new().timeout(LLM_TIMEOUT).build();
+    let agent = ureq::AgentBuilder::new().timeout(LLM_TIMEOUT).redirects(0).build();
     let system_prompt = if is_research { RESEARCH_SYSTEM_PROMPT } else { SYSTEM_PROMPT };
     // Confirmed user facts ride the system prompt (parity: the KNOWN FACTS
     // block in the Electron prompt builder).
@@ -1221,7 +1231,7 @@ pub fn run_loop(
             snap.steps_executed = step;
         }
         let (message, finish) = match chat_once_streaming(
-            &app, &shared, &agent, &provider, &model, &api_key, &messages, &tools,
+            &app, &shared, &agent, &provider, &model, api_key.as_deref(), &messages, &tools,
             shared.stop.clone(), generation,
         ) {
             Ok(Some(v)) => v,
@@ -1259,7 +1269,7 @@ pub fn run_loop(
                                 m["content"] = serde_json::json!(text);
                             }
                         }
-                        match chat_interruptible(&agent, &provider, &model, &api_key, &messages, &tools, &shared.stop) {
+                        match chat_interruptible(&agent, &provider, &model, api_key.as_deref(), &messages, &tools, &shared.stop) {
                             Ok(Some(v)) => v,
                             Ok(None) => {
                                 set_status(&app, &shared, AgentStatus::Stopping, Some("user_request".to_string()));
@@ -1279,7 +1289,7 @@ pub fn run_loop(
                         return return_llm_error(&app, &shared, &first_err.message);
                     }
                 } else {
-                    return return_llm_error(&app, &shared, &first_err.message);
+                    return return_llm_error(&app, &shared, &format!("{}: {}", first_err.code, first_err.message));
                 }
             }
         };

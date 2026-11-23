@@ -366,6 +366,7 @@ export function App() {
           onTakeControl={handleTakeControl}
           chat={agent.chat}
           onClearChat={agent.clearChat}
+          onOpenSettings={() => setActivePanel('settings')}
           onClose={() => setAgentPanelOpen(false)}
         />
       </div>

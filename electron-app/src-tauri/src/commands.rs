@@ -1098,10 +1098,8 @@ pub fn ui_locale() -> String {
         .and_then(|v| v.get("locale").and_then(|l| l.as_str()).map(str::to_string))
         .filter(|l| matches!(l.as_str(), "en" | "ru" | "hy"));
     let l = persisted.unwrap_or_else(|| "en".to_string());
-    if let Ok(mut guard) = UI_LOCALE.write() {
-        *guard = Some(l.clone());
-    }
-    l
+    let mut guard = UI_LOCALE.write().unwrap_or_else(|poison| poison.into_inner());
+    guard.get_or_insert(l).clone()
 }
 
 #[tauri::command]
@@ -1113,15 +1111,10 @@ pub fn set_locale(locale: String) -> AppResult<Value> {
             format!("unsupported locale {locale:?} (en/ru/hy)"),
         ));
     }
-    if let Ok(mut guard) = UI_LOCALE.write() {
-        *guard = Some(l.clone());
-    }
-    let dir = crate::lib_app_data_dir();
-    let _ = std::fs::create_dir_all(&dir);
-    let _ = std::fs::write(
-        dir.join("ui-locale.json"),
-        serde_json::json!({ "locale": l }).to_string(),
-    );
+    let mut guard = UI_LOCALE.write().unwrap_or_else(|poison| poison.into_inner());
+    let path = crate::lib_app_data_dir().join("ui-locale.json");
+    crate::atomic_store::transaction(&path)?.write_json(&serde_json::json!({ "locale": l }))?;
+    *guard = Some(l.clone());
     Ok(serde_json::json!({ "accepted": true, "locale": l }))
 }
 

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { platformApi } from '../../platform';
 import { useI18n } from '../../i18n';
 import type { AiSettings, AiProviderId, AiModel, GeminiReasoning } from '@shared/ai-settings';
+import { nativeErrorCode, nativeErrorMessage } from '@shared/native-errors';
 
 export const AI_SETTINGS_TITLE = { ru: 'Настройки AI', en: 'AI settings', hy: 'AI կարգավորումներ' };
 const copy = {
@@ -10,6 +11,11 @@ const copy = {
   hy: { close:'Փակել', active:'Գործակալի մատակարար', environment:'Ավտոմատ / միջավայրից', key:'API բանալի', model:'Գործակալի մոդել (ընտրեք կամ գրեք ID)', live:'Gemini Live մոդել (ընտրեք կամ գրեք ID)', refresh:'Բեռնել մոդելները', save:'Պահպանել կարգավորումները', saved:'Պահպանվեց։ Կկիրառվի գործակալի հաջորդ գործարկման ժամանակ։', pending:'Սպասեք…', remove:'Հեռացնել պահպանված բանալին', savedKey:'Բանալին պահպանված է', envKey:'Բանալին միջավայրից է', noKey:'Բանալին նշված չէ', placeholder:'Տեղադրեք նոր բանալի կամ թողեք դատարկ՝ հինը պահելու համար', note:'Բանալիները պահվում են տեղային՝ գաղտնագրված։ Նախ պահպանեք բանալին, ապա բեռնեք մոդելները։ Gemini Live-ն օգտագործում է առանձին մոդել և Gemini բանալի։', compatibility:'Գործակալին անհրաժեշտ է գործիքների աջակցություն։ Ցանկում լինելը չի երաշխավորում բոլոր ռեժիմների աջակցությունը։', running:'Կարգավորումները փոխելուց առաջ կանգնեցրեք գործակալին։', error:'Գործողությունը չհաջողվեց', unavailable:'AI կարգավորումները հասանելի են desktop հավելվածում։', removed:'Բանալին կհեռացվի պահպանելիս։ Միջավայրի բանալին, եթե կա, կմնա հասանելի։' },
 };
 const names = { gemini:'Gemini', openrouter:'OpenRouter', openai:'OpenAI' };
+const freeCopy = {
+  en: { detail: 'Free cloud model, no key required. Kilo receives prompts, tool results and attachments you send. Use public data here.', terms: 'Kilo terms' },
+  ru: { detail: 'Бесплатная облачная модель без ключа. Kilo получает запросы, результаты инструментов и отправленные вложения. Используйте открытые данные.', terms: 'Условия Kilo' },
+  hy: { detail: 'Անվճար ամպային մոդել՝ առանց բանալու։ Kilo-ն ստանում է հարցումները, գործիքների արդյունքները և ուղարկված կցորդները։ Օգտագործեք հրապարակային տվյալներ։', terms: 'Kilo-ի պայմանները' },
+};
 const reasoningCopy = {
   ru: { label:'Размышление Gemini для агента', options:['Авто — быстрые действия, углублённый разбор исследований','По умолчанию у модели','Быстрое','Сбалансированное','Глубокое'], note:'Авто: low для обычных действий; medium для глубокого исследования. Gemini Live настраивается отдельно.' },
   en: { label:'Gemini agent reasoning', options:['Automatic — fast actions, deeper research review','Model default','Fast','Balanced','Deep'], note:'Automatic uses low for ordinary actions and medium for deep research. Gemini Live is configured separately.' },
@@ -22,28 +28,27 @@ export function AiSettingsPanel({ onClose, agentRunning }: { onClose: () => void
   const [keys, setKeys] = useState<Partial<Record<AiProviderId, string>>>({});
   const [remove, setRemove] = useState<Partial<Record<AiProviderId, boolean>>>({});
   const [models, setModels] = useState<Partial<Record<AiProviderId, AiModel[]>>>({});
-  const [busy, setBusy] = useState(false); const [message, setMessage] = useState(''); const [error, setError] = useState('');
-  const fail = (e: unknown) => {
-    const code = typeof e === 'object' && e && 'code' in e ? String(e.code) : 'AI_SETTINGS_FAILED';
-    setError(`${w.error}: ${code}`);
-  };
+  const [busy, setBusy] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState('');
+  const fail = (e: unknown) => setError(nativeErrorCode(e));
   useEffect(() => {
     let current = true;
-    api?.get().then(s => { if (current) setSettings(s); }).catch(() => { if (current) setError(copy[lang].error); });
+    api?.get().then(s => { if (current) setSettings(s); }).catch(e => { if (current) setError(nativeErrorCode(e)); });
     return () => { current = false; };
-  }, [api, lang]);
+  }, [api]);
   async function save() {
     if (!api || !settings) return;
-    setBusy(true); setError(''); setMessage('');
+    setBusy(true); setError(''); setSaved(false);
     try {
       const result = await api.save({ ...settings, providers: settings.providers.map(p => ({ id:p.id, model:p.model, apiKey:keys[p.id] || undefined, removeKey:!!remove[p.id] })) });
-      setSettings(result); setRemove({}); setMessage(w.saved);
+      setSettings(result); setRemove({}); setSaved(true);
       window.dispatchEvent(new Event('haydev:ai-settings-changed'));
     } catch (e) { fail(e); } finally { setKeys({}); setBusy(false); }
   }
   async function refresh(id: AiProviderId) {
     if (!api) return;
-    setBusy(true); setError(''); setMessage('');
+    setBusy(true); setError(''); setSaved(false);
     try { const result = await api.models(id); setModels(old => ({ ...old, [id]:result.models })); }
     catch (e) { fail(e); } finally { setBusy(false); }
   }
@@ -51,13 +56,23 @@ export function AiSettingsPanel({ onClose, agentRunning }: { onClose: () => void
     <header className="panel__header"><h2>{AI_SETTINGS_TITLE[lang]}</h2><button type="button" className="panel__close" aria-label={w.close} onClick={onClose} disabled={busy}>×</button></header>
     <div className="panel__body ai-settings__body">
       {!api && <p>{w.unavailable}</p>}
-      <p>{w.note}</p>
-      {error && <p role="alert">{error}</p>}{message && <p role="status">{message}</p>}
+      {error && <p role="alert">{nativeErrorMessage(error, lang)}</p>}
+      {saved && <p role="status">{w.saved}</p>}
       {agentRunning && <p role="status">{w.running}</p>}
       {settings && <>
-        <label>{w.active}<select aria-label={w.active} disabled={busy || agentRunning} value={settings.activeProvider} onChange={e => setSettings({ ...settings, activeProvider:e.target.value as AiSettings['activeProvider'] })}>
-          <option value="environment">{w.environment}</option>{settings.providers.map(p => <option key={p.id} value={p.id}>{names[p.id]}</option>)}
+        <label>{w.active}<select aria-label={w.active} disabled={busy || agentRunning} value={settings.activeProvider} onChange={e => {
+          setSaved(false);
+          setSettings({ ...settings, activeProvider: e.target.value as AiSettings['activeProvider'] });
+        }}>
+          <option value="environment">{w.environment}</option>
+          <option value="kilo-free">Free LLM (Kilo)</option>
+          {settings.providers.map(p => <option key={p.id} value={p.id}>{names[p.id]}</option>)}
         </select></label>
+        {settings.activeProvider === 'kilo-free' && (
+          <p>{freeCopy[lang].detail} <a href="https://kilo.ai/terms" target="_blank" rel="noopener noreferrer">{freeCopy[lang].terms}</a></p>
+        )}
+        <button type="button" disabled={busy || agentRunning} onClick={() => void save()}>{busy ? w.pending : w.save}</button>
+        <p>{w.note}</p>
         <label>{reasoningCopy[lang].label}<select aria-label={reasoningCopy[lang].label} disabled={busy || agentRunning} value={settings.geminiReasoning || 'adaptive'} onChange={e => setSettings({ ...settings, geminiReasoning:e.target.value as GeminiReasoning })}>
           {(['adaptive','default','low','medium','high'] as const).map((value,i) => <option key={value} value={value}>{reasoningCopy[lang].options[i]}</option>)}
         </select></label>
@@ -75,7 +90,6 @@ export function AiSettingsPanel({ onClose, agentRunning }: { onClose: () => void
         <label>{w.live}<input disabled={busy || agentRunning} list="ai-live-models" value={settings.geminiLiveModel} maxLength={100} onChange={e => setSettings({ ...settings, geminiLiveModel:e.target.value })}/></label>
         <datalist id="ai-live-models">{models.gemini?.filter(m => m.live).map(m => <option key={m.id} value={m.id}/>)}</datalist>
         <small>{w.compatibility}</small>
-        <button type="button" disabled={busy || agentRunning} onClick={() => void save()}>{busy ? w.pending : w.save}</button>
       </>}
     </div>
   </section>;

@@ -1,7 +1,7 @@
 export type AiProviderId = 'gemini' | 'openrouter' | 'openai';
 export type GeminiReasoning = 'adaptive' | 'default' | 'low' | 'medium' | 'high';
 export interface AiSettings {
-  activeProvider: AiProviderId | 'environment';
+  activeProvider: AiProviderId | 'kilo-free' | 'environment';
   geminiLiveModel: string;
   geminiReasoning?: GeminiReasoning;
   providers: { id: AiProviderId; model: string; configured: boolean; keySource: 'saved' | 'environment' | 'none' }[];

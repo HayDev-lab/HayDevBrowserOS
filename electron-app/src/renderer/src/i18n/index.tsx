@@ -51,7 +51,8 @@ const I18nContext = createContext<I18nValue | null>(null);
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [lang, setLangState] = useState<AppLocale>(readInitialLocale);
 
-  const setLang = useCallback((next: AppLocale) => {
+  const changedByUser = useRef(false);
+  const applyLocale = useCallback((next: AppLocale) => {
     setLangState(next);
     try {
       localStorage.setItem(STORAGE_KEY, next);
@@ -60,48 +61,35 @@ export function I18nProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const setLang = useCallback((next: AppLocale) => {
+    changedByUser.current = true;
+    applyLocale(next);
+    platformApi.setLocale(next);
+  }, [applyLocale]);
+
   const cycleLang = useCallback(() => {
     setLang(CYCLE[(CYCLE.indexOf(lang) + 1) % CYCLE.length]);
   }, [lang, setLang]);
 
-  // The ui-locale.json host file is the durable store. Until the boot
-  // adoption has read it, language changes are NOT pushed to the host — a
-  // pre-adoption value (this webview's storage) must never overwrite the
-  // user's persisted choice. StrictMode remounts effects, so the gate is
-  // "adoption finished", not "mount count".
-  const hostLocaleAdoptedRef = useRef(false);
   useEffect(() => {
     document.documentElement.lang = lang;
-    if (hostLocaleAdoptedRef.current) {
-      try {
-        platformApi.setLocale(lang);
-      } catch {
-        // Bridge not ready (tests / plain web) — pages stay English until next switch.
-      }
-    }
   }, [lang]);
 
+  // The durable value seeds the UI unless the user already made a choice.
   useEffect(() => {
     let cancelled = false;
     void platformApi
       .getLocale()
       .then((persisted) => {
-        if (cancelled) return;
-        hostLocaleAdoptedRef.current = true;
-        const host = parseAppLocale(persisted);
-        // Identical state bails out without re-running the push effect —
-        // the file already holds this value.
-        setLang(host);
+        if (!cancelled && !changedByUser.current) applyLocale(parseAppLocale(persisted));
       })
       .catch(() => {
-        // No bridge (tests / plain web) — keep the storage-derived locale;
-        // user changes still push once this flag is set.
-        hostLocaleAdoptedRef.current = true;
+        // Keep the cached choice when the host is unavailable.
       });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [applyLocale]);
 
   const t = useCallback<I18nValue['t']>(
     (key, vars) => {

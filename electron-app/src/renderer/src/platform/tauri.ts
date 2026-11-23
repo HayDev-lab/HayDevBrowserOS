@@ -22,6 +22,8 @@ const ALLOWED_LISTEN_CHANNELS = new Set<string>([
   'browser:downloads:changed',
 ]);
 
+let localeWrite = Promise.resolve();
+
 export const tauriApi: ExposedApi = {
   mediaCleaner: {
     videoAvailable: () => invoke('media_cleaner_video_available'),
@@ -122,9 +124,9 @@ export const tauriApi: ExposedApi = {
   // Push the chosen language to the host: persisted (ui-locale.json) and
   // used to serve the matching prebuilt pab:// pages (read_internal_page_localed).
   setLocale: (lang) => {
-    void invoke('set_locale', { locale: lang }).catch((err: unknown) => {
-      console.error('[platform:tauri] set_locale failed:', err);
-    });
+    localeWrite = localeWrite.then(async () => {
+      await invoke('set_locale', { locale: lang });
+    }).catch((err: unknown) => console.error('[platform:tauri] set_locale failed:', err));
   },
 
   // The host file is the durable locale store; the shell adopts it on boot

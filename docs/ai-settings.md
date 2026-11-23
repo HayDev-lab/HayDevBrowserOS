@@ -4,7 +4,13 @@ Current local selection, 29 October 2026: `gemini-3.5-flash-lite` is saved in th
 
 Fresh verification on 27 October: [completion report](implementation-completion-2026-10-27.md). Native P21 passed again. The real Gemini catalog and Live connection were verified; OpenAI/OpenRouter routing and encrypted persistence were tested with synthetic keys. Saves and token import are rejected during Live startup as well as an active session.
 
-Open the gear button in the browser toolbar (Настройки AI / AI settings / AI կարգավորումներ).
+Open the gear button in the browser toolbar to change the agent provider.
+
+## Free LLM in 0.1.7
+
+Select **Free LLM (Kilo)** under **Agent provider** and save. The agent uses the anonymous `kilo-auto/free` route for chat and Deep Research. It sends no API key and keeps using the free route when Kilo returns an error. The browser keeps the selected provider across restarts.
+
+Kilo receives prompts, tool results and attachments sent through this mode. Use it with public data. Kilo documents a limit of 200 free requests per hour per IP. The cloud model requires the agent's direct route. The browser blocks model requests when the agent is configured to use a proxy. [Free models](https://kilo.ai/docs/gateway/models-and-providers) · [Limits](https://kilo.ai/docs/gateway/usage-and-billing) · [Kilo terms](https://kilo.ai/terms)
 
 ## Model configuration in 0.1.2
 

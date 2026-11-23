@@ -1,4 +1,5 @@
 import { attachmentErrorMessage } from '@shared/attachment-errors';
+import { nativeErrorCode, nativeErrorMessage } from '@shared/native-errors';
 import { platformApi } from '../platform';
 /**
  * AgentPanel — Matrix agent dock (concept 1:1).
@@ -43,6 +44,7 @@ export interface AgentPanelProps {
   chat?: ChatMessage[];
   /** Clear the conversation. */
   onClearChat?: () => void;
+  onOpenSettings: () => void;
   /** Collapse the dock and return its width to the active page. */
   onClose: () => void;
 }
@@ -62,6 +64,7 @@ export function AgentPanel({
   onTakeControl,
   chat = [],
   onClearChat,
+  onOpenSettings,
   onClose,
 }: AgentPanelProps) {
   const { t, lang } = useI18n();
@@ -72,6 +75,8 @@ export function AgentPanel({
   const [attaching, setAttaching] = useState(false);
   const [attachError, setAttachError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const needsProvider = agentStatus?.providerConfigured === false;
+  const canSubmit = mode === 'AGENT' && !agentRunning && !attaching && !needsProvider && task.trim().length > 0;
 
   // THINK nav action focuses this input.
   useEffect(() => {
@@ -81,21 +86,15 @@ export function AgentPanel({
   }, []);
 
   const handleSubmit = () => {
-    const trimmed = task.trim();
-    if (trimmed.length === 0) return;
-    if (mode !== 'AGENT') return;
-    if (agentRunning || attaching) return;
-    onRun(trimmed, attachments.length > 0 ? { attachmentIds: attachments.map((a) => a.id) } : undefined);
+    if (!canSubmit) return;
+    onRun(task.trim(), attachments.length > 0 ? { attachmentIds: attachments.map((a) => a.id) } : undefined);
     setTask('');
     setAttachments([]);
   };
 
   const handleDeepResearch = () => {
-    const trimmed = task.trim();
-    if (trimmed.length === 0) return;
-    if (mode !== 'AGENT') return;
-    if (agentRunning || attaching) return;
-    onResearch(trimmed, { attachmentIds: attachments.map(a => a.id) });
+    if (!canSubmit) return;
+    onResearch(task.trim(), { attachmentIds: attachments.map(a => a.id) });
     setTask('');
     setAttachments([]);
   };
@@ -106,7 +105,6 @@ export function AgentPanel({
       handleSubmit();
     }
     if (e.key === 'Escape') {
-      setTask('');
       (e.target as HTMLInputElement).blur();
     }
   };
@@ -321,6 +319,11 @@ export function AgentPanel({
       )}
 
       <footer className="agent-panel__footer">
+        {needsProvider && (
+          <button type="button" className="agent-panel__hint-switch" onClick={onOpenSettings}>
+            {t('agent.openSettings')}
+          </button>
+        )}
         <div className="agent-panel__footer-actions">
           <button
             type="button"
@@ -348,7 +351,7 @@ export function AgentPanel({
             type="button"
             className="agent-panel__deep"
             onClick={handleDeepResearch}
-            disabled={mode !== 'AGENT' || agentRunning || attaching || task.trim().length === 0}
+            disabled={!canSubmit}
             title={t('agent.deepTip')}
           >
             {t('agent.deep')}
@@ -420,7 +423,7 @@ export function AgentPanel({
             type="button"
             className="agent-panel__send"
             onClick={handleSubmit}
-            disabled={mode !== 'AGENT' || agentRunning || attaching || task.trim().length === 0}
+            disabled={!canSubmit}
             aria-label={t('agent.sendAria')}
             title={t('agent.sendTip')}
           >
@@ -513,6 +516,9 @@ function ChatBubble({
   youLabel: string;
   agentName: string;
 }) {
+  const { lang } = useI18n();
+  const errorCode = message.error ? nativeErrorCode(message.text) : '';
+  const modelError = errorCode.startsWith('LLM_') || errorCode === 'AI_PROVIDER_NOT_CONFIGURED';
   const time = message.ts
     ? new Date(message.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     : null;
@@ -533,7 +539,7 @@ function ChatBubble({
         <span className="agent-bubble__name">{agentName}</span>
         {time && <span className="agent-bubble__time">{time}</span>}
       </span>
-      <span className="agent-bubble__text">{message.text}</span>
+      <span className="agent-bubble__text">{modelError ? nativeErrorMessage(errorCode, lang) : message.text}</span>
     </div>
   );
 }

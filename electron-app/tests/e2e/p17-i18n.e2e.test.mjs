@@ -33,6 +33,7 @@ test('P17: locale persists across restart and localizes chrome and internal page
   await until(async () => (await newtabPage.evaluate(() => document.documentElement.lang)) === 'ru',
     'restored newtab must be served in ru');
   assert.match(await newtabPage.evaluate(() => document.title), NEWTAB_TITLE.ru, 'ru newtab title');
+  assert.equal(await newtabPage.locator('#sinput').getAttribute('placeholder'), 'Спросите HayDev Search…');
 
   // 3. RU shell labels.
   const shellText = await chrome.evaluate(() => document.body.innerText);
@@ -45,9 +46,11 @@ test('P17: locale persists across restart and localizes chrome and internal page
   await newtabPage.reload();
   await until(async () => (await newtabPage.evaluate(() => document.documentElement.lang)) === 'hy',
     'reloaded newtab must render in HY');
+  assert.equal(await newtabPage.locator('#sinput').getAttribute('placeholder'), 'Հարցրեք HayDev Search-ին…');
   await invoke(chrome, 'set_locale', { locale: 'en' });
   await newtabPage.reload();
   await until(async () => (await newtabPage.evaluate(() => document.documentElement.lang)) === 'en',
     'reloaded newtab must render in EN');
+  assert.equal(await newtabPage.locator('#sinput').getAttribute('placeholder'), 'Ask HayDev Search…');
   assert.equal(await invoke(chrome, 'ui_locale'), 'en');
 });
