@@ -147,3 +147,38 @@ test('P04: stop latency, streaming, takeover, concurrency', { timeout: 240_000 }
   await invoke(chrome, 'control_set_mode', { mode: 'AGENT' });
   await invoke(chrome, 'control_set_mode', { mode: 'HUMAN' });
 });
+
+test('P04: reaching the agent step limit explains how to retry', { timeout: 90_000 }, async (t) => {
+  const app = new AppHandle();
+  t.after(async () => { await app.stop(); });
+  await app.launch();
+
+  const chrome = app.chromePage();
+  const address = chrome.locator('.commandbar__input');
+  await address.fill(fixtureServer.url('/static'));
+  await address.press('Enter');
+  await app.waitTabPage(/\/static$/);
+  assert.equal((await invoke(chrome, 'control_set_mode', { mode: 'AGENT' })).accepted, true);
+
+  const task = chrome.getByRole('textbox', { name: 'Agent task input', exact: true });
+  const send = chrome.getByRole('button', { name: 'Send message to agent', exact: true });
+  await task.fill('Visit the synthetic page repeatedly !!tool');
+  await send.click();
+
+  const { value: failed } = await waitFor(async () => {
+    const snapshot = await status(chrome);
+    return snapshot.state === 'FAILED' ? snapshot : null;
+  }, { label: 'step-limit failure', timeoutMs: 30_000 });
+  assert.equal(failed.reason, 'max_steps_reached');
+  assert.equal(failed.stepCount, failed.maxSteps);
+  const error = chrome.locator('.app__error[role="alert"]');
+  await error.waitFor({ state: 'visible' });
+  assert.equal(await error.textContent(), 'The agent reached its step limit. Try a smaller task.');
+
+  assert.equal((await invoke(chrome, 'control_set_mode', { mode: 'AGENT' })).accepted, true);
+  await task.fill('Reply with the synthetic greeting');
+  await send.click();
+  await chrome.locator('.agent-bubble').filter({ hasText: 'FIXTURE_LLM_PLAIN_OK' }).waitFor();
+  await error.waitFor({ state: 'hidden' });
+  assert.equal((await status(chrome)).state, 'COMPLETED');
+});

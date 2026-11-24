@@ -3,12 +3,18 @@ import { attachmentErrorMessage } from './attachment-errors';
 
 /** Keep diagnostic codes, never arbitrary native paths, provider bodies or secrets. */
 export function nativeErrorCode(error: unknown): string {
+  if (error === 'max_steps_reached') return 'AGENT_STEP_LIMIT';
   const item = error && typeof error === 'object' ? error as { code?: unknown; message?: unknown } : null;
   const text = item ? `${String(item.code ?? '')} ${String(item.message ?? '')}` : String(error ?? '');
   return text.match(/(?:VAULT|STORE|DOCUMENT|ATTACHMENT|EGRESS|TAB|WEBVIEW|AGENT|CONTROL|RESEARCH|MEDIA|ONION|TOR|LLM|AI)_[A-Z_]+/)?.[0] ?? 'OPERATION_FAILED';
 }
 const messages: Record<string, readonly [string, string, string]> = {
   OPERATION_FAILED: ['The operation failed. Please try again.', 'Не удалось выполнить действие. Повторите попытку.', 'Գործողությունը չհաջողվեց։ Փորձեք կրկին։'],
+  AGENT_STEP_LIMIT: [
+    'The agent reached its step limit. Try a smaller task.',
+    'Агент достиг лимита шагов. Разбейте задачу на части и попробуйте снова.',
+    'Գործակալը հասել է քայլերի սահմանաչափին։ Բաժանեք առաջադրանքը փոքր մասերի և փորձեք կրկին։',
+  ],
   VAULT_DOMAIN_MISMATCH: ['This credential belongs to another site.', 'Эта запись предназначена для другого сайта.', 'Այս տվյալները նախատեսված են այլ կայքի համար։'],
   VAULT_DOMAIN_AMBIGUOUS: ['Save this credential with the exact site address before filling.', 'Перед заполнением сохраните запись с точным адресом сайта.', 'Լրացնելուց առաջ պահպանեք տվյալները կայքի ճշգրիտ հասցեով։'],
   VAULT_DOCUMENT_CHANGED: ['The page changed. Check the site and try filling again.', 'Страница изменилась. Проверьте сайт и повторите заполнение.', 'Էջը փոխվել է։ Ստուգեք կայքը և կրկին փորձեք լրացնել։'],
